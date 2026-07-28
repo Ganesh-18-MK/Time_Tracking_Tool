@@ -6,6 +6,12 @@
       "runtimeExecutable": ".venv/bin/python",
       "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--port", "8127"],
       "port": 8127
+    },
+    {
+      "name": "tms-demo",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "demo.run_demo"],
+      "port": 8128
     }
   ]
 }

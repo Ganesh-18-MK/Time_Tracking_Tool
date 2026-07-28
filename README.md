@@ -49,6 +49,16 @@ Open **http://localhost:8127**. Dev sign-in: pick a user, no password.
 
 A pre-seeded `tms.db` ships with the handoff bundle — with it you can skip the two import steps and run immediately.
 
+### Demo mode (safe to show anyone)
+
+`tms_demo.db` is committed to the repo: a full anonymized copy of the real data — every employee, client, and note replaced with fiction (see `demo/make_demo_db.py`, which refuses to build if its leak scan finds a single real string). Same five months of statuses, strikes, ledgers, and compensation links.
+
+```bash
+.venv/bin/python -m demo.run_demo        # demo app on http://localhost:8128
+```
+
+Rebuild after a fresh import with `.venv/bin/python -m demo.make_demo_db`. The real app (8127) and real DB are untouched.
+
 ## Verify the build
 
 ```bash

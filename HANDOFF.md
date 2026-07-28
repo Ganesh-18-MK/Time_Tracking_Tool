@@ -14,6 +14,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 http://localhost:8127 → sign in as **Steve** (admin) or any employee. Python 3.9+ is enough; no Node, no build step, no external services.
 
+No bundle? The repo alone still demos: `python -m demo.run_demo` serves the committed **anonymized** database on port 8128 (fictional names/clients, real structure — safe for any audience). Admin login: Dana Whitmore.
+
 ## Current state — honest summary
 
 | Area | State |
