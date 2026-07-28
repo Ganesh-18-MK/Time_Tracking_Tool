@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% set active_nav = 'roster' %}
+{% block title %}Edit {{ emp.name }} · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Edit — {{ emp.name }}</h1>
+<div class="card" style="max-width:680px">
+  <form method="post" action="/admin/roster/{{ emp.id }}/edit">
+    <label class="f">Name</label><input name="name" value="{{ emp.name }}" required style="width:100%">
+    <label class="f">Email</label><input name="email" value="{{ emp.email }}" style="width:100%">
+    <div class="formrow" style="margin-top:8px">
+      <div><label>Department</label><input name="department" value="{{ emp.department }}"></div>
+      <div><label>Designation</label><input name="designation" value="{{ emp.designation }}"></div>
+      <div><label>Target hours/day</label>
+        <input name="target_hours" value="{{ '%.2f'|format(emp.daily_target_minutes / 60) }}" style="width:80px"></div>
+      <div><label>Start date</label>
+        <input type="date" name="start_date" value="{{ emp.start_date.isoformat() if emp.start_date }}"></div>
+    </div>
+    <label class="f">Work days (per-person schedule override — PRD open question 8)</label>
+    <div>
+      {% for i, n in [(0,'Mon'),(1,'Tue'),(2,'Wed'),(3,'Thu'),(4,'Fri'),(5,'Sat'),(6,'Sun')] %}
+      <label style="margin-right:10px"><input type="checkbox" name="work_days" value="{{ i }}"
+        {{ 'checked' if i in emp.work_day_set }}> {{ n }}</label>
+      {% endfor %}
+    </div>
+    <div style="margin-top:12px">
+      <label style="margin-right:14px"><input type="checkbox" name="active" value="1" {{ 'checked' if emp.active }}> Active</label>
+      <label style="margin-right:14px" title="Included in compliance runs"><input type="checkbox" name="tracked" value="1" {{ 'checked' if emp.tracked }}> Tracked in compliance</label>
+      <label><input type="checkbox" name="is_admin" value="1" {{ 'checked' if emp.is_admin }}> Admin role</label>
+    </div>
+    <div style="margin-top:14px">
+      <button>Save</button>
+      <a class="btn secondary" href="/admin/roster">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

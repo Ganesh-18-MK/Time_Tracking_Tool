@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% set active_nav = 'leave' %}
+{% block title %}Leave · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Leave entry</h1>
+<div class="card">
+  <form method="post" action="/admin/leave/add" class="formrow">
+    <div>
+      <label>Employee</label>
+      <select name="employee_id" required>
+        <option value="">— choose —</option>
+        {% for e in emps %}<option value="{{ e.id }}">{{ e.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>From</label><input type="date" name="start_date" required></div>
+    <div><label>To (blank = one day)</label><input type="date" name="end_date"></div>
+    <div>
+      <label>Type</label>
+      <select name="type">{% for t in leave_types %}<option>{{ t }}</option>{% endfor %}</select>
+    </div>
+    <div><label>Hours/day (blank = full day)</label><input name="hours" style="width:110px" placeholder="e.g. 2.5"></div>
+    <div style="flex:1"><label>Note ('Other' requires one)</label><input name="note" style="width:100%"></div>
+    <div><button>Record leave</button></div>
+  </form>
+  <p class="small muted">Full-day leave zeroes that day's target (no variance). Partial hours reduce the target —
+  status still derives from what gets submitted. Category totals compute automatically.</p>
+</div>
+
+<div class="card">
+  <h2>Recent leave records</h2>
+  <table>
+    <thead><tr><th>Employee</th><th>When</th><th>Type</th><th>Hours/day</th><th>Note</th><th>By</th><th></th></tr></thead>
+    <tbody>
+      {% for lv in recent %}
+      <tr>
+        <td><a href="/admin/person/{{ lv.employee_id }}">{{ lv.employee.name }}</a></td>
+        <td class="nowrap">{{ lv.start_date.isoformat() }}{% if lv.end_date != lv.start_date %} → {{ lv.end_date.isoformat() }}{% endif %}</td>
+        <td>{{ lv.type }}</td>
+        <td>{{ 'full day' if lv.minutes_per_day is none else lv.minutes_per_day|hm }}</td>
+        <td class="small">{{ lv.note }}{% if lv.imported %} <span class="muted">(legacy)</span>{% endif %}</td>
+        <td class="small muted">{{ lv.entered_by }}</td>
+        <td><form method="post" action="/admin/leave/{{ lv.id }}/delete" class="inline"
+          onsubmit="return confirm('Delete leave record?')"><button class="small secondary">✕</button></form></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

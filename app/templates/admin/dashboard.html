@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% set active_nav = 'dash' %}
+{% block title %}Compliance Dashboard · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Compliance dashboard — {{ month_label(year, month) }}</h1>
+
+<div class="card">
+  <div class="formrow">
+    <a class="btn secondary small" href="/admin?ym={{ prev_ym }}&dept={{ dept }}&exceptions={{ exceptions }}">← prev</a>
+    <a class="btn secondary small" href="/admin?ym={{ next_ym }}&dept={{ dept }}&exceptions={{ exceptions }}">next →</a>
+    <form method="get" action="/admin" class="formrow inline">
+      <input type="hidden" name="ym" value="{{ ym }}">
+      <div>
+        <label>Department</label>
+        <select name="dept" onchange="this.form.submit()">
+          <option value="">All departments</option>
+          {% for d in all_depts %}<option value="{{ d }}" {{ 'selected' if d == dept }}>{{ d }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <label class="small" style="display:flex;align-items:center;gap:6px;margin:0">
+          <input type="checkbox" name="exceptions" value="1" {{ 'checked' if exceptions }} onchange="this.form.submit()">
+          exceptions only
+        </label>
+      </div>
+    </form>
+    <form method="post" action="/admin/recompute" class="inline">
+      <input type="hidden" name="ym" value="{{ ym }}">
+      <button class="secondary small">Recompute month</button>
+    </form>
+    <a class="btn small" href="/export/dashboard.xlsx?ym={{ ym }}">Export XLSX</a>
+  </div>
+  <p class="small muted" style="margin-bottom:0">
+    Cells derive automatically from submitted days, leave and schedules — nothing here is typed.
+    <span class="badge b-complete">Y</span> complete ·
+    <span class="badge b-partial">PARTIAL</span> ·
+    <span class="badge b-missing">N</span> missing ·
+    <span class="badge b-leave">LEAVE</span> ·
+    ⚑ override · ↺ compensated · <span class="badge b-pending">·</span> pending/no data ·
+    violation at ≥ {{ threshold }} strikes.
+  </p>
+</div>
+
+<div class="gridwrap">
+  <table class="grid">
+    <thead>
+      <tr>
+        <th style="text-align:left">Name</th>
+        {% for d in days %}
+        <th title="{{ d.strftime('%A %d %b') }}" {% if d.weekday() >= 5 %}class="wkend"{% endif %}>
+          {{ d.day }}<br><span class="muted">{{ d.strftime('%a')[0] }}</span>
+        </th>
+        {% endfor %}
+        <th>Strikes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for dept_name, recs in groups.items() %}
+      <tr class="depthead"><td colspan="{{ days|length + 2 }}">{{ dept_name }}</td></tr>
+      {% for rec in recs %}
+      <tr>
+        <td class="name">
+          <a href="/admin/person/{{ rec.emp.id }}?ym={{ ym }}">{{ rec.emp.name }}</a>
+          {% if rec.emp.designation %}<div class="small muted" style="font-weight:400">{{ rec.emp.designation }}</div>{% endif %}
+        </td>
+        {% for r in rec.cells %}
+        {% set d = days[loop.index0] %}
+        <td {% if d.weekday() >= 5 and not r %}class="wkend"{% endif %}>
+          {% if r %}
+            {% set eff = r.effective_status(comp_erases) %}
+            <span class="cell c-{{ eff }}" {% if r.strike_exempt %}style="opacity:.45"{% endif %}
+              title="{{ d.isoformat() }} · {{ STATUS_NAMES.get(eff) }}{% if r.strike_exempt %} · pre-policy, not counted as strike{% endif %}{% if r.actual_minutes is not none %} · {{ r.actual_minutes|hm }}/{{ r.target_minutes|hm }}{% endif %}{% if r.imported_token %} · legacy: {{ r.imported_token }}{% endif %}{% if r.override_status %} · OVERRIDE by {{ r.override_by }}: {{ r.override_reason }}{% endif %}">
+              {%- if eff in ('weekend', 'holiday') and (r.actual_minutes or 0) > 0 -%}
+                {{ r.actual_minutes|hm }}
+              {%- else -%}
+                {{ STATUS_LABELS.get(eff, '·') or '·' }}
+              {%- endif -%}
+              {%- if r.override_status %}<span class="mark">⚑</span>{% endif -%}
+              {%- if r.compensated %}<span class="mark">↺</span>{% endif -%}
+            </span>
+          {% elif d <= today and d.weekday() < 5 %}
+            <span class="cell c-pending" title="{{ d.isoformat() }} · no data">·</span>
+          {% endif %}
+        </td>
+        {% endfor %}
+        <td class="strikecol">
+          {% if rec.violation %}<span class="viol" title="At/over threshold {{ threshold }} — human decision follows (the app only flags)">{{ rec.strikes }}</span>
+          {% else %}{{ rec.strikes }}{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

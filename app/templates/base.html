@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}MK Timekeeping{% endblock %}</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">MK&nbsp;<span>Timekeeping &amp; Compliance</span><em class="poc">POC</em></div>
+  {% if user %}
+  <nav>
+    {% if not user.is_admin or user.tracked %}
+      <a href="/today" class="{{ 'on' if active_nav == 'today' }}">Today</a>
+      <a href="/my-month" class="{{ 'on' if active_nav == 'month' }}">My Month</a>
+    {% endif %}
+    {% if user.is_admin %}
+      <a href="/admin" class="{{ 'on' if active_nav == 'dash' }}">Dashboard</a>
+      <a href="/admin/roster" class="{{ 'on' if active_nav == 'roster' }}">Roster</a>
+      <a href="/admin/lists" class="{{ 'on' if active_nav == 'lists' }}">Lists</a>
+      <a href="/admin/leave" class="{{ 'on' if active_nav == 'leave' }}">Leave</a>
+      <a href="/admin/config" class="{{ 'on' if active_nav == 'config' }}">Config</a>
+      <a href="/admin/audit" class="{{ 'on' if active_nav == 'audit' }}">Audit</a>
+    {% endif %}
+  </nav>
+  <div class="userchip">
+    <span>{{ user.name }}{% if user.is_admin %} · admin{% endif %}</span>
+    <form method="post" action="/logout"><button class="linklike">Sign out</button></form>
+  </div>
+  {% endif %}
+</header>
+
+{% if flashes %}
+<div class="flashes">
+  {% for f in flashes %}<div class="flash {{ f.kind }}">{{ f.msg }}</div>{% endfor %}
+</div>
+{% endif %}
+
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

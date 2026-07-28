@@ -1,0 +1,14 @@
+# environment / caches
+.venv/
+__pycache__/
+.pytest_cache/
+.DS_Store
+
+# real HR data — never in the repo (shared via the handoff bundle instead):
+# the seeded database, the legacy source spreadsheets, and extraction caches
+tms.db
+*.ods
+legacy/cache/
+
+# the handoff bundle itself
+MK-Timekeeping-POC-handoff.zip

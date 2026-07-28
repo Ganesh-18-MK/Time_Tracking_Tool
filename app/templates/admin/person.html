@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% set active_nav = 'dash' %}
+{% block title %}{{ emp.name }} · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>{{ emp.name }}
+  <span class="muted" style="font-size:14px;font-weight:400">
+    {{ emp.department or '—' }}{% if emp.designation %} · {{ emp.designation }}{% endif %}
+    · target {{ emp.daily_target_minutes|hm }}/day
+    {% if not emp.active %} · <strong style="color:var(--bad)">deactivated</strong>{% endif %}
+  </span>
+  <a class="btn secondary small" href="/admin/roster/{{ emp.id }}/edit">Edit</a>
+  <a class="btn small" href="/export/person/{{ emp.id }}.xlsx?ym={{ ym }}">Export XLSX</a>
+</h1>
+
+<p>
+  <a class="btn secondary small" href="/admin/person/{{ emp.id }}?ym={{ prev_ym }}">← prev</a>
+  <a class="btn secondary small" href="/admin/person/{{ emp.id }}?ym={{ next_ym }}">next →</a>
+  <strong style="margin-left:8px">{{ month_label(year, month) }}</strong>
+</p>
+
+<div class="kpis">
+  <div class="kpi {{ 'badk' if strikes >= threshold else '' }}">
+    <div class="n">{{ strikes }}</div>
+    <div class="l">strikes {{ month_label(year, month) }}{% if strikes >= threshold %} — IN VIOLATION (flag only){% endif %}</div>
+  </div>
+  <div class="kpi {{ 'okk' if balance >= 0 else 'badk' }}">
+    <div class="n">{{ balance|hm_signed }}</div>
+    <div class="l">net hours balance this month</div>
+  </div>
+</div>
+
+<div class="cols">
+  <div class="card">
+    <h2>Day statuses</h2>
+    <table>
+      <thead><tr><th>Date</th><th>Status</th><th>Act/Target</th><th>Var</th><th>Notes</th><th></th></tr></thead>
+      <tbody>
+        {% for r in statuses %}
+        {% set eff = r.effective_status(comp_erases) %}
+        <tr>
+          <td class="nowrap">{{ r.date.strftime('%a %d') }}</td>
+          <td><span class="badge b-{{ eff }}">{{ STATUS_NAMES.get(eff) }}</span>
+            {% if r.override_status %}<span class="mark" title="{{ r.override_reason }} — {{ r.override_by }}">⚑</span>{% endif %}
+            {% if r.compensated %}<span class="mark">↺</span>{% endif %}
+          </td>
+          <td class="nowrap">{{ r.actual_minutes|hm }} / {{ r.target_minutes|hm }}</td>
+          <td class="nowrap">{{ r.variance_minutes|hm_signed if r.variance_minutes is not none else '—' }}</td>
+          <td class="small muted">
+            {% if r.source == 'imported' %}legacy{% if r.imported_token %}: “{{ r.imported_token }}”{% endif %}{% endif %}
+            {% if r.override_status %}<div>⚑ was {{ STATUS_NAMES.get(r.status) }} — {{ r.override_reason }} ({{ r.override_by }})</div>{% endif %}
+          </td>
+          <td>
+            <details>
+              <summary class="small">override</summary>
+              <form method="post" action="/admin/person/{{ emp.id }}/override" class="formrow" style="margin-top:6px">
+                <input type="hidden" name="date" value="{{ r.date.isoformat() }}">
+                <input type="hidden" name="ym" value="{{ ym }}">
+                <div>
+                  <label>Status</label>
+                  <select name="status">
+                    <option value="">(clear override)</option>
+                    {% for s in STATUSES %}<option value="{{ s }}" {{ 'selected' if r.override_status == s }}>{{ STATUS_NAMES.get(s) }}</option>{% endfor %}
+                  </select>
+                </div>
+                <div style="flex:1"><label>Reason (required)</label>
+                  <input name="reason" placeholder="Why — this changes the strike count" style="width:100%"></div>
+                <div><button class="small">Apply</button></div>
+              </form>
+            </details>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div style="flex:1 1 420px">
+    <div class="card">
+      <h2>Compensation links</h2>
+      {% if links %}
+      <table>
+        <thead><tr><th>Shortfall</th><th>Made up on</th><th>Covered</th><th>Note</th><th></th></tr></thead>
+        <tbody>
+        {% for lk, sdates in links %}
+        <tr>
+          <td class="nowrap">{{ lk.shortfall_date.isoformat() }}</td>
+          <td>{% for s in sdates %}{{ s.isoformat() }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+          <td>{% if lk.fully_compensated %}<span class="badge b-complete">fully</span>{% else %}<span class="badge b-partial">partial</span>{% endif %}</td>
+          <td class="small">{{ lk.note }} <span class="muted">— {{ lk.linked_by }}</span></td>
+          <td><form method="post" action="/admin/complink/{{ lk.id }}/delete" class="inline">
+            <input type="hidden" name="ym" value="{{ ym }}">
+            <button class="small secondary" onclick="return confirm('Remove link?')">✕</button></form></td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}<p class="muted small">None yet.</p>{% endif %}
+
+      <h3>Link a shortfall to make-up day(s)</h3>
+      <form method="post" action="/admin/person/{{ emp.id }}/complink" class="formrow">
+        <input type="hidden" name="ym" value="{{ ym }}">
+        <div>
+          <label>Shortfall day</label>
+          <select name="shortfall_date" required>
+            <option value="">— choose —</option>
+            {% for r in shortfalls %}
+            <option value="{{ r.date.isoformat() }}">{{ r.date.isoformat() }} ({{ r.variance_minutes|hm_signed }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div style="flex:1">
+          <label>Surplus day(s), comma-separated ISO dates</label>
+          <input name="surplus_dates" placeholder="e.g. {{ surpluses[0].date.isoformat() if surpluses else '2026-07-19' }}" style="width:100%">
+        </div>
+        <div><label>Note</label><input name="note"></div>
+        <div><button class="small">Link</button></div>
+      </form>
+      {% if surpluses %}
+      <p class="small muted">Surplus days this month:
+        {% for s in surpluses %}{{ s.date.isoformat() }} ({{ s.variance_minutes|hm_signed }}){% if not loop.last %} · {% endif %}{% endfor %}
+      </p>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2>Leave history</h2>
+      <table>
+        <thead><tr><th>When</th><th>Type</th><th>Hours</th><th>Note</th></tr></thead>
+        <tbody>
+          {% for lv in leaves[:20] %}
+          <tr>
+            <td class="nowrap">{{ lv.start_date.isoformat() }}{% if lv.end_date != lv.start_date %} → {{ lv.end_date.isoformat() }}{% endif %}</td>
+            <td>{{ lv.type }}</td>
+            <td>{{ 'full day' if lv.minutes_per_day is none else lv.minutes_per_day|hm }}</td>
+            <td class="small">{{ lv.note }}{% if lv.imported %} <span class="muted">(legacy)</span>{% endif %}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="muted">No leave records.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="small"><a href="/admin/leave">Add leave →</a></p>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Task log ({{ month_label(year, month) }})</h2>
+  {% for day, items in by_day %}
+  <h3>{{ day.strftime('%A %d %B') }}
+    {% set sub = subs.get(day) %}
+    {% if sub %}
+      <span class="badge {{ 'b-complete' if sub.locked else 'b-partial' }}">
+        {{ 'submitted · locked' if sub.locked else 'unlocked for edits' }}</span>
+      <span class="muted small">total {{ sub.total_minutes|hm }}{% if sub.unlock_count %} · unlocked {{ sub.unlock_count }}×{% endif %}</span>
+      {% if sub.locked %}
+      <details class="inline" style="display:inline-block">
+        <summary class="small">unlock</summary>
+        <form method="post" action="/admin/person/{{ emp.id }}/unlock" class="formrow">
+          <input type="hidden" name="date" value="{{ day.isoformat() }}">
+          <input type="hidden" name="ym" value="{{ ym }}">
+          <div style="flex:1"><label>Reason (logged)</label><input name="reason" required></div>
+          <div><button class="small">Unlock</button></div>
+        </form>
+      </details>
+      {% endif %}
+    {% else %}<span class="badge b-pending">not submitted</span>{% endif %}
+  </h3>
+  <table>
+    <tbody>
+      {% for e in items %}
+      <tr>
+        <td class="nowrap">{{ e.start_minute|clock }}–{{ e.end_minute|clock }}</td>
+        <td class="nowrap"><strong>{{ e.duration_minutes|hm }}</strong></td>
+        <td>{{ e.project.name }}</td>
+        <td>{{ e.task_type.name }}</td>
+        <td class="small">{{ e.details }}{% if e.imported %} <span class="muted">(legacy)</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No task entries this month{% if statuses %} (statuses above may be legacy-imported){% endif %}.</p>
+  {% endfor %}
+</div>
+{% endblock %}

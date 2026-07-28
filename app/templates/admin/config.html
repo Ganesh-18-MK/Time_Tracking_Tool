@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% set active_nav = 'config' %}
+{% block title %}Config · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Configuration</h1>
+<p class="muted small">Every PRD open question is a dial here. Changes apply to new computations —
+use “Recompute month” on the dashboard to apply retroactively.</p>
+
+<div class="cols">
+  <div class="card" style="max-width:560px">
+    <form method="post" action="/admin/config">
+      <label class="f">Tolerance below target before a day is Partial (hours) — open question 2</label>
+      <input name="tolerance_hours" value="{{ '%.2f'|format(cfg.tolerance_minutes|int / 60) }}">
+      <label class="f">Monthly strike threshold → “In Violation” flag — open question 1</label>
+      <input name="strike_threshold" value="{{ cfg.strike_threshold }}">
+      <label class="f">Max single row duration (hours)</label>
+      <input name="max_row_hours" value="{{ '%.2f'|format(cfg.max_row_minutes|int / 60) }}">
+      <label class="f">Back-dating window (working days) — open question 7</label>
+      <input name="backdate_working_days" value="{{ cfg.backdate_working_days }}">
+      <label class="f">Gap flag threshold (minutes)</label>
+      <input name="gap_flag_minutes" value="{{ cfg.gap_flag_minutes }}">
+      <label class="f">Minimum Details length (characters)</label>
+      <input name="min_details_chars" value="{{ cfg.min_details_chars }}">
+      <label class="f" title="Open question 3">
+        <input type="checkbox" name="comp_erases_strike" value="1" {{ 'checked' if cfg.comp_erases_strike == '1' }}>
+        A fully compensated shortfall erases the strike (original status kept in audit)
+      </label>
+      <label class="f">Live-computation start date (imported history before this date is frozen)</label>
+      <input name="live_start_date" value="{{ cfg.live_start_date }}" placeholder="YYYY-MM-DD">
+      <div style="margin-top:12px"><button>Save config</button></div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Company holidays (open question 9 — admin-maintained, single region)</h2>
+    <form method="post" action="/admin/holidays/add" class="formrow">
+      <div><label>Date</label><input type="date" name="date" required></div>
+      <div style="flex:1"><label>Name</label><input name="name" style="width:100%"></div>
+      <div><button class="small">Add</button></div>
+    </form>
+    <table>
+      {% for h in holidays %}
+      <tr>
+        <td>{{ h.date.isoformat() }}</td><td>{{ h.name }}</td>
+        <td class="right"><form method="post" action="/admin/holidays/{{ h.id }}/delete" class="inline">
+          <button class="small secondary">✕</button></form></td>
+      </tr>
+      {% else %}
+      <tr><td class="muted">None defined.</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+</div>
+{% endblock %}

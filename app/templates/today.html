@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% set active_nav = 'today' %}
+{% block title %}Today · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Task log — {{ day.strftime('%A, %d %B %Y') }}{% if day == today %} (today){% endif %}</h1>
+
+<div class="card">
+  <form method="get" action="/today" class="formrow">
+    <div>
+      <label>Working date</label>
+      <select name="date" onchange="this.form.submit()">
+        {% for d in allowed_dates|reverse %}
+        <option value="{{ d.isoformat() }}" {{ 'selected' if d == day }}>
+          {{ d.strftime('%a %d %b') }}{% if d == today %} — today{% endif %}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="muted small">You can log today plus a limited back-dating window (admin-configurable).</div>
+  </form>
+</div>
+
+{% if sub and sub.locked %}
+<div class="lockbanner">✔ Day submitted {{ sub.submitted_at.strftime('%d %b %H:%M') }} UTC —
+  total {{ sub.total_minutes|hm }}. Locked: ask an admin to unlock for changes.</div>
+{% elif sub and not sub.locked %}
+<div class="lockbanner" style="background:var(--warn-bg);color:var(--warn)">⚠ Day was unlocked by an admin —
+  make your corrections and <strong>resubmit</strong> below.</div>
+{% endif %}
+
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>Start</th><th>End</th><th>Duration</th><th>Project/Employer</th><th>Task</th><th>Details</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for e in entries %}
+      <tr>
+        <td class="nowrap">{{ e.start_minute|clock }}
+          {% if flags.get(e.id) %}<div class="gapflag">⚠ {{ flags[e.id]|hm }} gap before</div>{% endif %}
+        </td>
+        <td class="nowrap">{{ e.end_minute|clock }}</td>
+        <td class="nowrap"><strong>{{ e.duration_minutes|hm }}</strong></td>
+        <td>{{ e.project.name }}</td>
+        <td>{{ e.task_type.name }}</td>
+        <td>{{ e.details }}</td>
+        <td>
+          {% if not (sub and sub.locked) %}
+          <form method="post" action="/entries/{{ e.id }}/delete" class="inline"
+                onsubmit="return confirm('Delete this row?')">
+            <button class="small secondary">✕</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="muted">No rows yet — add your first task below.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="totalbar">
+    <span class="big">{{ total|hm }}</span>
+    <span class="muted">of {{ target|hm }} target{% if leave_min %} (reduced by {{ leave_min|hm }} approved leave){% endif %} — computed, never typed</span>
+    {% if not (sub and sub.locked) and entries %}
+    <form method="post" action="/submit-day" class="inline"
+          onsubmit="return confirm('Submit and lock this day? Edits after submission need an admin unlock.')">
+      <input type="hidden" name="date" value="{{ day.isoformat() }}">
+      <button>{{ 'Resubmit Day' if sub else 'Submit Day' }}</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{% if not (sub and sub.locked) %}
+<div class="card">
+  <h2>Add row</h2>
+  <form method="post" action="/entries" class="formrow" id="addrow">
+    <input type="hidden" name="date" value="{{ day.isoformat() }}">
+    <div>
+      <label>Project/Employer</label>
+      <select name="project_id" required>
+        <option value="">— choose —</option>
+        {% for p in projects %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Task</label>
+      <select name="task_type_id" required>
+        <option value="">— choose —</option>
+        {% for t in tasks %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div style="flex:1 1 220px">
+      <label>Details (min 5 chars)</label>
+      <input name="details" required minlength="5" style="width:100%" placeholder="What exactly was done">
+    </div>
+    <div>
+      <label>Start</label>
+      <input type="time" name="start_time" required value="{{ suggest_start or '' }}">
+    </div>
+    <div>
+      <label>End</label>
+      <input type="time" name="end_time" required>
+    </div>
+    <div>
+      <label>Duration</label>
+      <input id="durpreview" disabled value="—" style="width:78px;background:#f2f3f7">
+    </div>
+    <div><button>Add</button></div>
+  </form>
+  <div class="muted small">Rules: no overlaps · no rows past midnight (split across days) ·
+    max {{ (max_row_minutes // 60) }}h per row — break long work down · gaps over {{ gap_minutes }} min get flagged, not blocked.</div>
+</div>
+
+<script>
+(function () {
+  const f = document.getElementById('addrow');
+  const s = f.querySelector('[name=start_time]'), e = f.querySelector('[name=end_time]');
+  const out = document.getElementById('durpreview');
+  const maxRow = {{ max_row_minutes }};
+  function mins(v) { if (!v) return null; const p = v.split(':'); return (+p[0]) * 60 + (+p[1]); }
+  function upd() {
+    const a = mins(s.value), b = mins(e.value);
+    if (a === null || b === null) { out.value = '—'; return; }
+    const d = b - a;
+    if (d <= 0) { out.value = 'end ≤ start'; return; }
+    out.value = Math.floor(d / 60) + ':' + String(d % 60).padStart(2, '0') + (d > maxRow ? ' > max!' : '');
+  }
+  s.addEventListener('input', upd); e.addEventListener('input', upd);
+})();
+</script>
+{% endif %}
+{% endblock %}

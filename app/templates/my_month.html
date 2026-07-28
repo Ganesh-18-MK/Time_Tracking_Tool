@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% set active_nav = 'month' %}
+{% block title %}My Month · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>My Month — {{ month_label(year, month) }}</h1>
+<p>
+  <a class="btn secondary small" href="/my-month?ym={{ prev_ym }}">← prev</a>
+  <a class="btn secondary small" href="/my-month?ym={{ next_ym }}">next →</a>
+</p>
+
+<div class="kpis">
+  <div class="kpi {{ 'badk' if strikes >= threshold else '' }}">
+    <div class="n">{{ strikes }}</div>
+    <div class="l">strikes this month{% if strikes >= threshold %} — at/over threshold ({{ threshold }}){% endif %}</div>
+  </div>
+  <div class="kpi {{ 'okk' if balance >= 0 else 'badk' }}">
+    <div class="n">{{ balance|hm_signed }}</div>
+    <div class="l">running hours balance (extra/short)</div>
+  </div>
+  {% for t, days in leave_totals.items() %}
+  <div class="kpi"><div class="n">{{ '%.1f'|format(days) }}</div><div class="l">{{ t }} leave days</div></div>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <table class="cal">
+    <thead><tr>{% for w in ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}<th>{{ w }}</th>{% endfor %}</tr></thead>
+    <tbody>
+      {% for week in weeks %}
+      <tr>
+        {% for cell in week %}
+        {% if cell %}
+          {% set r = cell.row %}
+          <td class="{{ 'off' if r and r.status in ('weekend','holiday') }}">
+            <div class="d">{{ cell.date.day }}</div>
+            {% if r %}
+              {% set eff = r.effective_status(comp_erases) %}
+              <div class="stat"><span class="badge b-{{ eff }}">{{ STATUS_NAMES.get(eff, eff) }}</span>
+                {% if r.override_status %}<span class="mark" title="Admin override: {{ r.override_reason }}">⚑</span>{% endif %}
+                {% if r.compensated %}<span class="mark" title="Compensated shortfall">↺</span>{% endif %}
+              </div>
+              {% if r.actual_minutes or r.target_minutes %}
+              <div class="small muted">{{ r.actual_minutes|hm }} / {{ r.target_minutes|hm }}</div>
+              {% endif %}
+              {% if r.variance_minutes is not none and r.variance_minutes != 0 %}
+              <div class="small {{ 'muted' if r.variance_minutes > 0 else '' }}"
+                   style="{{ 'color:var(--bad)' if r.variance_minutes < 0 }}">{{ r.variance_minutes|hm_signed }}</div>
+              {% endif %}
+            {% elif cell.date <= today %}
+              <div class="stat"><span class="badge b-pending">{{ 'pending' if cell.date == today else '—' }}</span></div>
+            {% endif %}
+          </td>
+        {% else %}<td class="off"></td>{% endif %}
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="small muted">⚑ = admin override (reason on hover) · ↺ = compensated shortfall · hours show actual / target.</p>
+</div>
+
+<div class="card">
+  <h2>Hours ledger (variance &amp; running balance)</h2>
+  <table>
+    <thead><tr><th>Date</th><th>Status</th><th>Actual</th><th>Target</th><th>Variance</th><th>Balance</th></tr></thead>
+    <tbody>
+      {% for item in ledger|reverse %}
+      {% set r = item.row %}
+      <tr>
+        <td>{{ r.date.strftime('%a %d %b') }}</td>
+        <td><span class="badge b-{{ r.effective_status(comp_erases) }}">{{ STATUS_NAMES.get(r.effective_status(comp_erases)) }}</span></td>
+        <td>{{ r.actual_minutes|hm }}</td>
+        <td>{{ r.target_minutes|hm }}</td>
+        <td>{{ r.variance_minutes|hm_signed if r.variance_minutes is not none else '—' }}</td>
+        <td><strong>{{ item.balance|hm_signed }}</strong></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

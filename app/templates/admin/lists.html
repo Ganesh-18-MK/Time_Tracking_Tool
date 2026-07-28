@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% set active_nav = 'lists' %}
+{% block title %}Lists · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Dropdown lists</h1>
+<p class="muted small">Free text is not allowed on entries — these lists are the only values.
+Deactivating hides a value from new entries without breaking old rows.</p>
+<div class="cols">
+  <div class="card">
+    <h2>Project / Employer ({{ projects|selectattr('active')|list|length }} active)</h2>
+    <form method="post" action="/admin/lists/add" class="formrow">
+      <input type="hidden" name="kind" value="project">
+      <div style="flex:1"><input name="name" placeholder="Add client / employer" style="width:100%"></div>
+      <div><button class="small">Add</button></div>
+    </form>
+    <table>
+      {% for p in projects %}
+      <tr {% if not p.active %}style="opacity:.5"{% endif %}>
+        <td>{{ p.name }}</td>
+        <td class="right"><form method="post" action="/admin/lists/project/{{ p.id }}/toggle" class="inline">
+          <button class="small secondary">{{ 'Deactivate' if p.active else 'Reactivate' }}</button></form></td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  <div class="card">
+    <h2>Tasks ({{ tasks|selectattr('active')|list|length }} active)</h2>
+    <form method="post" action="/admin/lists/add" class="formrow">
+      <input type="hidden" name="kind" value="task">
+      <div style="flex:1"><input name="name" placeholder="Add task type" style="width:100%"></div>
+      <div><button class="small">Add</button></div>
+    </form>
+    <table>
+      {% for t in tasks %}
+      <tr {% if not t.active %}style="opacity:.5"{% endif %}>
+        <td>{{ t.name }}</td>
+        <td class="right"><form method="post" action="/admin/lists/task/{{ t.id }}/toggle" class="inline">
+          <button class="small secondary">{{ 'Deactivate' if t.active else 'Reactivate' }}</button></form></td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+</div>
+{% endblock %}

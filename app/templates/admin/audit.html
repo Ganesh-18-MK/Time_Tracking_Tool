@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% set active_nav = 'audit' %}
+{% block title %}Audit · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Audit log <span class="muted small">(last 300)</span></h1>
+<div class="card">
+  <table>
+    <thead><tr><th>When (UTC)</th><th>Actor</th><th>Action</th><th>Entity</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td class="nowrap">{{ r.at.strftime('%d %b %H:%M:%S') }}</td>
+        <td>{{ r.actor }}</td>
+        <td><span class="badge b-leave">{{ r.action }}</span></td>
+        <td class="small">{{ r.entity }} {{ r.entity_id }}</td>
+        <td class="small muted" style="max-width:520px;overflow-wrap:anywhere">{{ r.detail }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">Empty.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
