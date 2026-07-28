@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% set active_nav = 'profile' %}
+{% block title %}My profile · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>My profile</h1>
+
+<div class="card" style="max-width:420px">
+  <div style="display:flex;align-items:center;gap:16px;margin-bottom:14px">
+    {% if user.photo_path %}
+    <img src="/static/uploads/avatars/{{ user.photo_path }}" class="avatar-lg" alt="{{ user.name }}">
+    {% else %}
+    <div class="avatar-lg avatar-placeholder">{{ user.name[:1] }}</div>
+    {% endif %}
+    <div>
+      <div style="font-weight:600">{{ user.name }}</div>
+      <div class="muted small">{{ user.designation or user.department or '' }}</div>
+    </div>
+  </div>
+  <form method="post" action="/profile/photo" enctype="multipart/form-data" class="formrow" style="flex-direction:column">
+    <div style="width:100%">
+      <label>Upload a new photo (JPEG/PNG/WebP, max 2 MB)</label>
+      <input type="file" name="photo" accept="image/jpeg,image/png,image/webp" required>
+    </div>
+    <div><button>Upload</button></div>
+  </form>
+</div>
+{% endblock %}

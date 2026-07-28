@@ -1,8 +1,9 @@
 """Employee screens: Today (log + submit) and My Month (PRD §7)."""
 import datetime as dt
+import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,10 +12,21 @@ from app import engine, models as m
 from app.auth import current_user
 from app.db import get_db
 from app.templating import flash, render
-from app.util import audit, parse_hhmm
+from app.util import FormError, audit, clamp_break_end, parse_date_field, parse_hhmm
 from app.validation import EntryError, earliest_allowed_date, gap_flags, validate_entry
 
 router = APIRouter()
+
+# ---- profile photo storage --------------------------------------------------
+# Local disk under app/static/uploads/avatars/, served by the existing
+# /static mount (see app/main.py) — no new mount needed. NOTE: on Render's
+# default filesystem this is ephemeral (wiped on redeploy/restart); a
+# persistent disk or object storage (e.g. S3-compatible) is needed before
+# this can be trusted long-term in production. Fine for the POC/demo.
+_STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
+AVATAR_DIR = os.path.join(_STATIC_DIR, "uploads", "avatars")
+ALLOWED_PHOTO_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
+MAX_PHOTO_BYTES = 2 * 1024 * 1024  # 2 MB
 
 
 def _allowed_dates(db: Session, emp: m.Employee, cfg) -> list:
@@ -54,14 +66,55 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
         ).scalars()
     )
     leave_min = engine.leave_minutes_on(leaves, emp, date)
-    target = max(0, emp.daily_target_minutes - leave_min)
+    base_target = max(0, emp.daily_target_minutes - leave_min)
+
+    breaks_today = list(
+        db.execute(
+            select(m.BreakEntry)
+            .where(m.BreakEntry.employee_id == emp.id, m.BreakEntry.date == date)
+            .order_by(m.BreakEntry.start_minute)
+        ).scalars()
+    )
+    active_break = next((b for b in breaks_today if b.end_minute is None), None)
+    completed_breaks = [b for b in breaks_today if b.end_minute is not None]
+    total_break_minutes = sum(b.duration_minutes for b in completed_breaks)
+
+    # break time beyond the configured allowance extends today's target —
+    # shown live here, before submission; engine.compute_day applies the
+    # identical rule once the day is actually submitted/recomputed. Full-day
+    # leave (base_target == 0) is exempt, same as compute_day: no work
+    # expected, so break policy doesn't apply on a day off.
+    max_break = engine.cfg_int(cfg, "max_break_minutes")
+    on_full_day_leave = leave_min > 0 and base_target == 0
+    break_excess = 0 if on_full_day_leave else max(0, total_break_minutes - max_break)
+    target = base_target + break_excess
+
+    flags = gap_flags(entries, engine.cfg_int(cfg, "gap_flag_minutes"))
+    if flags:
+        ordered = sorted(entries, key=lambda e: e.start_minute)
+        for prev, cur in zip(ordered, ordered[1:]):
+            if cur.id not in flags:
+                continue
+            gap_start, gap_end = prev.end_minute, cur.start_minute
+            # a gap the employee logged as a break isn't an unexplained gap
+            if any(
+                b.start_minute <= gap_start and (b.end_minute or gap_end) >= gap_end
+                for b in completed_breaks
+            ):
+                del flags[cur.id]
+
     return {
         "entries": entries,
         "total": total,
         "sub": sub,
         "target": target,
         "leave_min": leave_min,
-        "flags": gap_flags(entries, engine.cfg_int(cfg, "gap_flag_minutes")),
+        "flags": flags,
+        "active_break": active_break,
+        "completed_breaks": completed_breaks,
+        "total_break_minutes": total_break_minutes,
+        "break_excess": break_excess,
+        "max_break_minutes": max_break,
     }
 
 
@@ -93,8 +146,10 @@ def today_page(
             "day": day,
             "today": dt.date.today(),
             "allowed_dates": _allowed_dates(db, user, cfg),
-            "projects": projects,
-            "tasks": tasks,
+            # plain dicts, not ORM objects — the template feeds these straight
+            # into the searchable-combo widget via |tojson
+            "projects": [{"id": p.id, "name": p.name} for p in projects],
+            "tasks": [{"id": t.id, "name": t.name} for t in tasks],
             "max_row_minutes": engine.cfg_int(cfg, "max_row_minutes"),
             "gap_minutes": engine.cfg_int(cfg, "gap_flag_minutes"),
         }
@@ -166,6 +221,68 @@ def delete_entry(
         db.delete(entry)
         db.commit()
     return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
+
+
+@router.post("/break/start")
+def start_break(
+    request: Request,
+    break_type: str = Form(m.BREAK_PERSONAL),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Deliberately always 'today', regardless of what date the Today page
+    happens to be viewing — a break is a live, right-now thing, not
+    something you log after the fact."""
+    today = dt.date.today()
+    break_type = break_type if break_type in m.BREAK_TYPES else m.BREAK_PERSONAL
+
+    todays_breaks = list(
+        db.execute(
+            select(m.BreakEntry).where(
+                m.BreakEntry.employee_id == user.id, m.BreakEntry.date == today
+            )
+        ).scalars()
+    )
+    if any(b.end_minute is None for b in todays_breaks):
+        flash(request, "You're already on a break — end it before starting another.", "err")
+        return RedirectResponse("/today", status_code=303)
+    if break_type == m.BREAK_LUNCH_DINNER and any(
+        b.break_type == m.BREAK_LUNCH_DINNER for b in todays_breaks
+    ):
+        flash(request, "Lunch/Dinner break is allowed once per day — you've already taken it today.", "err")
+        return RedirectResponse("/today", status_code=303)
+
+    now = dt.datetime.now()
+    db.add(m.BreakEntry(
+        employee_id=user.id, date=today, break_type=break_type,
+        start_minute=now.hour * 60 + now.minute,
+        started_at=dt.datetime.utcnow(),  # explicit, full-precision — the
+        # live timer needs real seconds, not just the truncated minute
+    ))
+    db.commit()
+    return RedirectResponse("/today", status_code=303)
+
+
+@router.post("/break/end")
+def end_break(
+    request: Request,
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    today = dt.date.today()
+    active = db.execute(
+        select(m.BreakEntry).where(
+            m.BreakEntry.employee_id == user.id, m.BreakEntry.date == today,
+            m.BreakEntry.end_minute.is_(None),
+        )
+    ).scalar_one_or_none()
+    if active is not None:
+        now = dt.datetime.now()
+        active.end_minute = clamp_break_end(active.start_minute, now.hour * 60 + now.minute)
+        active.ended_at = dt.datetime.utcnow()
+        db.commit()
+        flash(request, f"Break ended — {active.duration_minutes} min.", "ok")
+    return RedirectResponse("/today", status_code=303)
 
 
 @router.post("/submit-day")
@@ -244,13 +361,15 @@ def my_month(
     if any(week):
         weeks.append(week)
 
-    # leave by category (PRD §5: computed, not typed)
+    # leave by category (PRD §5: computed, not typed) — approved only; a
+    # pending or rejected request was never actually taken.
     leave_totals = {}
     for lv in db.execute(
         select(m.LeaveRecord).where(
             m.LeaveRecord.employee_id == user.id,
             m.LeaveRecord.start_date <= last,
             m.LeaveRecord.end_date >= first,
+            m.LeaveRecord.status == m.LEAVE_APPROVED,
         )
     ).scalars():
         d = max(lv.start_date, first)
@@ -282,3 +401,178 @@ def my_month(
             "today": dt.date.today(),
         },
     )
+
+
+# --------------------------------------------------------------------------
+# Leave: self-service request (PRD open question 5 — employees request,
+# admin approves; see app/routes/admin.py for the approval queue).
+# --------------------------------------------------------------------------
+@router.get("/leave")
+def my_leave(
+    request: Request,
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    records = list(
+        db.execute(
+            select(m.LeaveRecord)
+            .where(m.LeaveRecord.employee_id == user.id)
+            .order_by(m.LeaveRecord.start_date.desc())
+        ).scalars()
+    )
+    return render(
+        request, "leave.html",
+        {"user": user, "records": records, "leave_types": m.LEAVE_TYPES, "today": dt.date.today()},
+    )
+
+
+@router.post("/leave/request")
+def request_leave(
+    request: Request,
+    start_date: str = Form(...),
+    end_date: str = Form(""),
+    type: str = Form("Other"),
+    hours: str = Form(""),
+    note: str = Form(""),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        start = parse_date_field(start_date, "Start date")
+        end = parse_date_field(end_date, "End date") if end_date else start
+    except FormError as e:
+        flash(request, e.message, "err")
+        return RedirectResponse("/leave", status_code=303)
+    if end < start:
+        flash(request, "End date is before start date.", "err")
+        return RedirectResponse("/leave", status_code=303)
+    minutes = None  # full day = your daily target (PRD §5)
+    if hours.strip():
+        try:
+            minutes = int(round(float(hours) * 60))
+        except ValueError:
+            flash(request, "Hours must be a number (leave blank for a full day).", "err")
+            return RedirectResponse("/leave", status_code=303)
+    if type == "Other" and not note.strip():
+        flash(request, "'Other' leave needs a note.", "err")
+        return RedirectResponse("/leave", status_code=303)
+    lv = m.LeaveRecord(
+        employee_id=user.id, start_date=start, end_date=end, type=type,
+        minutes_per_day=minutes, note=note.strip(), entered_by=user.name,
+        status=m.LEAVE_REQUESTED,  # awaits admin approval — doesn't affect
+        # compliance math until then (see engine.leave_minutes_on)
+    )
+    db.add(lv)
+    db.commit()
+    audit(db, user.name, "leave_requested", "LeaveRecord", lv.id,
+          {"range": f"{start}..{end}", "type": type, "minutes": minutes})
+    flash(request, "Leave request submitted — an admin will review it.", "ok")
+    return RedirectResponse("/leave", status_code=303)
+
+
+@router.post("/leave/{leave_id}/cancel")
+def cancel_leave_request(
+    leave_id: int,
+    request: Request,
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Employees may withdraw their own still-pending request. Anything
+    already approved/rejected needs an admin (it's already been acted on)."""
+    lv = db.get(m.LeaveRecord, leave_id)
+    if lv is None or lv.employee_id != user.id or lv.status != m.LEAVE_REQUESTED:
+        flash(request, "That request can no longer be withdrawn.", "err")
+        return RedirectResponse("/leave", status_code=303)
+    db.delete(lv)
+    db.commit()
+    audit(db, user.name, "leave_request_withdrawn", "LeaveRecord", leave_id, {})
+    flash(request, "Request withdrawn.", "ok")
+    return RedirectResponse("/leave", status_code=303)
+
+
+# --------------------------------------------------------------------------
+# Support: employee submits a question, admin sees it in /admin/support
+# (same submit -> admin-queue -> admin-acts shape as leave requests above).
+# --------------------------------------------------------------------------
+MIN_SUPPORT_MESSAGE_CHARS = 5
+
+
+@router.get("/support")
+def support_page(
+    request: Request,
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    records = list(
+        db.execute(
+            select(m.SupportQuery)
+            .where(m.SupportQuery.employee_id == user.id)
+            .order_by(m.SupportQuery.created_at.desc())
+        ).scalars()
+    )
+    return render(request, "support.html", {"user": user, "records": records})
+
+
+@router.post("/support/submit")
+def support_submit(
+    request: Request,
+    message: str = Form(...),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    message = message.strip()
+    if len(message) < MIN_SUPPORT_MESSAGE_CHARS:
+        flash(request, f"Please describe your question (at least {MIN_SUPPORT_MESSAGE_CHARS} characters).", "err")
+        return RedirectResponse("/support", status_code=303)
+    q = m.SupportQuery(employee_id=user.id, message=message)
+    db.add(q)
+    db.commit()
+    audit(db, user.name, "support_query_submitted", "SupportQuery", q.id, {"message": message[:200]})
+    flash(request, "Sent to an admin — you'll see their reply here.", "ok")
+    return RedirectResponse("/support", status_code=303)
+
+
+# --------------------------------------------------------------------------
+# Profile photo
+# --------------------------------------------------------------------------
+@router.get("/profile")
+def profile_page(
+    request: Request,
+    user: m.Employee = Depends(current_user),
+):
+    return render(request, "profile.html", {"user": user})
+
+
+@router.post("/profile/photo")
+def upload_photo(
+    request: Request,
+    photo: UploadFile = File(...),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    ext = ALLOWED_PHOTO_TYPES.get(photo.content_type)
+    if ext is None:
+        flash(request, "Please upload a JPEG, PNG, or WebP image.", "err")
+        return RedirectResponse("/profile", status_code=303)
+    data = photo.file.read(MAX_PHOTO_BYTES + 1)
+    if len(data) > MAX_PHOTO_BYTES:
+        flash(request, "Photo must be under 2 MB.", "err")
+        return RedirectResponse("/profile", status_code=303)
+    if not data:
+        flash(request, "That file looked empty — try again.", "err")
+        return RedirectResponse("/profile", status_code=303)
+
+    os.makedirs(AVATAR_DIR, exist_ok=True)
+    # one file per employee — replace whatever extension was there before
+    # so old uploads don't pile up on disk
+    if user.photo_path:
+        old_path = os.path.join(AVATAR_DIR, user.photo_path)
+        if os.path.exists(old_path):
+            os.remove(old_path)
+    filename = f"{user.id}{ext}"
+    with open(os.path.join(AVATAR_DIR, filename), "wb") as f:
+        f.write(data)
+    user.photo_path = filename
+    db.commit()
+    flash(request, "Profile photo updated.", "ok")
+    return RedirectResponse("/profile", status_code=303)

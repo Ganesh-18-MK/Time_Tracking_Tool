@@ -1,18 +1,24 @@
 """Authentication.
 
-POC runs AUTH_MODE=dev: a pick-a-user login screen with no passwords, so the
-app is demoable immediately. The production path per PRD §9 is Entra ID —
-swap `dev` for an MSAL OAuth flow that maps the tenant user's email to the
-Employee row; the session/role gating below stays identical. See README.
+Three modes via AUTH_MODE:
+  * dev (default)  — pick-a-user login screen, no passwords. Local dev only.
+  * password        — employee self-signup + email/password login (see
+                       app/security.py, app/routes/auth.py /signup, /login).
+  * entra           — not implemented yet; the long-term target per PRD §9
+                       (MSAL OAuth mapping the tenant user's email to this
+                       Employee row). Swap it in here; session/role gating
+                       below stays identical regardless of mode.
 """
 import os
+from typing import Optional
 
 from fastapi import Depends, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import models as m
 from app.db import get_db
+from app.security import verify_password
 
 AUTH_MODE = os.environ.get("AUTH_MODE", "dev")
 
@@ -49,3 +55,27 @@ def login_choices(db: Session):
         ).scalars()
     )
     return [e for e in emps if e.is_admin], [e for e in emps if not e.is_admin]
+
+
+def find_by_email(db: Session, email: str) -> Optional[m.Employee]:
+    """Case-insensitive lookup — used by both /signup (claim a roster row)
+    and /login (password mode)."""
+    email = (email or "").strip()
+    if not email:
+        return None
+    return db.execute(
+        select(m.Employee).where(func.lower(m.Employee.email) == email.lower())
+    ).scalar_one_or_none()
+
+
+def authenticate(db: Session, email: str, password: str) -> Optional[m.Employee]:
+    """AUTH_MODE=password login check. Returns None on any failure — wrong
+    email, inactive account, no password set yet, or wrong password — and
+    deliberately doesn't distinguish which, so failed logins can't be used
+    to enumerate valid employee emails."""
+    emp = find_by_email(db, email)
+    if emp is None or not emp.active or not emp.password_hash:
+        return None
+    if not verify_password(password, emp.password_hash):
+        return None
+    return emp

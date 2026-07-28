@@ -28,6 +28,61 @@
   make your corrections and <strong>resubmit</strong> below.</div>
 {% endif %}
 
+{% if day == today %}
+<div class="card">
+  {% if active_break %}
+  <div class="totalbar">
+    <span class="big" id="breaktimer">00:00</span>
+    <span class="muted">{{ active_break.break_type }} break — started {{ active_break.start_minute|clock }}</span>
+    <form method="post" action="/break/end" class="inline">
+      <button>End Break</button>
+    </form>
+  </div>
+  <script>
+  (function () {
+    // started_at is a full-precision UTC timestamp (unlike start_minute,
+    // which only stores whole minutes and would lose up to 59 seconds).
+    // Appending 'Z' tells the browser to parse it as UTC; Date arithmetic
+    // is epoch-based from there, so this is correct regardless of the
+    // server/browser timezone and immune to the midnight-wraparound edge
+    // case the old hour/minute reconstruction needed to special-case.
+    const startEpoch = new Date("{{ active_break.started_at.isoformat() }}Z").getTime();
+    const el = document.getElementById('breaktimer');
+    function tick() {
+      const elapsedSec = Math.max(0, Math.floor((Date.now() - startEpoch) / 1000));
+      const h = Math.floor(elapsedSec / 3600), mi = Math.floor((elapsedSec % 3600) / 60), s = elapsedSec % 60;
+      el.textContent = (h ? h + ':' : '') + String(mi).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    }
+    tick();
+    setInterval(tick, 1000);
+  })();
+  </script>
+  {% else %}
+  <div class="totalbar">
+    <span class="muted">
+      {% if completed_breaks %}
+        Breaks today: {{ total_break_minutes|hm }} of {{ max_break_minutes }} min allowed
+        ({% for b in completed_breaks %}{{ b.break_type }} {{ b.start_minute|clock }}–{{ b.end_minute|clock }}{% if not loop.last %}, {% endif %}{% endfor %})
+      {% else %}No breaks logged yet today — {{ max_break_minutes }} min allowed{% endif %}
+    </span>
+    <form method="post" action="/break/start" class="inline">
+      <select name="break_type">
+        <option value="Personal">Personal</option>
+        <option value="Lunch/Dinner">Lunch/Dinner</option>
+      </select>
+      <button class="secondary">Start Break</button>
+    </form>
+  </div>
+  {% if break_excess %}
+  <div class="gapflag" style="margin-top:6px">
+    ⚠ {{ break_excess|hm }} over your break allowance — today's target is extended by that much
+    (work {{ break_excess|hm }} extra to stay on track).
+  </div>
+  {% endif %}
+  {% endif %}
+</div>
+{% endif %}
+
 <div class="card">
   <table>
     <thead>
@@ -61,7 +116,7 @@
 
   <div class="totalbar">
     <span class="big">{{ total|hm }}</span>
-    <span class="muted">of {{ target|hm }} target{% if leave_min %} (reduced by {{ leave_min|hm }} approved leave){% endif %} — computed, never typed</span>
+    <span class="muted">of {{ target|hm }} target{% if leave_min %} (reduced by {{ leave_min|hm }} approved leave){% endif %}{% if break_excess %} (extended by {{ break_excess|hm }} — over break allowance){% endif %} — computed, never typed</span>
     {% if not (sub and sub.locked) and entries %}
     <form method="post" action="/submit-day" class="inline"
           onsubmit="return confirm('Submit and lock this day? Edits after submission need an admin unlock.')">
@@ -77,19 +132,17 @@
   <h2>Add row</h2>
   <form method="post" action="/entries" class="formrow" id="addrow">
     <input type="hidden" name="date" value="{{ day.isoformat() }}">
-    <div>
+    <div class="combo" id="combo-project" data-placeholder="a project">
       <label>Project/Employer</label>
-      <select name="project_id" required>
-        <option value="">— choose —</option>
-        {% for p in projects %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
-      </select>
+      <input type="text" class="combo-input" autocomplete="off" placeholder="Type to search…" required>
+      <input type="hidden" name="project_id">
+      <div class="combo-menu" hidden></div>
     </div>
-    <div>
+    <div class="combo" id="combo-task" data-placeholder="a task">
       <label>Task</label>
-      <select name="task_type_id" required>
-        <option value="">— choose —</option>
-        {% for t in tasks %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
-      </select>
+      <input type="text" class="combo-input" autocomplete="off" placeholder="Type to search…" required>
+      <input type="hidden" name="task_type_id">
+      <div class="combo-menu" hidden></div>
     </div>
     <div style="flex:1 1 220px">
       <label>Details (min 5 chars)</label>
@@ -105,7 +158,7 @@
     </div>
     <div>
       <label>Duration</label>
-      <input id="durpreview" disabled value="—" style="width:78px;background:#f2f3f7">
+      <input id="durpreview" disabled value="—" style="width:78px;background:var(--pending-bg)">
     </div>
     <div><button>Add</button></div>
   </form>
@@ -113,7 +166,11 @@
     max {{ (max_row_minutes // 60) }}h per row — break long work down · gaps over {{ gap_minutes }} min get flagged, not blocked.</div>
 </div>
 
+<script src="/static/combo.js"></script>
 <script>
+initCombo(document.getElementById('combo-project'), {{ projects|tojson }});
+initCombo(document.getElementById('combo-task'), {{ tasks|tojson }});
+
 (function () {
   const f = document.getElementById('addrow');
   const s = f.querySelector('[name=start_time]'), e = f.querySelector('[name=end_time]');

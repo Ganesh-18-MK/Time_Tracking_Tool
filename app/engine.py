@@ -66,10 +66,16 @@ def is_working_day(emp: m.Employee, d: dt.date, holidays: set) -> bool:
 
 
 def leave_minutes_on(leaves: List[m.LeaveRecord], emp: m.Employee, d: dt.date) -> int:
-    """Total approved leave minutes covering day d (None hours => full target)."""
+    """Total approved leave minutes covering day d (None hours => full target).
+
+    Only status == 'approved' counts — a merely-requested (pending) or
+    rejected self-service leave request must not reduce the target or read
+    as Leave. Every admin-entered and imported row defaults to 'approved'
+    (see LeaveRecord.status), so this filter changes nothing for existing
+    data; it only matters for the new self-service request flow."""
     total = 0
     for lv in leaves:
-        if lv.covers(d):
+        if lv.covers(d) and lv.status == m.LEAVE_APPROVED:
             total += lv.minutes_per_day if lv.minutes_per_day is not None else emp.daily_target_minutes
     return min(total, emp.daily_target_minutes)
 
@@ -84,9 +90,16 @@ def compute_day(
     is_holiday: bool,
     tolerance_min: int,
     today: dt.date,
+    break_excess_min: int = 0,  # break time beyond the configured allowance
 ) -> Optional[dict]:
     """Pure status computation for one (employee, day). Returns dict or None
-    when there is nothing to record (e.g. blank future/pending days)."""
+    when there is nothing to record (e.g. blank future/pending days).
+
+    break_excess_min extends the target: minutes taken on break beyond the
+    admin-configured daily allowance (max_break_minutes) must be made up in
+    logged work, same idea as leave reducing the target in the other
+    direction. Zero for every historical/imported day (BreakEntry didn't
+    exist before this feature), so this never touches frozen history."""
     actual = submitted_total or 0
     if not working:
         status = HOLIDAY if is_holiday else WEEKEND
@@ -96,10 +109,13 @@ def compute_day(
             return {"status": status, "actual": 0, "target": 0, "variance": 0}
         return {"status": status, "actual": actual, "target": 0, "variance": actual}
 
-    target = max(0, emp.daily_target_minutes - leave_min)
-    if leave_min > 0 and target == 0:
-        # full-day leave: target 0, no variance (PRD §5)
+    base_target = max(0, emp.daily_target_minutes - leave_min)
+    if leave_min > 0 and base_target == 0:
+        # full-day leave: target 0, no variance (PRD §5) — no work expected,
+        # so break policy doesn't apply on a day off
         return {"status": LEAVE, "actual": actual, "target": 0, "variance": actual}
+
+    target = base_target + max(0, break_excess_min)
 
     if submitted_total is None:
         if d >= today:
@@ -152,6 +168,16 @@ def recompute_employee(
             )
         ).scalars()
     )
+    max_break = cfg_int(cfg, "max_break_minutes")
+    break_totals: Dict[dt.date, int] = {}
+    for b in db.execute(
+        select(m.BreakEntry).where(
+            m.BreakEntry.employee_id == emp.id,
+            m.BreakEntry.date.between(start, end),
+            m.BreakEntry.end_minute.isnot(None),
+        )
+    ).scalars():
+        break_totals[b.date] = break_totals.get(b.date, 0) + b.duration_minutes
     existing = {
         r.date: r
         for r in db.execute(
@@ -183,6 +209,7 @@ def recompute_employee(
             d in holidays,
             tolerance,
             today,
+            max(0, break_totals.get(d, 0) - max_break),
         )
         if res is None:
             if row is not None:
@@ -321,6 +348,72 @@ def running_ledger(db: Session, emp: m.Employee, start: dt.date, end: dt.date) -
             balance += r.variance_minutes
         out.append({"row": r, "balance": balance})
     return out
+
+
+def today_attendance(
+    db: Session, cfg: Optional[Dict[str, str]] = None, today: Optional[dt.date] = None
+) -> Dict[str, list]:
+    """Live 'who's doing what today' view for the admin dashboard landing
+    page. Deliberately NOT DayStatus/compute_day — those never mark today
+    Missing because the day isn't over yet (see module docstring), so a
+    DayStatus row for today usually doesn't exist until end of day. This
+    looks at what's on record *right now*: any time logged, an open break,
+    or approved leave covering today.
+
+    Employees not scheduled to work today (weekend/holiday) are reported
+    separately in 'off_today' so they don't inflate a 'not yet logged'
+    count admins can't actually act on."""
+    cfg = cfg or get_config(db)
+    today = today or dt.date.today()
+    holidays = holidays_set(db)
+    emps = list(
+        db.execute(
+            select(m.Employee)
+            .where(m.Employee.active.is_(True), m.Employee.tracked.is_(True))
+            .order_by(m.Employee.department, m.Employee.name)
+        ).scalars()
+    )
+
+    leaves_by_emp: Dict[int, List[m.LeaveRecord]] = {}
+    for lv in db.execute(
+        select(m.LeaveRecord).where(
+            m.LeaveRecord.start_date <= today,
+            m.LeaveRecord.end_date >= today,
+            m.LeaveRecord.status == m.LEAVE_APPROVED,
+        )
+    ).scalars():
+        leaves_by_emp.setdefault(lv.employee_id, []).append(lv)
+
+    logged_emp_ids = {
+        row[0]
+        for row in db.execute(
+            select(m.TaskEntry.employee_id).where(m.TaskEntry.date == today).distinct()
+        ).all()
+    }
+    active_break_emp_ids = {
+        b.employee_id
+        for b in db.execute(
+            select(m.BreakEntry).where(
+                m.BreakEntry.date == today, m.BreakEntry.end_minute.is_(None)
+            )
+        ).scalars()
+    }
+
+    logged, on_leave, not_yet, off_today = [], [], [], []
+    for e in emps:
+        if not is_working_day(e, today, holidays):
+            off_today.append(e)
+            continue
+        emp_leaves = leaves_by_emp.get(e.id, [])
+        leave_min = leave_minutes_on(emp_leaves, e, today) if emp_leaves else 0
+        full_day_leave = leave_min > 0 and (e.daily_target_minutes - leave_min) <= 0
+        if full_day_leave:
+            on_leave.append(e)
+        elif e.id in logged_emp_ids or e.id in active_break_emp_ids:
+            logged.append(e)
+        else:
+            not_yet.append(e)
+    return {"logged": logged, "on_leave": on_leave, "not_yet": not_yet, "off_today": off_today}
 
 
 def day_total_minutes(db: Session, employee_id: int, d: dt.date) -> int:

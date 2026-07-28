@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% set active_nav = 'leave' %}
+{% block title %}Leave · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Leave</h1>
+
+<div class="card">
+  <h2>Request leave</h2>
+  <form method="post" action="/leave/request" class="formrow">
+    <div><label>From</label><input type="date" name="start_date" required></div>
+    <div><label>To (blank = one day)</label><input type="date" name="end_date"></div>
+    <div>
+      <label>Type</label>
+      <select name="type">{% for t in leave_types %}<option>{{ t }}</option>{% endfor %}</select>
+    </div>
+    <div><label>Hours (blank = full day)</label><input name="hours" style="width:110px" placeholder="e.g. 2.5"></div>
+    <div style="flex:1"><label>Note ('Other' requires one)</label><input name="note" style="width:100%"></div>
+    <div><button>Submit request</button></div>
+  </form>
+  <p class="small muted">Your admin reviews every request before it counts — approved leave reduces
+    that day's target automatically; pending requests don't affect your status yet.</p>
+</div>
+
+<div class="card">
+  <h2>Your requests</h2>
+  <table>
+    <thead><tr><th>When</th><th>Type</th><th>Hours</th><th>Note</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+      {% for lv in records %}
+      <tr>
+        <td class="nowrap">{{ lv.start_date.isoformat() }}{% if lv.end_date != lv.start_date %} → {{ lv.end_date.isoformat() }}{% endif %}</td>
+        <td>{{ lv.type }}</td>
+        <td>{{ 'full day' if lv.minutes_per_day is none else lv.minutes_per_day|hm }}</td>
+        <td class="small">{{ lv.note }}
+          {% if lv.status != 'requested' and lv.review_note %}<div class="muted">Admin: {{ lv.review_note }}</div>{% endif %}
+        </td>
+        <td>
+          {% if lv.status == 'approved' %}<span class="badge b-complete">approved</span>
+          {% elif lv.status == 'rejected' %}<span class="badge b-missing">rejected</span>
+          {% else %}<span class="badge b-partial">pending</span>{% endif %}
+        </td>
+        <td>
+          {% if lv.status == 'requested' %}
+          <form method="post" action="/leave/{{ lv.id }}/cancel" class="inline"
+                onsubmit="return confirm('Withdraw this request?')">
+            <button class="small secondary">Withdraw</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">No leave requests yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

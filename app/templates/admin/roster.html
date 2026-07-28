@@ -15,7 +15,10 @@
     <tbody>
       {% for e in emps %}
       <tr {% if not e.active %}style="opacity:.55"{% endif %}>
-        <td><a href="/admin/person/{{ e.id }}">{{ e.name }}</a></td>
+        <td>
+          {% if e.photo_path %}<img src="/static/uploads/avatars/{{ e.photo_path }}" class="avatar-sm" alt="">{% endif %}
+          <a href="/admin/person/{{ e.id }}">{{ e.name }}</a>
+        </td>
         <td>{{ e.department or '—' }}</td>
         <td>{{ e.designation or '—' }}</td>
         <td>{{ e.daily_target_minutes|hm }}</td>
@@ -26,6 +29,7 @@
           {% if e.is_admin %}<span class="badge b-leave">admin</span>{% endif %}
           {% if not e.tracked %}<span class="badge b-holiday">untracked</span>{% endif %}
           {% if not e.active %}<span class="badge b-missing">gone</span>{% endif %}
+          {% if e.active and not e.password_hash %}<span class="badge b-missing" title="hasn't run /signup yet">no login</span>{% endif %}
         </td>
         <td><a class="btn secondary small" href="/admin/roster/{{ e.id }}/edit">Edit</a></td>
       </tr>

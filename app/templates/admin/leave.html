@@ -26,10 +26,40 @@
   status still derives from what gets submitted. Category totals compute automatically.</p>
 </div>
 
+{% if pending %}
+<div class="card">
+  <h2>Pending requests ({{ pending|length }})</h2>
+  <table>
+    <thead><tr><th>Employee</th><th>When</th><th>Type</th><th>Hours</th><th>Note</th><th>Decision</th></tr></thead>
+    <tbody>
+      {% for lv in pending %}
+      <tr>
+        <td><a href="/admin/person/{{ lv.employee_id }}">{{ lv.employee.name }}</a></td>
+        <td class="nowrap">{{ lv.start_date.isoformat() }}{% if lv.end_date != lv.start_date %} → {{ lv.end_date.isoformat() }}{% endif %}</td>
+        <td>{{ lv.type }}</td>
+        <td>{{ 'full day' if lv.minutes_per_day is none else lv.minutes_per_day|hm }}</td>
+        <td class="small">{{ lv.note }}</td>
+        <td class="nowrap">
+          <form method="post" action="/admin/leave/{{ lv.id }}/approve" class="inline">
+            <button class="small">Approve</button>
+          </form>
+          <form method="post" action="/admin/leave/{{ lv.id }}/reject" class="inline">
+            <input type="hidden" name="review_note" value="">
+            <button type="button" class="small secondary"
+              onclick="const n=prompt('Reason for rejecting (optional):'); if(n!==null){this.previousElementSibling.value=n; this.form.submit();}">Reject</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
 <div class="card">
   <h2>Recent leave records</h2>
   <table>
-    <thead><tr><th>Employee</th><th>When</th><th>Type</th><th>Hours/day</th><th>Note</th><th>By</th><th></th></tr></thead>
+    <thead><tr><th>Employee</th><th>When</th><th>Type</th><th>Hours/day</th><th>Note</th><th>Status</th><th>By</th><th></th></tr></thead>
     <tbody>
       {% for lv in recent %}
       <tr>
@@ -38,6 +68,11 @@
         <td>{{ lv.type }}</td>
         <td>{{ 'full day' if lv.minutes_per_day is none else lv.minutes_per_day|hm }}</td>
         <td class="small">{{ lv.note }}{% if lv.imported %} <span class="muted">(legacy)</span>{% endif %}</td>
+        <td>
+          {% if lv.status == 'approved' %}<span class="badge b-complete">approved</span>
+          {% elif lv.status == 'rejected' %}<span class="badge b-missing">rejected</span>
+          {% else %}<span class="badge b-partial">pending</span>{% endif %}
+        </td>
         <td class="small muted">{{ lv.entered_by }}</td>
         <td><form method="post" action="/admin/leave/{{ lv.id }}/delete" class="inline"
           onsubmit="return confirm('Delete leave record?')"><button class="small secondary">✕</button></form></td>

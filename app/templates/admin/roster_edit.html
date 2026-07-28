@@ -6,7 +6,11 @@
 <div class="card" style="max-width:680px">
   <form method="post" action="/admin/roster/{{ emp.id }}/edit">
     <label class="f">Name</label><input name="name" value="{{ emp.name }}" required style="width:100%">
-    <label class="f">Email</label><input name="email" value="{{ emp.email }}" style="width:100%">
+    <label class="f">Email</label><input name="email" value="{{ emp.email or '' }}" style="width:100%">
+    <div class="muted small" style="margin-top:4px">
+      Account: {% if emp.password_hash %}password set{% else %}not signed up yet{% endif %}
+      — employees claim their account at <code>/signup</code> using this exact email.
+    </div>
     <div class="formrow" style="margin-top:8px">
       <div><label>Department</label><input name="department" value="{{ emp.department }}"></div>
       <div><label>Designation</label><input name="designation" value="{{ emp.designation }}"></div>
@@ -32,5 +36,11 @@
       <a class="btn secondary" href="/admin/roster">Cancel</a>
     </div>
   </form>
+  {% if emp.password_hash %}
+  <form method="post" action="/admin/roster/{{ emp.id }}/reset-password" class="inline"
+        style="margin-top:10px" onsubmit="return confirm('Clear {{ emp.name }}\'s password? They will need to run Sign up again.')">
+    <button class="small secondary">Reset password</button>
+  </form>
+  {% endif %}
 </div>
 {% endblock %}

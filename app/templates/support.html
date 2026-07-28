@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% set active_nav = 'support' %}
+{% block title %}Support · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Support</h1>
+
+<div class="card">
+  <h2 style="margin-top:0">Ask a question</h2>
+  <form method="post" action="/support/submit" class="formrow" style="flex-direction:column">
+    <div style="width:100%">
+      <label>Describe your question or issue</label>
+      <textarea name="message" required minlength="5" rows="4" style="width:100%"></textarea>
+    </div>
+    <div><button>Send to admin</button></div>
+  </form>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Your questions</h2>
+  <table>
+    <thead><tr><th>Submitted</th><th>Message</th><th>Status</th><th>Admin reply</th></tr></thead>
+    <tbody>
+      {% for r in records %}
+      <tr>
+        <td class="small muted nowrap">{{ r.created_at.strftime('%d %b %H:%M') }}</td>
+        <td>{{ r.message }}</td>
+        <td><span class="badge {{ 'b-missing' if r.status == 'open' else 'b-complete' }}">{{ r.status }}</span></td>
+        <td>{{ r.admin_reply or '—' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">No questions submitted yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -7,3 +7,4 @@ itsdangerous
 openpyxl
 pytest
 httpx
+psycopg[binary]

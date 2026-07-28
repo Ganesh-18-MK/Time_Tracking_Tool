@@ -1,7 +1,11 @@
 """Shared Jinja2 environment with app filters."""
+import inspect
+import json
 import os
 
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
+from sqlalchemy import func, select
 
 from app import models as m
 from app.util import (
@@ -21,6 +25,19 @@ templates.env.filters["hm"] = fmt_hm
 templates.env.filters["hm_signed"] = fmt_hm_signed
 templates.env.filters["hours"] = fmt_hours
 templates.env.filters["clock"] = fmt_time
+
+
+def tojson_filter(value) -> Markup:
+    """Dump a plain value (list/dict of str/int/etc — not ORM objects) as
+    JSON safe to inline inside a <script> tag. Escapes </script>-breaking
+    characters the way Flask's own `tojson` does; Jinja's autoescaping is
+    for HTML, not JS-string context, so json.dumps output still needs this
+    before being marked safe."""
+    dumped = json.dumps(value).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    return Markup(dumped)
+
+
+templates.env.filters["tojson"] = tojson_filter
 templates.env.globals["month_label"] = month_label
 templates.env.globals["STATUS_LABELS"] = STATUS_LABELS
 templates.env.globals["STATUS_NAMES"] = STATUS_NAMES
@@ -35,8 +52,43 @@ def pop_flashes(request):
     return request.session.pop("flash", [])
 
 
-def render(request, name: str, ctx: dict):
+# Starlette changed TemplateResponse's calling convention across versions:
+# older releases take (name, context) and pull `request` out of the context
+# dict; newer releases require `request` as the first positional argument.
+# requirements.txt pins no versions, so detect which one is installed instead
+# of hardcoding a version number that will drift out of date.
+_first_param = next(iter(inspect.signature(templates.TemplateResponse).parameters), "")
+_REQUEST_FIRST = _first_param == "request"
+
+
+def _admin_nav_badges(db) -> dict:
+    """Small live counts shown next to Leave/Support in the admin nav.
+    Computed once here (rather than in every admin route) so every admin
+    screen shows the same up-to-date pending count without each route
+    needing to remember to add it."""
+    pending_leave = db.execute(
+        select(func.count()).select_from(m.LeaveRecord).where(
+            m.LeaveRecord.status == m.LEAVE_REQUESTED
+        )
+    ).scalar() or 0
+    open_support = db.execute(
+        select(func.count()).select_from(m.SupportQuery).where(
+            m.SupportQuery.status == m.SUPPORT_OPEN
+        )
+    ).scalar() or 0
+    return {"pending_leave": pending_leave, "open_support": open_support}
+
+
+def render(request, name: str, ctx: dict, db=None):
     ctx = dict(ctx)
     ctx["request"] = request
     ctx["flashes"] = pop_flashes(request)
+    # db is optional: only admin routes pass it, and only admin users get
+    # the extra queries — employee-page renders (db=None, or user isn't
+    # admin) skip this entirely.
+    user = ctx.get("user")
+    if db is not None and user is not None and getattr(user, "is_admin", False):
+        ctx["nav_badges"] = _admin_nav_badges(db)
+    if _REQUEST_FIRST:
+        return templates.TemplateResponse(request, name, ctx)
     return templates.TemplateResponse(name, ctx)

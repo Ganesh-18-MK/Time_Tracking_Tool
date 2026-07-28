@@ -4,32 +4,74 @@
 {% block content %}
 <h1>Compliance dashboard — {{ month_label(year, month) }}</h1>
 
+<div class="kpis" style="margin-bottom:14px">
+  <details class="kpi okk">
+    <summary><span class="n">{{ attendance.logged|length }}</span><span class="l">Logged today · click to see who</span></summary>
+    <ul class="namelist">
+      {% for e in attendance.logged %}<li>{{ e.name }}{% if e.department %} <span class="muted">· {{ e.department }}</span>{% endif %}</li>{% endfor %}
+    </ul>
+  </details>
+  <details class="kpi">
+    <summary><span class="n">{{ attendance.on_leave|length }}</span><span class="l">On leave today · click to see who</span></summary>
+    <ul class="namelist">
+      {% for e in attendance.on_leave %}<li>{{ e.name }}{% if e.department %} <span class="muted">· {{ e.department }}</span>{% endif %}</li>{% endfor %}
+    </ul>
+  </details>
+  <details class="kpi {{ 'badk' if attendance.not_yet else '' }}">
+    <summary><span class="n">{{ attendance.not_yet|length }}</span><span class="l">Not yet logged · click to see who</span></summary>
+    <ul class="namelist">
+      {% for e in attendance.not_yet %}<li>{{ e.name }}{% if e.department %} <span class="muted">· {{ e.department }}</span>{% endif %}</li>{% endfor %}
+    </ul>
+  </details>
+  {% if attendance.off_today %}
+  <details class="kpi">
+    <summary><span class="n">{{ attendance.off_today|length }}</span><span class="l">Off today (weekend/holiday)</span></summary>
+    <ul class="namelist">
+      {% for e in attendance.off_today %}<li>{{ e.name }}</li>{% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+</div>
+<p class="small muted" style="margin:-6px 0 14px">
+  "Today" is a live snapshot (logged/on leave/not yet) — separate from the monthly grid below,
+  which only marks a day Missing once it's over.
+</p>
+
+<div class="card">
+  <h2 style="margin-top:0">Departments</h2>
+  <div class="deptcards">
+    <a class="deptcard {{ 'active' if show_grid and not dept }}" href="/admin?ym={{ ym }}&dept=">
+      <div class="n">{{ total_emps }}</div>
+      <div class="l">All departments</div>
+    </a>
+    {% for d in all_depts %}
+    <a class="deptcard {{ 'active' if dept == d }}" href="/admin?ym={{ ym }}&dept={{ d }}">
+      <div class="n">{{ dept_counts.get(d, 0) }}</div>
+      <div class="l">{{ d }}</div>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+
+{% if show_grid %}
 <div class="card">
   <div class="formrow">
     <a class="btn secondary small" href="/admin?ym={{ prev_ym }}&dept={{ dept }}&exceptions={{ exceptions }}">← prev</a>
     <a class="btn secondary small" href="/admin?ym={{ next_ym }}&dept={{ dept }}&exceptions={{ exceptions }}">next →</a>
     <form method="get" action="/admin" class="formrow inline">
       <input type="hidden" name="ym" value="{{ ym }}">
-      <div>
-        <label>Department</label>
-        <select name="dept" onchange="this.form.submit()">
-          <option value="">All departments</option>
-          {% for d in all_depts %}<option value="{{ d }}" {{ 'selected' if d == dept }}>{{ d }}</option>{% endfor %}
-        </select>
-      </div>
-      <div>
-        <label>&nbsp;</label>
-        <label class="small" style="display:flex;align-items:center;gap:6px;margin:0">
-          <input type="checkbox" name="exceptions" value="1" {{ 'checked' if exceptions }} onchange="this.form.submit()">
-          exceptions only
-        </label>
-      </div>
+      <input type="hidden" name="dept" value="{{ dept }}">
+      <label class="small" style="display:flex;align-items:center;gap:6px;margin:0">
+        <input type="checkbox" name="exceptions" value="1" {{ 'checked' if exceptions }} onchange="this.form.submit()">
+        exceptions only
+      </label>
     </form>
     <form method="post" action="/admin/recompute" class="inline">
       <input type="hidden" name="ym" value="{{ ym }}">
       <button class="secondary small">Recompute month</button>
     </form>
     <a class="btn small" href="/export/dashboard.xlsx?ym={{ ym }}">Export XLSX</a>
+    <a class="btn secondary small" href="/admin?ym={{ ym }}" style="margin-left:auto">← Overview</a>
   </div>
   <p class="small muted" style="margin-bottom:0">
     Cells derive automatically from submitted days, leave and schedules — nothing here is typed.
@@ -94,4 +136,54 @@
     </tbody>
   </table>
 </div>
+{% else %}
+<p class="small muted" style="margin:0 0 10px">Pick a department above to see day-by-day attendance, strikes, and export options for that team.</p>
+
+<div class="cols">
+  <div class="card">
+    <h2 style="margin-top:0">Needs attention</h2>
+    {% if not pending_leave_rows and not open_support_rows and not violations %}
+    <p class="muted small" style="margin:0">Nothing pending — you're all caught up.</p>
+    {% else %}
+    <ul class="namelist" style="padding-left:0;list-style:none">
+      {% for lv in pending_leave_rows %}
+      <li style="margin-bottom:6px"><span class="badge b-leave">leave</span>
+        <a href="/admin/leave">{{ lv.employee.name if lv.employee else lv.employee_id }}</a>
+        requested {{ lv.type }} ({{ lv.start_date.strftime('%d %b') }}{% if lv.end_date != lv.start_date %}–{{ lv.end_date.strftime('%d %b') }}{% endif %})</li>
+      {% endfor %}
+      {% for q in open_support_rows %}
+      <li style="margin-bottom:6px"><span class="badge b-pending">support</span>
+        <a href="/admin/support">{{ q.employee.name if q.employee else q.employee_id }}</a>
+        — {{ q.message[:60] }}{% if q.message|length > 60 %}…{% endif %}</li>
+      {% endfor %}
+      {% for e, strikes in violations %}
+      <li style="margin-bottom:6px"><span class="badge b-missing">strikes</span>
+        <a href="/admin/person/{{ e.id }}?ym={{ ym }}">{{ e.name }}</a>
+        — {{ strikes }} this month (≥ {{ threshold }})</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">Recent activity</h2>
+    {% if recent_audit %}
+    <table>
+      <tbody>
+        {% for a in recent_audit %}
+        <tr>
+          <td class="small muted nowrap">{{ a.at.strftime('%d %b %H:%M') }}</td>
+          <td class="small">{{ a.actor }}</td>
+          <td class="small">{{ a.action.replace('_', ' ') }}{% if a.entity %} · {{ a.entity }}{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted small" style="margin:0">No recent activity.</p>
+    {% endif %}
+    <p class="small" style="margin:10px 0 0"><a href="/admin/audit">View full audit log →</a></p>
+  </div>
+</div>
+{% endif %}
 {% endblock %}

@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Sign in · MK Timekeeping{% endblock %}
 {% block content %}
-<div class="card" style="max-width:720px;margin:40px auto;">
+<img src="/static/brand/logo-full.png" alt="Law Offices of Mary Kennedy" class="auth-logo">
+<div class="card" style="max-width:720px;margin:20px auto 40px;">
   <h1>Sign in</h1>
   {% if auth_mode == 'dev' %}
   <p class="muted small">POC dev mode — pick a user, no password. Production swaps this
@@ -19,6 +20,12 @@
     {% for e in employees %}
     <form method="post" action="/login/{{ e.id }}"><button>{{ e.name }}</button></form>
     {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted small">Choose the portal that matches your role.</p>
+  <div class="login-grid">
+    <a class="btn" href="/login/employee" style="text-align:center;padding:16px">Employee Login</a>
+    <a class="btn secondary" href="/login/admin" style="text-align:center;padding:16px">Admin Login</a>
   </div>
   {% endif %}
 </div>

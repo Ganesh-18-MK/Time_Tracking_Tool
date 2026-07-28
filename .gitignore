@@ -3,12 +3,17 @@
 __pycache__/
 .pytest_cache/
 .DS_Store
+.claude/
 
 # real HR data — never in the repo (shared via the handoff bundle instead):
 # the seeded database, the legacy source spreadsheets, and extraction caches
 tms.db
+tms_demo.db
 *.ods
 legacy/cache/
 
 # the handoff bundle itself
 MK-Timekeeping-POC-handoff.zip
+
+# employee-uploaded profile photos — local disk only, not part of the repo
+app/static/uploads/

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Employee Login · MK Timekeeping{% endblock %}
+{% block content %}
+<img src="/static/brand/logo-full.png" alt="Law Offices of Mary Kennedy" class="auth-logo">
+<div class="card" style="max-width:420px;margin:20px auto 40px;">
+  <h1>Employee Login</h1>
+  <form method="post" action="/login/employee" class="formrow" style="flex-direction:column">
+    <div style="width:100%">
+      <label>Work email</label>
+      <input type="email" name="email" required autofocus style="width:100%">
+    </div>
+    <div style="width:100%">
+      <label>Password</label>
+      <input type="password" name="password" required style="width:100%">
+    </div>
+    <div><button>Sign in</button></div>
+  </form>
+  <p class="muted small" style="margin-top:14px">
+    First time here? <a href="/signup">Set up your account</a> with your work email.
+  </p>
+  <p class="muted small"><a href="/login">← Back to login options</a></p>
+</div>
+{% endblock %}

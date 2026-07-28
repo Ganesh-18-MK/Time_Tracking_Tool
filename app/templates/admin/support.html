@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% set active_nav = 'support' %}
+{% block title %}Support · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Support queries</h1>
+
+<div class="card">
+  <div class="formrow">
+    <a class="btn small {{ '' if status == 'open' else 'secondary' }}" href="/admin/support?status=open">Open</a>
+    <a class="btn small {{ '' if status == 'all' else 'secondary' }}" href="/admin/support?status=all">All</a>
+  </div>
+</div>
+
+<div class="card">
+  <table>
+    <thead><tr><th>Employee</th><th>Message</th><th>Submitted</th><th>Status</th><th>Reply / resolve</th></tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td><a href="/admin/person/{{ r.employee_id }}">{{ r.employee.name }}</a></td>
+        <td>{{ r.message }}</td>
+        <td class="small muted nowrap">{{ r.created_at.strftime('%d %b %H:%M') }}</td>
+        <td><span class="badge {{ 'b-missing' if r.status == 'open' else 'b-complete' }}">{{ r.status }}</span></td>
+        <td>
+          {% if r.status == 'open' %}
+          <form method="post" action="/admin/support/{{ r.id }}/resolve" class="formrow inline">
+            <input name="reply" placeholder="Reply (optional)" style="width:200px">
+            <button class="small">Resolve</button>
+          </form>
+          {% else %}
+          <span class="small muted">{{ r.admin_reply or '—' }} · by {{ r.resolved_by }}</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">No queries.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

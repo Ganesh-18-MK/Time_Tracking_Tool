@@ -10,6 +10,7 @@ Conventions:
     are rebuilt from live data at any time.
 """
 import datetime as dt
+from typing import Optional
 
 from sqlalchemy import (
     Boolean,
@@ -42,7 +43,12 @@ class Employee(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120), index=True)
-    email: Mapped[str] = mapped_column(String(200), default="")
+    # nullable (not "") so multiple not-yet-set employees don't collide on the
+    # unique constraint; signup claims a roster row by matching this field.
+    email: Mapped[Optional[str]] = mapped_column(String(200), unique=True, nullable=True)
+    # set by the employee via /signup (PBKDF2, see app/security.py); NULL
+    # until they've claimed their account. Admin can clear it to force re-signup.
+    password_hash: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     department: Mapped[str] = mapped_column(String(120), default="")
     designation: Mapped[str] = mapped_column(String(120), default="")
     daily_target_minutes: Mapped[int] = mapped_column(Integer, default=480)
@@ -54,6 +60,11 @@ class Employee(Base):
     # tracked=False => excluded from compliance runs (e.g. admin accounts)
     tracked: Mapped[bool] = mapped_column(Boolean, default=True)
     notes: Mapped[str] = mapped_column(Text, default="")
+    # filename only (e.g. "14.jpg"), not a full path — stored under
+    # app/static/uploads/avatars/. NULL until the employee uploads one via
+    # /profile. Local disk for now; see note on SupportQuery/deployment re:
+    # Render's ephemeral filesystem before this goes live long-term.
+    photo_path: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     entries = relationship("TaskEntry", back_populates="employee")
 
@@ -100,6 +111,40 @@ class TaskEntry(Base):
         return self.end_minute - self.start_minute
 
 
+BREAK_LUNCH_DINNER = "Lunch/Dinner"
+BREAK_PERSONAL = "Personal"
+BREAK_TYPES = (BREAK_LUNCH_DINNER, BREAK_PERSONAL)
+
+
+class BreakEntry(Base):
+    """An explicit Start Break / End Break span. Purely additive: break
+    minutes were already excluded from the day's total before this existed,
+    since day_total_minutes only sums logged TaskEntry rows and a break was
+    just an unlogged gap between them. This model exists for the live-timer
+    UX and so a gap the employee explained with a break doesn't also get
+    flagged as an unexplained gap (see validation.gap_flags callers).
+
+    break_type gates a business rule enforced in app/routes/employee.py:
+    Lunch/Dinner is allowed once per day; Personal may be taken repeatedly."""
+
+    __tablename__ = "break_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True)
+    date: Mapped[dt.date] = mapped_column(Date, index=True)
+    break_type: Mapped[str] = mapped_column(String(40), default=BREAK_PERSONAL)
+    start_minute: Mapped[int] = mapped_column(Integer)  # minutes since midnight
+    end_minute: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # None while running
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    ended_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+
+    employee = relationship("Employee")
+
+    @property
+    def duration_minutes(self) -> Optional[int]:
+        return None if self.end_minute is None else self.end_minute - self.start_minute
+
+
 class DaySubmission(Base):
     __tablename__ = "day_submissions"
     __table_args__ = (UniqueConstraint("employee_id", "date"),)
@@ -111,6 +156,11 @@ class DaySubmission(Base):
     submitted_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     locked: Mapped[bool] = mapped_column(Boolean, default=True)
     unlock_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+LEAVE_REQUESTED = "requested"
+LEAVE_APPROVED = "approved"
+LEAVE_REJECTED = "rejected"
 
 
 class LeaveRecord(Base):
@@ -127,11 +177,46 @@ class LeaveRecord(Base):
     entered_by: Mapped[str] = mapped_column(String(120), default="")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     imported: Mapped[bool] = mapped_column(Boolean, default=False)
+    # default 'approved' is deliberate: every pre-existing admin-entered and
+    # imported leave row was already an approved fact (PRD open question 5's
+    # original "admin enters everything" default) — only self-service
+    # requests start life as 'requested'. engine.leave_minutes_on() only
+    # counts 'approved' rows, so this default keeps all prior behavior
+    # (including the frozen imported history) unchanged.
+    status: Mapped[str] = mapped_column(String(20), default=LEAVE_APPROVED)
+    reviewed_by: Mapped[str] = mapped_column(String(120), default="")
+    reviewed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    review_note: Mapped[str] = mapped_column(Text, default="")
 
     employee = relationship("Employee")
 
     def covers(self, d: dt.date) -> bool:
         return self.start_date <= d <= self.end_date
+
+
+SUPPORT_OPEN = "open"
+SUPPORT_RESOLVED = "resolved"
+SUPPORT_STATUSES = (SUPPORT_OPEN, SUPPORT_RESOLVED)
+
+
+class SupportQuery(Base):
+    """An employee's question/issue submitted from the Support page and an
+    admin's reply. Brand-new table, same shape as the leave request flow
+    (submit -> admin queue -> admin acts on it) — no historical data to
+    worry about, so this is purely additive."""
+
+    __tablename__ = "support_queries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True)
+    message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    status: Mapped[str] = mapped_column(String(20), default=SUPPORT_OPEN)
+    admin_reply: Mapped[str] = mapped_column(Text, default="")
+    resolved_by: Mapped[str] = mapped_column(String(120), default="")
+    resolved_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+
+    employee = relationship("Employee")
 
 
 class Holiday(Base):
@@ -220,4 +305,5 @@ CONFIG_DEFAULTS = {
     "min_details_chars": "5",         # §4 details rule
     "comp_erases_strike": "1",        # open question 3
     "live_start_date": "",            # set by importer; engine computes from here on
+    "max_break_minutes": "30",        # break time beyond this extends that day's target
 }

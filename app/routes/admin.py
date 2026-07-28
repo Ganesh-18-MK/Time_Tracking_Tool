@@ -13,7 +13,15 @@ from app import engine, models as m
 from app.auth import require_admin
 from app.db import get_db
 from app.templating import flash, render
-from app.util import audit, parse_ym, prev_next_month
+from app.util import (
+    FormError,
+    audit,
+    parse_date_field,
+    parse_hours_field,
+    parse_int_field,
+    parse_ym,
+    prev_next_month,
+)
 
 router = APIRouter(prefix="/admin")
 
@@ -39,21 +47,70 @@ def dashboard(
     if first <= today:
         engine.recompute_all(db, first, min(last, today))
 
-    emps = list(
+    all_emps = list(
         db.execute(
             select(m.Employee)
             .where(m.Employee.active.is_(True), m.Employee.tracked.is_(True))
             .order_by(m.Employee.department, m.Employee.name)
         ).scalars()
     )
-    all_depts = sorted({e.department or "—" for e in emps})
-    if dept:
-        emps = [e for e in emps if (e.department or "—") == dept]
+    all_depts = sorted({e.department or "—" for e in all_emps})
+    dept_counts = {}
+    for e in all_emps:
+        key = e.department or "—"
+        dept_counts[key] = dept_counts.get(key, 0) + 1
+    total_emps = len(all_emps)
+    emps = [e for e in all_emps if (e.department or "—") == dept] if dept else all_emps
+
+    # The detail grid (every employee's day-by-day cells) only renders once
+    # a department has actually been picked — dept is None on first load
+    # ("/admin" with no query string) vs "" once the "All departments" card
+    # is explicitly clicked ("/admin?dept="). Checked here, before dept is
+    # coerced to "" below for display/filtering, since that coercion would
+    # otherwise erase the distinction the template needs for this branch.
+    show_grid = dept is not None
+
+    # live today-snapshot for the landing KPI cards — independent of which
+    # month's grid is being browsed below (see engine.today_attendance)
+    attendance = engine.today_attendance(db, cfg, today)
 
     by_emp = engine.statuses_for_month(db, year, month)
     comp_erases = cfg.get("comp_erases_strike") == "1"
     threshold = engine.cfg_int(cfg, "strike_threshold")
     days = [first + dt.timedelta(days=i) for i in range((last - first).days + 1)]
+
+    # "Needs attention" + "Recent activity" — only rendered on the landing
+    # view (not show_grid), so skip the extra queries when they won't be
+    # used. Violations are computed org-wide from all_emps (not the
+    # dept-filtered `emps`) since this is meant to surface everything that
+    # needs a look, regardless of which department card was last clicked.
+    pending_leave_rows, open_support_rows, violations, recent_audit = [], [], [], []
+    if not show_grid:
+        pending_leave_rows = list(
+            db.execute(
+                select(m.LeaveRecord)
+                .where(m.LeaveRecord.status == m.LEAVE_REQUESTED)
+                .order_by(m.LeaveRecord.created_at)
+                .limit(5)
+            ).scalars()
+        )
+        open_support_rows = list(
+            db.execute(
+                select(m.SupportQuery)
+                .where(m.SupportQuery.status == m.SUPPORT_OPEN)
+                .order_by(m.SupportQuery.created_at)
+                .limit(5)
+            ).scalars()
+        )
+        for e in all_emps:
+            e_strikes = engine.strikes_in(by_emp.get(e.id, {}).values(), comp_erases)
+            if e_strikes >= threshold:
+                violations.append((e, e_strikes))
+        violations.sort(key=lambda pair: -pair[1])
+        violations = violations[:8]
+        recent_audit = list(
+            db.execute(select(m.AuditLog).order_by(m.AuditLog.at.desc()).limit(8)).scalars()
+        )
 
     groups = {}
     for e in emps:
@@ -80,6 +137,14 @@ def dashboard(
             "days": days,
             "groups": groups,
             "all_depts": all_depts,
+            "dept_counts": dept_counts,
+            "total_emps": total_emps,
+            "show_grid": show_grid,
+            "attendance": attendance,
+            "pending_leave_rows": pending_leave_rows,
+            "open_support_rows": open_support_rows,
+            "violations": violations,
+            "recent_audit": recent_audit,
             "dept": dept or "",
             "exceptions": exceptions,
             "threshold": threshold,
@@ -89,6 +154,7 @@ def dashboard(
             "next_ym": f"{ny}-{nm:02d}",
             "ym": f"{year}-{month:02d}",
         },
+        db=db,
     )
 
 
@@ -169,6 +235,13 @@ def person(
             .order_by(m.CompensationLink.shortfall_date.desc())
         ).scalars()
     )
+    breaks = list(
+        db.execute(
+            select(m.BreakEntry)
+            .where(m.BreakEntry.employee_id == emp.id, m.BreakEntry.date.between(first, last))
+            .order_by(m.BreakEntry.date.desc(), m.BreakEntry.start_minute)
+        ).scalars()
+    )
     comp_erases = cfg.get("comp_erases_strike") == "1"
     strikes = engine.strikes_in(statuses, comp_erases)
     shortfalls = [
@@ -189,6 +262,8 @@ def person(
             "subs": subs,
             "by_day": sorted(by_day.items(), reverse=True),
             "leaves": leaves,
+            "breaks": breaks,
+            "max_break_minutes": engine.cfg_int(cfg, "max_break_minutes"),
             "links": [
                 (lk, [dt.date.fromisoformat(x) for x in json.loads(lk.surplus_dates or "[]")])
                 for lk in links
@@ -205,6 +280,7 @@ def person(
             "next_ym": f"{ny}-{nm:02d}",
             "today": today,
         },
+        db=db,
     )
 
 
@@ -218,7 +294,11 @@ def unlock_day(
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    day = dt.date.fromisoformat(date)
+    try:
+        day = parse_date_field(date)
+    except FormError as e:
+        flash(request, e.message, "err")
+        return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
     sub = db.execute(
         select(m.DaySubmission).where(
             m.DaySubmission.employee_id == emp_id, m.DaySubmission.date == day
@@ -251,7 +331,11 @@ def override_day(
     db: Session = Depends(get_db),
 ):
     emp = db.get(m.Employee, emp_id)
-    day = dt.date.fromisoformat(date)
+    try:
+        day = parse_date_field(date)
+    except FormError as e:
+        flash(request, e.message, "err")
+        return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
     row = db.execute(
         select(m.DayStatus).where(
             m.DayStatus.employee_id == emp_id, m.DayStatus.date == day
@@ -311,10 +395,12 @@ def add_complink(
     db: Session = Depends(get_db),
 ):
     try:
+        shortfall = parse_date_field(shortfall_date, "Shortfall date")
         surplus = sorted({dt.date.fromisoformat(x.strip()).isoformat()
                           for x in surplus_dates.replace(";", ",").split(",") if x.strip()})
-    except ValueError:
-        flash(request, "Surplus dates must be ISO dates separated by commas.", "err")
+    except (FormError, ValueError) as e:
+        flash(request, e.message if isinstance(e, FormError)
+              else "Surplus dates must be ISO dates separated by commas.", "err")
         return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
     if not surplus:
         flash(request, "Pick at least one surplus day.", "err")
@@ -327,7 +413,7 @@ def add_complink(
         return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
     link = m.CompensationLink(
         employee_id=emp_id,
-        shortfall_date=dt.date.fromisoformat(shortfall_date),
+        shortfall_date=shortfall,
         surplus_dates=json.dumps(surplus),
         note=note.strip(),
         linked_by=admin.name,
@@ -390,20 +476,39 @@ def roster(
     emps = list(db.execute(q).scalars())
     if show == "active":
         emps = [e for e in emps if e.active]
-    return render(request, "admin/roster.html", {"user": admin, "emps": emps, "show": show})
+    return render(request, "admin/roster.html", {"user": admin, "emps": emps, "show": show}, db=db)
 
 
 def _emp_from_form(
-    emp: m.Employee, name, email, department, designation, target_hours,
+    db: Session, emp: m.Employee, name, email, department, designation, target_hours,
     work_days, start_date, active, tracked, is_admin,
 ):
     emp.name = name.strip()
-    emp.email = email.strip()
+    # None (not "") so multiple blank emails never collide on the unique
+    # constraint; signup later matches an employee by this exact field.
+    new_email = email.strip() or None
+    if new_email is not None:
+        clash = db.execute(
+            select(m.Employee).where(
+                m.Employee.email == new_email, m.Employee.id != (emp.id or -1)
+            )
+        ).scalar_one_or_none()
+        if clash is not None:
+            raise FormError(f"Email '{new_email}' is already used by {clash.name}.")
+    emp.email = new_email
     emp.department = department.strip()
     emp.designation = designation.strip()
-    emp.daily_target_minutes = int(round(float(target_hours or 8) * 60))
-    emp.work_days = ",".join(str(d) for d in sorted({int(x) for x in work_days})) if work_days else "0,1,2,3,4"
-    emp.start_date = dt.date.fromisoformat(start_date) if start_date else None
+    target_minutes = parse_hours_field(target_hours or "8", "Daily target hours")
+    if target_minutes <= 0:
+        raise FormError("Daily target hours must be greater than zero.")
+    emp.daily_target_minutes = target_minutes
+    try:
+        emp.work_days = (
+            ",".join(str(d) for d in sorted({int(x) for x in work_days})) if work_days else "0,1,2,3,4"
+        )
+    except (ValueError, TypeError):
+        raise FormError("Work days must be whole numbers 0-6 (Monday=0).")
+    emp.start_date = parse_date_field(start_date, "Start date") if start_date else None
     emp.active = bool(active)
     emp.tracked = bool(tracked)
     emp.is_admin = bool(is_admin)
@@ -426,13 +531,38 @@ def roster_add(
     db: Session = Depends(get_db),
 ):
     emp = m.Employee(name=name.strip())
-    _emp_from_form(emp, name, email, department, designation, target_hours,
-                   work_days, start_date, active == "1", tracked == "1", is_admin == "1")
+    try:
+        _emp_from_form(db, emp, name, email, department, designation, target_hours,
+                       work_days, start_date, active == "1", tracked == "1", is_admin == "1")
+    except FormError as e:
+        flash(request, e.message, "err")
+        return RedirectResponse("/admin/roster", status_code=303)
     db.add(emp)
     db.commit()
     audit(db, admin.name, "roster_add", "Employee", emp.id, {"name": emp.name})
     flash(request, f"Added {emp.name}.", "ok")
     return RedirectResponse("/admin/roster", status_code=303)
+
+
+@router.post("/roster/{emp_id}/reset-password")
+def roster_reset_password(
+    emp_id: int,
+    request: Request,
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Clears the stored hash so the employee can re-run /signup. Stand-in
+    for a self-service reset flow until there's an email service to send
+    reset links from (AUTH_MODE=password only has meaning if there's a
+    password to clear)."""
+    emp = db.get(m.Employee, emp_id)
+    if emp is None:
+        return RedirectResponse("/admin/roster", status_code=303)
+    emp.password_hash = None
+    db.commit()
+    audit(db, admin.name, "reset_password", "Employee", emp.id, {"name": emp.name})
+    flash(request, f"Password cleared for {emp.name} — they can run Sign up again.", "ok")
+    return RedirectResponse(f"/admin/roster/{emp_id}/edit", status_code=303)
 
 
 @router.get("/roster/{emp_id}/edit")
@@ -445,7 +575,7 @@ def roster_edit_page(
     emp = db.get(m.Employee, emp_id)
     if emp is None:
         return RedirectResponse("/admin/roster", status_code=303)
-    return render(request, "admin/roster_edit.html", {"user": admin, "emp": emp})
+    return render(request, "admin/roster_edit.html", {"user": admin, "emp": emp}, db=db)
 
 
 @router.post("/roster/{emp_id}/edit")
@@ -473,8 +603,12 @@ def roster_edit(
         "target": emp.daily_target_minutes, "work_days": emp.work_days,
         "active": emp.active, "tracked": emp.tracked, "is_admin": emp.is_admin,
     }
-    _emp_from_form(emp, name, email, department, designation, target_hours,
-                   work_days, start_date, active == "1", tracked == "1", is_admin == "1")
+    try:
+        _emp_from_form(db, emp, name, email, department, designation, target_hours,
+                       work_days, start_date, active == "1", tracked == "1", is_admin == "1")
+    except FormError as e:
+        flash(request, e.message, "err")
+        return RedirectResponse("/admin/roster", status_code=303)
     db.commit()
     audit(db, admin.name, "roster_edit", "Employee", emp.id, {"before": before})
     flash(request, f"Saved {emp.name}." + ("" if emp.active else " (deactivated — history kept, dropped from compliance runs)"), "ok")
@@ -492,7 +626,7 @@ def lists_page(
 ):
     projects = list(db.execute(select(m.Project).order_by(m.Project.active.desc(), m.Project.name)).scalars())
     tasks = list(db.execute(select(m.TaskType).order_by(m.TaskType.active.desc(), m.TaskType.name)).scalars())
-    return render(request, "admin/lists.html", {"user": admin, "projects": projects, "tasks": tasks})
+    return render(request, "admin/lists.html", {"user": admin, "projects": projects, "tasks": tasks}, db=db)
 
 
 @router.post("/lists/add")
@@ -548,6 +682,13 @@ def leave_page(
             select(m.Employee).where(m.Employee.active.is_(True)).order_by(m.Employee.name)
         ).scalars()
     )
+    pending = list(
+        db.execute(
+            select(m.LeaveRecord)
+            .where(m.LeaveRecord.status == m.LEAVE_REQUESTED)
+            .order_by(m.LeaveRecord.created_at)
+        ).scalars()
+    )
     recent = list(
         db.execute(
             select(m.LeaveRecord).order_by(m.LeaveRecord.created_at.desc()).limit(60)
@@ -555,8 +696,59 @@ def leave_page(
     )
     return render(
         request, "admin/leave.html",
-        {"user": admin, "emps": emps, "recent": recent, "leave_types": m.LEAVE_TYPES},
+        {"user": admin, "emps": emps, "pending": pending, "recent": recent, "leave_types": m.LEAVE_TYPES},
+        db=db,
     )
+
+
+@router.post("/leave/{leave_id}/approve")
+def leave_approve(
+    leave_id: int,
+    request: Request,
+    review_note: str = Form(""),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    lv = db.get(m.LeaveRecord, leave_id)
+    if lv is None:
+        return RedirectResponse("/admin/leave", status_code=303)
+    emp = db.get(m.Employee, lv.employee_id)
+    lv.status = m.LEAVE_APPROVED
+    lv.reviewed_by = admin.name
+    lv.reviewed_at = dt.datetime.utcnow()
+    lv.review_note = review_note.strip()
+    db.commit()
+    audit(db, admin.name, "leave_approve", "LeaveRecord", lv.id,
+          {"employee": emp.name if emp else lv.employee_id, "range": f"{lv.start_date}..{lv.end_date}"})
+    if emp is not None:
+        engine.recompute_employee(db, emp, lv.start_date, min(lv.end_date, dt.date.today()))
+    flash(request, f"Approved leave for {emp.name if emp else lv.employee_id}.", "ok")
+    return RedirectResponse("/admin/leave", status_code=303)
+
+
+@router.post("/leave/{leave_id}/reject")
+def leave_reject(
+    leave_id: int,
+    request: Request,
+    review_note: str = Form(""),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    lv = db.get(m.LeaveRecord, leave_id)
+    if lv is None:
+        return RedirectResponse("/admin/leave", status_code=303)
+    emp = db.get(m.Employee, lv.employee_id)
+    lv.status = m.LEAVE_REJECTED
+    lv.reviewed_by = admin.name
+    lv.reviewed_at = dt.datetime.utcnow()
+    lv.review_note = review_note.strip()
+    db.commit()
+    audit(db, admin.name, "leave_reject", "LeaveRecord", lv.id,
+          {"employee": emp.name if emp else lv.employee_id, "reason": review_note.strip()})
+    if emp is not None:
+        engine.recompute_employee(db, emp, lv.start_date, min(lv.end_date, dt.date.today()))
+    flash(request, f"Rejected leave request for {emp.name if emp else lv.employee_id}.", "ok")
+    return RedirectResponse("/admin/leave", status_code=303)
 
 
 @router.post("/leave/add")
@@ -574,8 +766,12 @@ def leave_add(
     emp = db.get(m.Employee, employee_id)
     if emp is None:
         return RedirectResponse("/admin/leave", status_code=303)
-    start = dt.date.fromisoformat(start_date)
-    end = dt.date.fromisoformat(end_date) if end_date else start
+    try:
+        start = parse_date_field(start_date, "Start date")
+        end = parse_date_field(end_date, "End date") if end_date else start
+    except FormError as e:
+        flash(request, e.message, "err")
+        return RedirectResponse("/admin/leave", status_code=303)
     if end < start:
         flash(request, "End date is before start date.", "err")
         return RedirectResponse("/admin/leave", status_code=303)
@@ -592,6 +788,7 @@ def leave_add(
     lv = m.LeaveRecord(
         employee_id=employee_id, start_date=start, end_date=end,
         type=type, minutes_per_day=minutes, note=note.strip(), entered_by=admin.name,
+        status=m.LEAVE_APPROVED,  # admin direct-entry is already-approved by definition
     )
     db.add(lv)
     db.commit()
@@ -632,7 +829,7 @@ def config_page(
 ):
     cfg = engine.get_config(db)
     holidays = list(db.execute(select(m.Holiday).order_by(m.Holiday.date)).scalars())
-    return render(request, "admin/config.html", {"user": admin, "cfg": cfg, "holidays": holidays})
+    return render(request, "admin/config.html", {"user": admin, "cfg": cfg, "holidays": holidays}, db=db)
 
 
 @router.post("/config")
@@ -644,22 +841,28 @@ def config_save(
     backdate_working_days: str = Form("1"),
     gap_flag_minutes: str = Form("15"),
     min_details_chars: str = Form("5"),
+    max_break_minutes: str = Form("30"),
     comp_erases_strike: str = Form(""),
     live_start_date: str = Form(""),
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     before = engine.get_config(db)
-    values = {
-        "tolerance_minutes": str(int(round(float(tolerance_hours) * 60))),
-        "strike_threshold": str(int(strike_threshold)),
-        "max_row_minutes": str(int(round(float(max_row_hours) * 60))),
-        "backdate_working_days": str(int(backdate_working_days)),
-        "gap_flag_minutes": str(int(gap_flag_minutes)),
-        "min_details_chars": str(int(min_details_chars)),
-        "comp_erases_strike": "1" if comp_erases_strike == "1" else "0",
-        "live_start_date": live_start_date.strip(),
-    }
+    try:
+        values = {
+            "tolerance_minutes": str(parse_hours_field(tolerance_hours, "Tolerance")),
+            "strike_threshold": str(parse_int_field(strike_threshold, "Strike threshold")),
+            "max_row_minutes": str(parse_hours_field(max_row_hours, "Max row length")),
+            "backdate_working_days": str(parse_int_field(backdate_working_days, "Backdate window")),
+            "gap_flag_minutes": str(parse_int_field(gap_flag_minutes, "Gap flag minutes")),
+            "min_details_chars": str(parse_int_field(min_details_chars, "Minimum details length")),
+            "max_break_minutes": str(parse_int_field(max_break_minutes, "Break allowance")),
+            "comp_erases_strike": "1" if comp_erases_strike == "1" else "0",
+            "live_start_date": live_start_date.strip(),
+        }
+    except FormError as e:
+        flash(request, e.message, "err")
+        return RedirectResponse("/admin/config", status_code=303)
     for k, v in values.items():
         row = db.get(m.Config, k)
         if row is None:
@@ -681,7 +884,11 @@ def holiday_add(
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    d = dt.date.fromisoformat(date)
+    try:
+        d = parse_date_field(date)
+    except FormError as e:
+        flash(request, e.message, "err")
+        return RedirectResponse("/admin/config", status_code=303)
     if db.execute(select(m.Holiday).where(m.Holiday.date == d)).scalar_one_or_none() is None:
         db.add(m.Holiday(date=d, name=name.strip()))
         db.commit()
@@ -705,6 +912,47 @@ def holiday_delete(
 
 
 # --------------------------------------------------------------------------
+# Support inbox (employee-submitted questions from /support)
+# --------------------------------------------------------------------------
+@router.get("/support")
+def support_inbox(
+    request: Request,
+    status: str = "open",
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    q = select(m.SupportQuery).order_by(m.SupportQuery.created_at.desc())
+    rows = list(db.execute(q).scalars())
+    if status == "open":
+        rows = [r for r in rows if r.status == m.SUPPORT_OPEN]
+    return render(
+        request, "admin/support.html",
+        {"user": admin, "rows": rows, "status": status}, db=db,
+    )
+
+
+@router.post("/support/{query_id}/resolve")
+def support_resolve(
+    query_id: int,
+    request: Request,
+    reply: str = Form(""),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    q = db.get(m.SupportQuery, query_id)
+    if q is None:
+        return RedirectResponse("/admin/support", status_code=303)
+    q.status = m.SUPPORT_RESOLVED
+    q.admin_reply = reply.strip()
+    q.resolved_by = admin.name
+    q.resolved_at = dt.datetime.utcnow()
+    db.commit()
+    audit(db, admin.name, "support_resolved", "SupportQuery", q.id, {"reply": reply.strip()[:200]})
+    flash(request, "Marked resolved.", "ok")
+    return RedirectResponse("/admin/support", status_code=303)
+
+
+# --------------------------------------------------------------------------
 # Audit log
 # --------------------------------------------------------------------------
 @router.get("/audit")
@@ -716,4 +964,4 @@ def audit_page(
     rows = list(
         db.execute(select(m.AuditLog).order_by(m.AuditLog.at.desc()).limit(300)).scalars()
     )
-    return render(request, "admin/audit.html", {"user": admin, "rows": rows})
+    return render(request, "admin/audit.html", {"user": admin, "rows": rows}, db=db)

@@ -2,7 +2,9 @@
 {% set active_nav = 'dash' %}
 {% block title %}{{ emp.name }} · MK Timekeeping{% endblock %}
 {% block content %}
-<h1>{{ emp.name }}
+<h1>
+  {% if emp.photo_path %}<img src="/static/uploads/avatars/{{ emp.photo_path }}" class="avatar-sm" style="width:30px;height:30px" alt="">{% endif %}
+  {{ emp.name }}
   <span class="muted" style="font-size:14px;font-weight:400">
     {{ emp.department or '—' }}{% if emp.designation %} · {{ emp.designation }}{% endif %}
     · target {{ emp.daily_target_minutes|hm }}/day
@@ -140,6 +142,28 @@
         </tbody>
       </table>
       <p class="small"><a href="/admin/leave">Add leave →</a></p>
+    </div>
+
+    <div class="card">
+      <h2>Breaks ({{ month_label(year, month) }})</h2>
+      <p class="small muted">Allowance: {{ max_break_minutes }} min/day — time over it extends that day's target.</p>
+      <table>
+        <thead><tr><th>Date</th><th>Type</th><th>When</th><th>Duration</th></tr></thead>
+        <tbody>
+          {% for b in breaks[:40] %}
+          <tr>
+            <td class="nowrap">{{ b.date.isoformat() }}</td>
+            <td>{{ b.break_type }}</td>
+            <td class="nowrap">
+              {{ b.start_minute|clock }}–{{ b.end_minute|clock if b.end_minute is not none else 'in progress' }}
+            </td>
+            <td>{{ b.duration_minutes|hm if b.duration_minutes is not none else '—' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="muted">No breaks logged.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
     </div>
   </div>
 </div>

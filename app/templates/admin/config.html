@@ -21,6 +21,8 @@ use “Recompute month” on the dashboard to apply retroactively.</p>
       <input name="gap_flag_minutes" value="{{ cfg.gap_flag_minutes }}">
       <label class="f">Minimum Details length (characters)</label>
       <input name="min_details_chars" value="{{ cfg.min_details_chars }}">
+      <label class="f">Daily break allowance (minutes) — time over this extends that day's target</label>
+      <input name="max_break_minutes" value="{{ cfg.max_break_minutes }}">
       <label class="f" title="Open question 3">
         <input type="checkbox" name="comp_erases_strike" value="1" {{ 'checked' if cfg.comp_erases_strike == '1' }}>
         A fully compensated shortfall erases the strike (original status kept in audit)
