@@ -183,6 +183,20 @@ class TestParseRowNewHire:
         assert "email" not in f and "phone" not in f
         assert f["is_admin"] is False  # Role still defaults for new hires
 
+    def test_country_code_captured_when_present(self):
+        row = dict(NEW_ROW, **{"Country Code": "+91"})
+        result = parse_row(row, {})
+        assert result["error"] is None
+        assert result["fields"]["country_code"] == "+91"
+
+    def test_country_code_optional_and_independent_of_phone(self):
+        row = dict(NEW_ROW, **{"Country Code": "", "Phone": "9876543210"})
+        result = parse_row(row, {})
+        assert result["error"] is None
+        f = result["fields"]
+        assert "country_code" not in f
+        assert f["phone"] == "9876543210"
+
     def test_bad_email_flagged(self):
         row = dict(NEW_ROW, **{"Email": "not-an-email"})
         result = parse_row(row, {})
@@ -232,6 +246,17 @@ class TestParseRowUpdate:
         result = parse_row(row, {"LOMK001": 1})
         assert result["mode"] == "error"
 
+    def test_country_code_alone_is_a_minimal_patch(self):
+        row = {"Employee ID": "LOMK001", "Country Code": "+44"}
+        result = parse_row(row, {"LOMK001": 1})
+        assert result["error"] is None
+        assert result["fields"] == {"country_code": "+44"}
+
+    def test_blank_country_code_on_update_not_included_in_patch(self):
+        row = {"Employee ID": "LOMK001", "Phone": "123"}
+        result = parse_row(row, {"LOMK001": 1})
+        assert "country_code" not in result["fields"]
+
 
 class TestSampleAndExportWorkbooks:
     def test_sample_workbook_new_hire_row_parses_cleanly(self):
@@ -242,6 +267,13 @@ class TestSampleAndExportWorkbooks:
         result = parse_row(rows[0], {})
         assert result["error"] is None
         assert result["mode"] == "new"
+
+    def test_sample_workbook_has_country_code_column(self):
+        wb = build_sample_workbook()
+        rows, _ = read_upload_rows(wb)
+        result = parse_row(rows[0], {})
+        assert result["fields"]["country_code"]
+        assert result["fields"]["phone"]
 
     def test_reordered_case_insensitive_headers_still_match(self):
         # Header order/case shouldn't matter for matching; all 5 fields
@@ -290,7 +322,7 @@ class TestExistingEmployeesWorkbook:
         db.add(m.Employee(
             name="Jane Doe", department="Accounts", designation="Associate",
             daily_target_minutes=450, work_days="0,1,2,3,4", email="jane@example.com",
-            phone="+1 555 0100", employee_code="LOMK001", is_admin=False, active=True,
+            country_code="+1", phone="555 0100", employee_code="LOMK001", is_admin=False, active=True,
         ))
         db.commit()
         wb = build_existing_employees_workbook(db)
@@ -300,6 +332,16 @@ class TestExistingEmployeesWorkbook:
         result = parse_row(rows[0], {"LOMK001": 1})
         assert result["mode"] == "update"
         assert result["error"] is None
+
+    def test_country_code_and_phone_export_as_separate_columns(self, db):
+        db.add(m.Employee(
+            name="Jane Doe", employee_code="LOMK001", country_code="+91", phone="9876543210",
+        ))
+        db.commit()
+        wb = build_existing_employees_workbook(db)
+        rows, _ = read_upload_rows(wb)
+        assert rows[0]["Country Code"] == "+91"
+        assert rows[0]["Phone"] == "9876543210"
 
     def test_deactivated_employees_excluded(self, db):
         db.add(m.Employee(name="Gone", employee_code="LOMK001", active=False))

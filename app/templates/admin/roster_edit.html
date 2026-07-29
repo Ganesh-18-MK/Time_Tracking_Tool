@@ -12,7 +12,11 @@
       Account: {% if emp.password_hash %}password set{% else %}not signed up yet{% endif %}
       — employees claim their account at <code>/signup</code> using this exact email.
     </div>
-    <label class="f">Phone</label><input name="phone" value="{{ emp.phone or '' }}" style="width:100%">
+    <label class="f">Phone</label>
+    <div class="formrow" style="margin-top:2px">
+      <div><label>Country code</label><input name="country_code" value="{{ emp.country_code or '' }}" placeholder="+91" style="width:70px"></div>
+      <div style="flex:1"><label>Number</label><input name="phone" value="{{ emp.phone or '' }}" style="width:100%"></div>
+    </div>
     <div class="formrow" style="margin-top:8px">
       <div><label>Department</label><input name="department" value="{{ emp.department }}"></div>
       <div><label>Designation</label><input name="designation" value="{{ emp.designation }}"></div>

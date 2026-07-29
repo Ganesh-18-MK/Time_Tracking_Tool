@@ -484,9 +484,10 @@ def roster(
 
 def _emp_from_form(
     db: Session, emp: m.Employee, name, email, department, designation, target_hours,
-    work_days, start_date, active, tracked, is_admin, dob="", phone="",
+    work_days, start_date, active, tracked, is_admin, dob="", phone="", country_code="",
 ):
     emp.name = name.strip()
+    emp.country_code = country_code.strip() or None
     emp.phone = phone.strip() or None
     # None (not "") so multiple blank emails never collide on the unique
     # constraint; signup later matches an employee by this exact field.
@@ -530,6 +531,7 @@ def roster_add(
     work_days: list = Form(["0", "1", "2", "3", "4"]),
     start_date: str = Form(""),
     dob: str = Form(""),
+    country_code: str = Form(""),
     phone: str = Form(""),
     active: str = Form("1"),
     tracked: str = Form("1"),
@@ -540,7 +542,8 @@ def roster_add(
     emp = m.Employee(name=name.strip())
     try:
         _emp_from_form(db, emp, name, email, department, designation, target_hours,
-                       work_days, start_date, active == "1", tracked == "1", is_admin == "1", dob, phone)
+                       work_days, start_date, active == "1", tracked == "1", is_admin == "1",
+                       dob, phone, country_code)
     except FormError as e:
         flash(request, e.message, "err")
         return RedirectResponse("/admin/roster", status_code=303)
@@ -598,6 +601,7 @@ def roster_edit(
     work_days: list = Form([]),
     start_date: str = Form(""),
     dob: str = Form(""),
+    country_code: str = Form(""),
     phone: str = Form(""),
     active: str = Form(""),
     tracked: str = Form(""),
@@ -615,7 +619,8 @@ def roster_edit(
     }
     try:
         _emp_from_form(db, emp, name, email, department, designation, target_hours,
-                       work_days, start_date, active == "1", tracked == "1", is_admin == "1", dob, phone)
+                       work_days, start_date, active == "1", tracked == "1", is_admin == "1",
+                       dob, phone, country_code)
     except FormError as e:
         flash(request, e.message, "err")
         return RedirectResponse("/admin/roster", status_code=303)

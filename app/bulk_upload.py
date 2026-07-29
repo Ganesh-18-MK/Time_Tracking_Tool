@@ -36,10 +36,11 @@ _PENDING = -1  # sentinel: "claimed by a new-employee row earlier in this same u
 
 TEMPLATE_HEADERS = [
     "Employee ID", "Full Name", "Department", "Designation", "Target/day",
-    "Workdays", "Joining Date", "DOB", "Email", "Phone", "Role", "Action",
+    "Workdays", "Joining Date", "DOB", "Email", "Country Code", "Phone", "Role", "Action",
 ]
 REQUIRED_FOR_NEW = ["Full Name", "Department", "Designation", "Target/day", "Workdays"]
-COL_WIDTHS = [12, 22, 16, 18, 11, 16, 14, 12, 26, 16, 10, 12]
+COL_WIDTHS = [12, 22, 16, 18, 11, 16, 14, 12, 26, 12, 16, 10, 12]
+COL_LETTERS = "ABCDEFGHIJKLM"  # one per TEMPLATE_HEADERS column, in order
 
 # Both the exact letter-codes from the spec (M/T/W/Th/F/S/Su) and a few
 # common 3-letter aliases, so a sheet that says "Mon,Tue,Wed" instead still
@@ -248,6 +249,11 @@ def parse_row(raw: dict, code_to_id: Dict[str, int]) -> dict:
         else:
             fields["email"] = email
 
+    country_code_raw = raw.get("Country Code")
+    country_code = str(country_code_raw).strip() if country_code_raw not in (None, "") else ""
+    if country_code:
+        fields["country_code"] = country_code
+
     phone_raw = raw.get("Phone")
     phone = str(phone_raw).strip() if phone_raw not in (None, "") else ""
     if phone:
@@ -419,9 +425,9 @@ def build_sample_workbook() -> Workbook:
     ws.append([
         "", "Jane Doe", "Accounts", "Associate", 8,
         "M,T,W,Th,F", "2026-08-03", "1990-05-14", "jane.doe@example.com",
-        "+1 555 0100", "Employee", "",
+        "+1", "555 0100", "Employee", "",
     ])
-    for col, width in zip("ABCDEFGHIJKL", COL_WIDTHS):
+    for col, width in zip(COL_LETTERS, COL_WIDTHS):
         ws.column_dimensions[col].width = width
 
     info = wb.create_sheet("Instructions")
@@ -438,7 +444,8 @@ def build_sample_workbook() -> Workbook:
         ("Joining Date", "No", "YYYY-MM-DD, e.g. 2026-08-03"),
         ("DOB", "No", "YYYY-MM-DD"),
         ("Email", "No, but needed before the employee can sign in", "name@company.com"),
-        ("Phone", "No", "Any format"),
+        ("Country Code", "No", "e.g. +91, +1 — kept separate from Phone so it always round-trips cleanly"),
+        ("Phone", "No", "Just the number, without the country code, e.g. 9876543210"),
         ("Role", "No — defaults to Employee", "Employee or Admin"),
         ("Action", "No — only valid on an update row (Employee ID filled in)",
          "Blank, or 'Deactivate' to offboard — keeps all their history, same as Roster -> Edit -> untick Active"),
@@ -478,8 +485,9 @@ def build_existing_employees_workbook(db) -> Workbook:
             round(e.daily_target_minutes / 60, 2), workdays_to_letters(e.work_days),
             e.start_date.isoformat() if e.start_date else "",
             e.date_of_birth.isoformat() if e.date_of_birth else "",
-            e.email or "", e.phone or "", "Admin" if e.is_admin else "Employee", "",
+            e.email or "", e.country_code or "", e.phone or "",
+            "Admin" if e.is_admin else "Employee", "",
         ])
-    for col, width in zip("ABCDEFGHIJKL", COL_WIDTHS):
+    for col, width in zip(COL_LETTERS, COL_WIDTHS):
         ws.column_dimensions[col].width = width
     return wb

@@ -58,6 +58,10 @@ class Employee(Base):
     # optional — collected via Roster/Edit or bulk upload; nothing in the
     # engine reads this today, it's HR reference data only.
     date_of_birth: Mapped[Optional[dt.date]] = mapped_column(Date, nullable=True)
+    # kept separate from phone so a country like "+91" is never guessed back
+    # out of a combined string on re-export (see app/bulk_upload.py) — free
+    # text, not validated against a real dialing-code list.
+    country_code: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     phone: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     # Human-facing, stable ID ("LOMK001", ...) — never reused, never edited
     # by hand. Assigned at creation (see app/util.py next_employee_code) and
