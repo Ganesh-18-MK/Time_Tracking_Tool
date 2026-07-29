@@ -1,8 +1,10 @@
 # MK Internal Timekeeping & Compliance App (POC)
 
-**Status:** ✅ Feature-complete against [PRD Draft v1](docs/PRD.md) · ✅ Acceptance test passing (**168/168** historical strike counts reproduced) · ✅ 35 unit tests green · Built 27 Jul 2026
+**Status:** ✅ Feature-complete against [PRD Draft v1](docs/PRD.md) · ✅ Acceptance test passing (**168/168** historical strike counts reproduced) · ✅ 145 unit tests green · Updated 29 Jul 2026
 
 One web app that replaces the three manual spreadsheets used to run offshore time tracking — the per-person **Task Summary** files, the 57-tab **Leave Tracker**, and the monthly **Compliance sheet**. The employee logs time once; leave, hours variance, and compliance status all derive from that single entry automatically. Interim tool until the third-party HR pilot concludes: **designed for export, not permanence.**
+
+Beyond the original PRD build, the app now also has: real employee/admin login with self-signup passwords and lockout after repeated failures, break tracking with a live timer, employee-submitted leave requests and support questions (with an admin approval/reply queue for each), profile photos, bulk employee onboarding/updating/offboarding via an Excel upload, a redesigned live compliance dashboard, and two cascading-filter Reports pages (Attendance, Strikes) with XLSX export. See **[MK_Timekeeping_Documentation.pdf](MK_Timekeeping_Documentation.pdf)** for a plain-English, page-by-page walkthrough with a flow diagram — handy to hand to a non-technical stakeholder.
 
 New to this codebase? Start with **[HANDOFF.md](HANDOFF.md)**. The original requirements are in **[docs/PRD.md](docs/PRD.md)**.
 
@@ -12,16 +14,17 @@ New to this codebase? Start with **[HANDOFF.md](HANDOFF.md)**. The original requ
 
 1. [Quick start](#quick-start)
 2. [Verify the build](#verify-the-build)
-3. [Screens & roles](#screens--roles)
-4. [How statuses, variance, and strikes are computed](#how-statuses-variance-and-strikes-are-computed)
-5. [Data flow](#data-flow)
-6. [Configuration reference](#configuration-reference)
-7. [The legacy import (read before touching history)](#the-legacy-import)
-8. [Project structure](#project-structure)
-9. [Testing](#testing)
-10. [Path to production](#path-to-production)
-11. [Troubleshooting](#troubleshooting)
-12. [PRD traceability](#prd-traceability)
+3. [App flow](#app-flow)
+4. [Screens & roles](#screens--roles)
+5. [How statuses, variance, and strikes are computed](#how-statuses-variance-and-strikes-are-computed)
+6. [Data flow](#data-flow)
+7. [Configuration reference](#configuration-reference)
+8. [The legacy import (read before touching history)](#the-legacy-import)
+9. [Project structure](#project-structure)
+10. [Testing](#testing)
+11. [Path to production](#path-to-production)
+12. [Troubleshooting](#troubleshooting)
+13. [PRD traceability](#prd-traceability)
 
 ---
 
@@ -44,8 +47,10 @@ python3 -m venv .venv
 .venv/bin/python -m uvicorn app.main:app --port 8127
 ```
 
-Open **http://localhost:8127**. Dev sign-in: pick a user, no password.
-**Admins:** Steve, Mary, Norine. Everyone else signs in as an employee.
+Open **http://localhost:8127**. Sign-in behavior depends on `AUTH_MODE` (default `dev`):
+
+- **`AUTH_MODE=dev`** (default, local only) — a pick-a-user screen, no password.
+- **`AUTH_MODE=password`** — real Employee Login / Admin Login doors. First-time employees use **Sign up** to set their own password against the email an admin already put in the roster. Requires a real `SECRET_KEY` env var (the app refuses to boot without one outside `dev` mode). Repeated failed logins (5) lock that account out for 15 minutes.
 
 A pre-seeded `tms.db` ships with the handoff bundle — with it you can skip the two import steps and run immediately.
 
@@ -62,26 +67,52 @@ Rebuild after a fresh import with `.venv/bin/python -m demo.make_demo_db`. The r
 ## Verify the build
 
 ```bash
-.venv/bin/python -m pytest tests/ -q       # engine + validation rules  → 35 passed
+.venv/bin/python -m pytest tests/ -q       # engine, validation, util, bulk_upload, reports  → 145 passed
 .venv/bin/python -m legacy.verify_strikes  # PRD §12.3 acceptance       → 168/168 person-months match
 ```
 
 `verify_strikes` recomputes every person's March–July 2026 monthly strike count from imported data and compares it to the legacy sheet's own `STRIKES FOR MONTH` values. **If you change the engine or importer, this must stay 168/168.**
 
+## App flow
+
+Every page in the system and which zone it belongs to — everyone signs in once, then lands in the Employee zone or the Admin zone depending on role:
+
+![MK Timekeeping page flow: Login/Sign up splits into Employee Zone (Today, My Month, Leave, Support, Profile) and Admin Zone (Reports, Projects & Tasks, Leave Requests, Settings, Compliance Dashboard, Audit Logs, Employees/Roster, Support Inbox), with Roster and Dashboard both drilling into Employee Detail.](docs/flow_diagram.png)
+
+(Same diagram as in [MK_Timekeeping_Documentation.pdf](MK_Timekeeping_Documentation.pdf), kept here so it stays visible directly in the repo.)
+
 ## Screens & roles
 
-| Screen | URL | Who | What it does |
-|---|---|---|---|
-| Today | `/today` | Employee | Log task rows (dropdown project/task, details, start/end). Duration and daily total are computed, never typed. Overlaps blocked; >15 min gaps flagged (not blocked); 4 h row cap; back-dating limited to N working days. **Submit Day** locks the day. |
-| My Month | `/my-month` | Employee | Own status calendar, hours vs target per day, running variance balance, leave by category, live strike count (deliberate: today people find out after the fact). |
-| Compliance dashboard | `/admin` | Admin | The monthly sheet rebuilt live: rows = employees grouped by department, columns = days, cells = auto-derived status, strikes per row, violation flag at threshold. Filters: month, department, exceptions-only. Nothing here is typed. |
-| Person detail | `/admin/person/{id}` | Admin | Full log, ledger with running balance, leave history, day-status overrides (mandatory reason, audited, ⚑-flagged), submission unlocks (audited), compensation links. |
-| Roster | `/admin/roster` | Admin | Add/edit/deactivate people; department, designation, per-person daily target, per-person work-day schedule, start date, admin/tracked flags. Deactivation keeps history, drops the person from compliance runs. |
-| Lists | `/admin/lists` | Admin | Manage Project/Employer and Task dropdowns. Deactivating hides a value from new entries without breaking old rows. |
-| Leave | `/admin/leave` | Admin | Record leave (single day or range; full-day or partial hours; Casual/Sick/Vacation/Other-with-note). Recomputes affected days immediately. |
-| Config | `/admin/config` | Admin | Every PRD §10 open question as a dial, plus the company holiday table. |
-| Audit | `/admin/audit` | Admin | Last 300 audited actions (unlocks, overrides, config changes, imports, comp links…). |
-| Exports | `/export/…` | Admin | `dashboard.xlsx` (legacy sheet layout — the pilot-handoff bridge), `person/{id}.xlsx` (Ledger/Entries/Leave), `entries.csv?start=&end=`. |
+Everyone signs in through one login page (`/login`), then lands in one of two zones based on `Employee.is_admin`. An admin who is also an employee can switch into the Employee zone at any time via the "Employee login" nav link, and back again via "Admin Dashboard" — both zones' nav items are always reachable, never gated on `tracked`.
+
+**Employee zone**
+
+| Screen | URL | What it does |
+|---|---|---|
+| Today | `/today` | Log task rows (searchable project/task combo, details, start/end). Duration and daily total are computed, never typed. Overlaps blocked; >15 min gaps flagged (not blocked); 4 h row cap; back-dating limited to N working days. Start/end a Personal or Lunch/Dinner break with a live timer — time beyond the configured allowance automatically extends that day's target. **Submit Day** locks the day. |
+| My Month | `/my-month` | Own status calendar, hours vs target per day, running variance balance, leave by category, live strike count (deliberate: today people find out after the fact). |
+| Leave | `/leave` | Request time off (full day or partial hours, with type + note); withdraw a still-pending request; see every past request's status and any admin review note. |
+| Support | `/support` | Ask an admin a question and see their reply once resolved. |
+| Profile | `/profile` | Upload/replace a profile photo (JPEG/PNG/WebP, ≤2 MB). |
+
+**Admin zone**
+
+| Screen | URL | What it does |
+|---|---|---|
+| Compliance dashboard | `/admin` | The monthly sheet rebuilt live: live today's-attendance KPI cards (logged/on leave/not yet logged), department drill-down cards, a monthly grid (rows = employees, columns = days, cells = auto-derived status), strikes per row, violation flag at threshold, a "needs attention" panel (pending leave/support/violations) and recent audit activity. Filters: month, department, exceptions-only. Nothing here is typed. |
+| Person detail | `/admin/person/{id}` | Full log, ledger with running balance, leave history, breaks, day-status overrides (mandatory reason, audited, ⚑-flagged), submission unlocks (audited), compensation links, XLSX export. |
+| Roster | `/admin/roster` | Add/edit/deactivate people; department, designation, per-person daily target, per-person work-day schedule, start date, phone, DOB, admin/tracked flags. Each person gets an auto-generated `employee_code` (`LOMK001`, `LOMK002`, …). Deactivation keeps history, drops the person from compliance runs. Table has a live name search box. |
+| Roster → Bulk upload | `/admin/roster/bulk-upload` | One Excel upload handles three things at once, told apart per row by whether **Employee ID** is filled: blank → onboard a new hire (Full Name/Department/Designation/Target-day/Workdays required); filled → update only the columns provided (blank cells are left untouched, not cleared); filled **+ Action=Deactivate** → bulk-offboard that person (soft deactivate, history kept, never a hard delete). Download a blank template or an export of all current employees to edit and re-upload. See `app/bulk_upload.py`. |
+| Reports → Attendance / Strikes | `/admin/reports/attendance`, `/admin/reports/strikes` | Two report pages sharing one cascading filter bar: Department → Employee → Date range (Last 7 days / Last month / Last 3 months / custom). Pick "All Employees" for a summary table (attendance % or strike count per person); pick one person for their day-by-day detail instead. Both export to XLSX. See `app/reports.py`. |
+| Lists | `/admin/lists` | Manage Project/Employer and Task dropdowns. Deactivating hides a value from new entries without breaking old rows. |
+| Leave requests | `/admin/leave` | Approve/reject pending employee leave requests (with a note), or record already-approved leave directly on someone's behalf. Recomputes affected days immediately. |
+| Config | `/admin/config` | Every PRD §10 open question as a dial (including the daily break allowance), plus the company holiday table. |
+| Audit | `/admin/audit` | Last 300 audited actions (unlocks, overrides, config changes, imports, comp links, bulk uploads…). Read-only — nothing here can be edited or deleted from the UI. |
+| Support inbox | `/admin/support` | See and reply to open employee support questions; mark resolved. |
+| Exports | `/export/…` | `dashboard.xlsx` (legacy sheet layout — the pilot-handoff bridge), `person/{id}.xlsx` (Ledger/Entries/Leave), `entries.csv?start=&end=`. |
+| Health check | `/healthz` | Runs a real `SELECT 1` — an uptime monitor target for whatever host runs this (checks DB connectivity, not just process-alive). |
+
+A full plain-English walkthrough of every page and feature, with a flow diagram, is in **[MK_Timekeeping_Documentation.pdf](MK_Timekeeping_Documentation.pdf)**.
 
 ## How statuses, variance, and strikes are computed
 
@@ -140,6 +171,7 @@ Admin → Config. Stored in the `config` table; defaults in [app/models.py](app/
 | `min_details_chars` | 5 | Details minimum length | §4 |
 | `comp_erases_strike` | on | Fully compensated shortfall reads Complete | §10.3 |
 | `live_start_date` | import day | Frozen history before, live computation after | §9 |
+| `max_break_minutes` | 30 | Daily break allowance; time over this extends that day's target | — |
 
 Per-person schedule (work days, daily target) lives on the roster (§10.8). Holidays are an admin-maintained table, single region (§10.9). Leave quotas: not enforced, totals displayed (§10.6).
 
@@ -170,28 +202,39 @@ rm tms.db && .venv/bin/python -m legacy.import_legacy && .venv/bin/python -m leg
 
 ```
 app/
-  main.py            FastAPI app, session middleware, exception→login redirects
+  main.py            FastAPI app, session middleware, exception→error-page handlers, /healthz, startup hooks
   db.py              engine/session; SQLite default, DATABASE_URL for Postgres
   models.py          all entities (PRD §8) + CONFIG_DEFAULTS  — minutes everywhere
-  engine.py          status/variance/strike computation, recompute, ledger
+  engine.py          status/variance/strike computation, recompute, ledger, today_attendance()
   validation.py      PRD §4 entry rules + back-dating window + gap flags
-  auth.py            dev pick-a-user auth; the Entra ID swap point
-  templating.py      Jinja env, filters (hm, hm_signed, clock), flash helpers
-  routes/            auth, employee (Today/My Month), admin (7 screens), exports
-  templates/         base + 11 pages (server-rendered, one small JS snippet)
-  static/app.css     the whole look
+  auth.py            AUTH_MODE (dev / password / entra) — the Entra ID swap point
+  security.py        stdlib password hashing (AUTH_MODE=password)
+  rate_limit.py       in-memory login/signup lockout after repeated failures
+  bulk_upload.py     roster Excel parsing: onboard / update / bulk-deactivate
+  reports.py         Attendance/Strike report aggregation, cascading filters
+  util.py            formatting filters, FormError, audit(), employee-code generation, xlsx_response()
+  templating.py      Jinja env, filters (hm, hm_signed, clock, tojson), flash helpers, nav badges
+  routes/            auth (login/signup), employee (Today/My Month/Leave/Support/Profile),
+                     admin (dashboard/roster/lists/leave/config/audit/support), reports, exports
+  templates/         base + employee pages + admin/ pages (server-rendered, small inline JS)
+  static/            app.css, tablefilter.js (table search), combo.js (searchable select)
 legacy/
   ods_reader.py      streaming ODS parser (stdlib only)
   extract_tasks.py   Task Summary → JSONL cache (reusable per person)
   import_legacy.py   the seed importer (PRD §9)
   verify_strikes.py  acceptance test (PRD §12.3)
   cache/             extraction cache + import_report.json
-tests/               35 tests: engine rules, validation rules
+demo/
+  make_demo_db.py    builds the anonymized tms_demo.db (+ seeds fixed test logins)
+  run_demo.py        runs the app against tms_demo.db on port 8128
+  seed_test_logins.py  sets fixed admin@example.com/employee@example.com test accounts
+tests/               145 tests: engine, validation, util, bulk_upload, reports
 docs/PRD.md          the requirements this was built against
 HANDOFF.md           read this first if you're picking the project up
+MK_Timekeeping_Documentation.pdf   plain-English page/feature guide + flow diagram, for non-technical stakeholders
 ```
 
-~2,900 lines of app code. No JS framework, no build step; the only runtime deps are FastAPI, SQLAlchemy, Jinja2, openpyxl.
+No JS framework, no build step; the only runtime deps are FastAPI, SQLAlchemy, Jinja2, openpyxl (see `requirements.txt` for the full list, including `psycopg[binary]` for Postgres).
 
 ## Testing
 
@@ -201,17 +244,20 @@ HANDOFF.md           read this first if you're picking the project up
 
 - `test_engine.py` — status mapping incl. exact tolerance boundaries, leave-reduced targets, weekend surplus, part-time targets, strike counting, compensation on/off, override precedence, pre-policy exemption.
 - `test_validation.py` — overlaps, touching rows, midnight/duration/details rules, locked days, deactivated dropdown values, back-dating across weekends and holidays, gap flags.
+- `test_util.py` — formatting/parsing helpers.
+- `test_bulk_upload.py` — header matching, required-vs-optional fields by mode (new hire vs update), partial-update semantics, bulk-deactivate via the Action column, sample/export workbook round-trips.
+- `test_reports.py` — date-range resolution (presets, custom, fallback), department/employee scoping, summary vs. daily-drill-down output, strike-exempt exclusion.
 
-Schema changes: there's deliberately no migration tool in the POC — `rm tms.db`, re-run the importer (~40 s total).
+Schema changes: there's deliberately no migration tool in the POC — `rm tms.db`, re-run the importer (~40 s total). New nullable columns are picked up automatically at next startup via `app/db.py`'s additive-migration guard; anything more involved than adding a nullable column still means `rm tms.db` + re-import.
 
 ## Path to production
 
-The PRD's §9 targets, in recommended order:
+The PRD's §9 targets, updated for the actual rollout plan (self-signup auth + Render hosting):
 
-1. **Postgres** — set `DATABASE_URL=postgresql+psycopg://…` (add `psycopg[binary]` to requirements). No code changes; SQLAlchemy handles the dialect. Do this before multi-user rollout (~45 people submitting at end of day).
-2. **Entra ID** — replace the two dev routes in [app/routes/auth.py](app/routes/auth.py) with an MSAL authorization-code flow; map the tenant email → `Employee.email`; set `AUTH_MODE=entra` and a real `SECRET_KEY`. Role stays `Employee.is_admin`; nothing else changes. Populate `Employee.email` in the roster first.
-3. **Azure App Service** — same tenant as the mail system. `uvicorn app.main:app` behind the App Service HTTPS front end; DB = Azure Database for PostgreSQL; run the importer once against the final copies of the three files, then freeze the spreadsheets read-only.
-4. **Cutover checklist** — verify 168/168 on the production import; fix the two roster items flagged in the import report (part-timer targets); announce; spreadsheets become read-only archives.
+1. **Postgres** — set `DATABASE_URL=postgresql+psycopg://…` (`psycopg[binary]` is already in `requirements.txt`). No code changes; SQLAlchemy handles the dialect. Do this before multi-user rollout (~45 people submitting at end of day).
+2. **Real auth — done for password mode.** `AUTH_MODE=password` gives every employee their own email/password (self-signup against a roster row an admin already created), with rate-limited lockout after repeated failures. A real `SECRET_KEY` env var is required outside `dev` mode — the app refuses to boot without one. `AUTH_MODE=entra` (MSAL OAuth mapping the tenant email → `Employee.email`) remains the longer-term target in [app/routes/auth.py](app/routes/auth.py) if/when the org standardizes on Entra ID; nothing else in the app changes when that swap happens.
+3. **Hosting (Render)** — `uvicorn app.main:app` behind Render's HTTPS front end; DB = a managed Postgres instance; `/healthz` is already wired up as the uptime-monitor target. Run the importer once against the final copies of the three legacy files, then freeze the spreadsheets read-only. Note: profile-photo uploads (`app/static/uploads/`) land on local disk, which is ephemeral on Render's default filesystem — move to a persistent disk or S3-compatible storage before relying on photos long-term.
+4. **Cutover checklist** — verify 168/168 on the production import; fix the two roster items flagged in the import report (part-timer targets); replace any remaining test employee data with the real team; announce; spreadsheets become read-only archives.
 
 ## Troubleshooting
 
@@ -231,7 +277,7 @@ The PRD's §9 targets, in recommended order:
 | §4 entry rules + submission/locking | `app/validation.py`, `app/routes/employee.py`, Today screen |
 | §5 leave, variance, running balance, compensation | `app/engine.py`, `app/routes/admin.py` (leave, comp links), My Month + Person screens |
 | §6 statuses, strikes, overrides, violations | `app/engine.py`, DayStatus model, dashboard + person screens |
-| §7 all nine screens | `app/routes/` + `app/templates/` (see [Screens & roles](#screens--roles)) |
+| §7 all screens (grown well beyond the original nine) | `app/routes/` + `app/templates/` (see [Screens & roles](#screens--roles)) |
 | §8 data model | `app/models.py` (minutes-based; `unlock_log` realized as audit entries + `unlock_count`) |
 | §9 seed import + acceptance | `legacy/import_legacy.py`, `legacy/verify_strikes.py` → **168/168** |
 | §10 open questions | all nine are config dials / roster fields (see [Configuration reference](#configuration-reference)) |
