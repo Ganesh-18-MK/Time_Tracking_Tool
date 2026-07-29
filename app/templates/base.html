@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}MK Timekeeping{% endblock %}</title>
 <link rel="icon" type="image/png" href="/static/brand/favicon.png">
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/app.css?v={{ static_version }}">
 </head>
 <body>
 <header class="topbar">
@@ -14,24 +14,40 @@
     <span>Timekeeping &amp; Compliance</span><em class="poc">POC</em>
   </div>
   {% if user %}
+  {% set employee_zone = ['today', 'month', 'leave', 'support', 'profile'] %}
   <nav>
-    {% if not user.is_admin or user.tracked %}
+    {% if not user.is_admin %}
+      {# Plain employees only ever see their own toolkit. #}
       <a href="/today" class="{{ 'on' if active_nav == 'today' }}">Today</a>
       <a href="/my-month" class="{{ 'on' if active_nav == 'month' }}">My Month</a>
       <a href="/leave" class="{{ 'on' if active_nav == 'leave' }}">Leave</a>
-    {% endif %}
-    {% if not user.is_admin %}
       <a href="/support" class="{{ 'on' if active_nav == 'support' }}">Support</a>
       <a href="/profile" class="{{ 'on' if active_nav == 'profile' }}">Profile</a>
-    {% endif %}
-    {% if user.is_admin %}
+    {% elif active_nav in employee_zone %}
+      {# An admin who clicked "Employee login" — same employee toolkit, plus
+         one link back to their admin side. #}
+      <a href="/admin">← Admin Dashboard</a>
+      <a href="/today" class="{{ 'on' if active_nav == 'today' }}">Today</a>
+      <a href="/my-month" class="{{ 'on' if active_nav == 'month' }}">My Month</a>
+      <a href="/leave" class="{{ 'on' if active_nav == 'leave' }}">Leave</a>
+      <a href="/support" class="{{ 'on' if active_nav == 'support' }}">Support</a>
+      <a href="/profile" class="{{ 'on' if active_nav == 'profile' }}">Profile</a>
+    {% else %}
       <a href="/admin" class="{{ 'on' if active_nav == 'dash' }}">Dashboard</a>
-      <a href="/admin/roster" class="{{ 'on' if active_nav == 'roster' }}">Roster</a>
-      <a href="/admin/lists" class="{{ 'on' if active_nav == 'lists' }}">Lists</a>
-      <a href="/admin/leave" class="{{ 'on' if active_nav == 'leave' }}">Leave{% if nav_badges and nav_badges.pending_leave %}<span class="navbadge">{{ nav_badges.pending_leave }}</span>{% endif %}</a>
-      <a href="/admin/support" class="{{ 'on' if active_nav == 'support' }}">Support{% if nav_badges and nav_badges.open_support %}<span class="navbadge">{{ nav_badges.open_support }}</span>{% endif %}</a>
-      <a href="/admin/config" class="{{ 'on' if active_nav == 'config' }}">Config</a>
-      <a href="/admin/audit" class="{{ 'on' if active_nav == 'audit' }}">Audit</a>
+      <a href="/admin/leave" class="{{ 'on' if active_nav == 'admin_leave' }}">Leave Requests{% if nav_badges and nav_badges.pending_leave %}<span class="navbadge">{{ nav_badges.pending_leave }}</span>{% endif %}</a>
+      <details class="navdrop">
+        <summary class="{{ 'on' if active_nav == 'reports' }}">Reports ▾</summary>
+        <div class="navdrop-menu">
+          <a href="/admin/reports/attendance">Attendance Reports</a>
+          <a href="/admin/reports/strikes">Strike Reports</a>
+        </div>
+      </details>
+      <a href="/admin/roster" class="{{ 'on' if active_nav == 'roster' }}">Employees</a>
+      <a href="/admin/lists" class="{{ 'on' if active_nav == 'lists' }}">Projects &amp; Tasks</a>
+      <a href="/admin/config" class="{{ 'on' if active_nav == 'config' }}">Settings</a>
+      <a href="/admin/audit" class="{{ 'on' if active_nav == 'audit' }}">Audit Logs</a>
+      <a href="/admin/support" class="{{ 'on' if active_nav == 'admin_support' }}">Support Inbox{% if nav_badges and nav_badges.open_support %}<span class="navbadge">{{ nav_badges.open_support }}</span>{% endif %}</a>
+      <a href="/today">Employee login</a>
     {% endif %}
   </nav>
   <div class="userchip">
@@ -53,5 +69,15 @@
 <main>
 {% block content %}{% endblock %}
 </main>
+<script src="/static/tablefilter.js?v={{ static_version }}"></script>
+<script>
+  // Close any open nav dropdown (e.g. Reports) when clicking outside it.
+  document.addEventListener("click", function (e) {
+    document.querySelectorAll(".navdrop[open]").forEach(function (d) {
+      if (!d.contains(e.target)) d.removeAttribute("open");
+    });
+  });
+</script>
+{% block scripts %}{% endblock %}
 </body>
 </html>

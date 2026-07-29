@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% set active_nav = 'reports' %}
+{% block title %}Reports · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Reports</h1>
+<div class="cols">
+  <div class="card">
+    <h2 style="margin-top:0">Attendance Reports</h2>
+    <p class="small muted">Filter by department, employee, and date range. Pick one employee for
+    their day-by-day detail, or leave it on "All Employees" for a summary table.</p>
+    <a class="btn secondary" href="/admin/reports/attendance">Open</a>
+  </div>
+  <div class="card">
+    <h2 style="margin-top:0">Strike Reports</h2>
+    <p class="small muted">Same filters — compliance violations (Missing/Partial days) by
+    department, employee, and date range.</p>
+    <a class="btn secondary" href="/admin/reports/strikes">Open</a>
+  </div>
+</div>
+{% endblock %}

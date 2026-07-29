@@ -1,8 +1,13 @@
 """Formatting + audit helpers shared by routes and templates."""
 import datetime as dt
+import io
 import json
+import re
 from typing import Optional
 
+from fastapi.responses import StreamingResponse
+from openpyxl import Workbook
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models as m
@@ -85,6 +90,69 @@ def parse_hours_field(value, label: str) -> int:
         return int(round(float(value) * 60))
     except (ValueError, TypeError):
         raise FormError(f"{label} must be a number.")
+
+
+# ---- employee ID generation --------------------------------------------
+# "LOMK001", "LOMK002", ... — monotonic and never reused (based on the
+# highest number ever assigned, including deactivated employees), so a
+# departed employee's old ID is never handed to someone new.
+EMPLOYEE_CODE_PREFIX = "LOMK"
+_CODE_RE = re.compile(rf"^{EMPLOYEE_CODE_PREFIX}(\d+)$")
+
+
+def format_employee_code(n: int) -> str:
+    return f"{EMPLOYEE_CODE_PREFIX}{n:03d}"
+
+
+def highest_employee_code_number(db: Session) -> int:
+    best = 0
+    for (code,) in db.execute(select(m.Employee.employee_code)).all():
+        if not code:
+            continue
+        match = _CODE_RE.match(code)
+        if match:
+            best = max(best, int(match.group(1)))
+    return best
+
+
+def next_employee_code(db: Session) -> str:
+    """For single-row creation (Roster -> Add person). Bulk upload assigns
+    a block of codes itself instead of re-querying per row — see
+    app/bulk_upload.py."""
+    return format_employee_code(highest_employee_code_number(db) + 1)
+
+
+def ensure_employee_codes(db: Session) -> None:
+    """Backfill employee_code for rows created before this column existed.
+    Assigns in id order (i.e. original creation order) so codes stay stable
+    across repeated runs. A no-op once every row already has one — safe to
+    call on every app startup (see app/main.py)."""
+    missing = list(
+        db.execute(
+            select(m.Employee).where(m.Employee.employee_code.is_(None)).order_by(m.Employee.id)
+        ).scalars()
+    )
+    if not missing:
+        return
+    n = highest_employee_code_number(db) + 1
+    for emp in missing:
+        emp.employee_code = format_employee_code(n)
+        n += 1
+    db.commit()
+
+
+def xlsx_response(wb: Workbook, filename: str) -> StreamingResponse:
+    """Shared by every route that streams an openpyxl Workbook back as a
+    download (exports.py, bulk_upload's templates, reports.py) so the
+    buf/save/seek/StreamingResponse boilerplate exists in exactly one place."""
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def fmt_hours(minutes: Optional[int]) -> str:

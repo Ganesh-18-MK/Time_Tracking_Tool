@@ -28,6 +28,18 @@ h3 { font-size: 14px; margin: 16px 0 6px; }
 .topbar nav a { color: var(--ink); padding: 6px 10px; border-radius: 7px; }
 .topbar nav a.on, .topbar nav a:hover { background: var(--accent-light); color: var(--brand-dark);
   opacity: .9; text-decoration: none; }
+.navdrop { position: relative; }
+.navdrop summary { list-style: none; cursor: pointer; color: var(--ink); padding: 6px 10px;
+  border-radius: 7px; display: inline-block; }
+.navdrop summary::-webkit-details-marker { display: none; }
+.navdrop summary:hover, .navdrop summary.on, .navdrop[open] summary { background: var(--accent-light);
+  color: var(--brand-dark); opacity: .9; }
+.navdrop-menu { position: absolute; top: 100%; left: 0; margin-top: 4px; background: #fff;
+  border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 18px rgba(7, 41, 38, .12);
+  padding: 6px; min-width: 220px; z-index: 20; }
+.navdrop-menu a { display: block; padding: 6px 10px; border-radius: 6px; color: var(--ink);
+  font-size: 13px; white-space: nowrap; }
+.navdrop-menu a:hover { background: var(--bg); }
 .userchip { margin-left: auto; display: flex; gap: 10px; align-items: center; color: var(--muted); }
 .linklike { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }
 em.poc { font-style: normal; font-size: 10px; background: var(--accent-light); color: var(--brand-dark);
@@ -46,6 +58,10 @@ em.poc { font-style: normal; font-size: 10px; background: var(--accent-light); c
 .small { font-size: 12px; }
 .right { text-align: right; }
 .nowrap { white-space: nowrap; }
+
+.searchbar { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+.searchbar input { width: 100%; max-width: 280px; }
+.searchbar::before { content: "🔍"; font-size: 12px; opacity: .6; }
 
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }

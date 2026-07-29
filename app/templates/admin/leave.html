@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% set active_nav = 'leave' %}
+{% set active_nav = 'admin_leave' %}
 {% block title %}Leave · MK Timekeeping{% endblock %}
 {% block content %}
 <h1>Leave entry</h1>
@@ -58,7 +58,10 @@
 
 <div class="card">
   <h2>Recent leave records</h2>
-  <table>
+  <div class="searchbar">
+    <input type="search" data-filter-table="leave-records-table" placeholder="Search leave records…">
+  </div>
+  <table id="leave-records-table">
     <thead><tr><th>Employee</th><th>When</th><th>Type</th><th>Hours/day</th><th>Note</th><th>Status</th><th>By</th><th></th></tr></thead>
     <tbody>
       {% for lv in recent %}

@@ -166,7 +166,7 @@
     max {{ (max_row_minutes // 60) }}h per row — break long work down · gaps over {{ gap_minutes }} min get flagged, not blocked.</div>
 </div>
 
-<script src="/static/combo.js"></script>
+<script src="/static/combo.js?v={{ static_version }}"></script>
 <script>
 initCombo(document.getElementById('combo-project'), {{ projects|tojson }});
 initCombo(document.getElementById('combo-task'), {{ tasks|tojson }});

@@ -27,6 +27,9 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REAL = os.path.join(BASE, "tms.db")
 DEMO = os.path.join(BASE, "tms_demo.db")
 
+sys.path.insert(0, BASE)
+from demo.seed_test_logins import seed as seed_test_logins  # noqa: E402
+
 FIRSTS = [
     "Ananya", "Rohan", "Ishaan", "Zara", "Farah", "Arjun", "Nisha", "Tara",
     "Vikram", "Meera", "Sana", "Ravi", "Anjali", "Varun", "Rhea", "Imran",
@@ -163,6 +166,9 @@ def main() -> int:
         "VALUES (datetime('now'), 'demo-setup', 'anonymize', 'all', '', "
         "'{\"note\": \"demo database — all names, clients, and notes are fictional\"}')"
     )
+
+    # ---- fixed test logins (admin@example.com / employee@example.com) ------
+    seed_test_logins(cur)
     con.commit()
 
     # ---- leak scan: no real name-word or client may survive -----------------

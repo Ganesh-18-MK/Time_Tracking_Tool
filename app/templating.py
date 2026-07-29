@@ -2,6 +2,7 @@
 import inspect
 import json
 import os
+import time
 
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
@@ -38,6 +39,11 @@ def tojson_filter(value) -> Markup:
 
 
 templates.env.filters["tojson"] = tojson_filter
+# Cache-buster for CSS/JS: browsers aggressively cache /static/* since the
+# links carry no version string. Appending ?v=<process-start-time> forces a
+# fresh fetch after every restart, so a CSS/JS edit that "isn't showing up"
+# is never actually a stale-browser-cache mystery.
+templates.env.globals["static_version"] = str(int(time.time()))
 templates.env.globals["month_label"] = month_label
 templates.env.globals["STATUS_LABELS"] = STATUS_LABELS
 templates.env.globals["STATUS_NAMES"] = STATUS_NAMES
@@ -79,7 +85,7 @@ def _admin_nav_badges(db) -> dict:
     return {"pending_leave": pending_leave, "open_support": open_support}
 
 
-def render(request, name: str, ctx: dict, db=None):
+def render(request, name: str, ctx: dict, db=None, status_code: int = 200):
     ctx = dict(ctx)
     ctx["request"] = request
     ctx["flashes"] = pop_flashes(request)
@@ -90,5 +96,5 @@ def render(request, name: str, ctx: dict, db=None):
     if db is not None and user is not None and getattr(user, "is_admin", False):
         ctx["nav_badges"] = _admin_nav_badges(db)
     if _REQUEST_FIRST:
-        return templates.TemplateResponse(request, name, ctx)
-    return templates.TemplateResponse(name, ctx)
+        return templates.TemplateResponse(request, name, ctx, status_code=status_code)
+    return templates.TemplateResponse(name, ctx, status_code=status_code)

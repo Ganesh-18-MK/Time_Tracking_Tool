@@ -55,6 +55,16 @@ class Employee(Base):
     # comma-separated weekday numbers, Monday=0 (PRD open question 8 default Mon-Fri)
     work_days: Mapped[str] = mapped_column(String(20), default="0,1,2,3,4")
     start_date: Mapped[dt.date] = mapped_column(Date, nullable=True)
+    # optional — collected via Roster/Edit or bulk upload; nothing in the
+    # engine reads this today, it's HR reference data only.
+    date_of_birth: Mapped[Optional[dt.date]] = mapped_column(Date, nullable=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    # Human-facing, stable ID ("LOMK001", ...) — never reused, never edited
+    # by hand. Assigned at creation (see app/util.py next_employee_code) and
+    # is the match key for bulk *updating* existing employees; existing rows
+    # from before this column existed are backfilled once at startup (see
+    # app/util.py ensure_employee_codes, called from app/main.py).
+    employee_code: Mapped[Optional[str]] = mapped_column(String(20), unique=True, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     # tracked=False => excluded from compliance runs (e.g. admin accounts)

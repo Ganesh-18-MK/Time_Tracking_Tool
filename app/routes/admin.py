@@ -1,21 +1,24 @@
 """Admin screens (PRD §7): compliance dashboard, person detail, roster,
 lists, leave + compensation, config, audit."""
 import datetime as dt
+import io
 import json
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi.responses import RedirectResponse, StreamingResponse
+from openpyxl import load_workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import engine, models as m
+from app import bulk_upload, engine, models as m
 from app.auth import require_admin
 from app.db import get_db
 from app.templating import flash, render
 from app.util import (
     FormError,
     audit,
+    next_employee_code,
     parse_date_field,
     parse_hours_field,
     parse_int_field,
@@ -481,9 +484,10 @@ def roster(
 
 def _emp_from_form(
     db: Session, emp: m.Employee, name, email, department, designation, target_hours,
-    work_days, start_date, active, tracked, is_admin,
+    work_days, start_date, active, tracked, is_admin, dob="", phone="",
 ):
     emp.name = name.strip()
+    emp.phone = phone.strip() or None
     # None (not "") so multiple blank emails never collide on the unique
     # constraint; signup later matches an employee by this exact field.
     new_email = email.strip() or None
@@ -509,6 +513,7 @@ def _emp_from_form(
     except (ValueError, TypeError):
         raise FormError("Work days must be whole numbers 0-6 (Monday=0).")
     emp.start_date = parse_date_field(start_date, "Start date") if start_date else None
+    emp.date_of_birth = parse_date_field(dob, "Date of birth") if dob else None
     emp.active = bool(active)
     emp.tracked = bool(tracked)
     emp.is_admin = bool(is_admin)
@@ -524,6 +529,8 @@ def roster_add(
     target_hours: str = Form("8"),
     work_days: list = Form(["0", "1", "2", "3", "4"]),
     start_date: str = Form(""),
+    dob: str = Form(""),
+    phone: str = Form(""),
     active: str = Form("1"),
     tracked: str = Form("1"),
     is_admin: str = Form(""),
@@ -533,10 +540,11 @@ def roster_add(
     emp = m.Employee(name=name.strip())
     try:
         _emp_from_form(db, emp, name, email, department, designation, target_hours,
-                       work_days, start_date, active == "1", tracked == "1", is_admin == "1")
+                       work_days, start_date, active == "1", tracked == "1", is_admin == "1", dob, phone)
     except FormError as e:
         flash(request, e.message, "err")
         return RedirectResponse("/admin/roster", status_code=303)
+    emp.employee_code = next_employee_code(db)
     db.add(emp)
     db.commit()
     audit(db, admin.name, "roster_add", "Employee", emp.id, {"name": emp.name})
@@ -589,6 +597,8 @@ def roster_edit(
     target_hours: str = Form("8"),
     work_days: list = Form([]),
     start_date: str = Form(""),
+    dob: str = Form(""),
+    phone: str = Form(""),
     active: str = Form(""),
     tracked: str = Form(""),
     is_admin: str = Form(""),
@@ -605,7 +615,7 @@ def roster_edit(
     }
     try:
         _emp_from_form(db, emp, name, email, department, designation, target_hours,
-                       work_days, start_date, active == "1", tracked == "1", is_admin == "1")
+                       work_days, start_date, active == "1", tracked == "1", is_admin == "1", dob, phone)
     except FormError as e:
         flash(request, e.message, "err")
         return RedirectResponse("/admin/roster", status_code=303)
@@ -613,6 +623,77 @@ def roster_edit(
     audit(db, admin.name, "roster_edit", "Employee", emp.id, {"before": before})
     flash(request, f"Saved {emp.name}." + ("" if emp.active else " (deactivated — history kept, dropped from compliance runs)"), "ok")
     return RedirectResponse("/admin/roster", status_code=303)
+
+
+# --------------------------------------------------------------------------
+# Bulk upload (Roster -> Bulk upload) — parsing rules live in app/bulk_upload.py
+# --------------------------------------------------------------------------
+@router.get("/roster/bulk-upload")
+def roster_bulk_upload_page(
+    request: Request,
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return render(request, "admin/roster_bulk_upload.html", {"user": admin, "result": None}, db=db)
+
+
+@router.get("/roster/bulk-upload/sample.xlsx")
+def roster_bulk_upload_sample(admin: m.Employee = Depends(require_admin)):
+    buf = io.BytesIO()
+    bulk_upload.build_sample_workbook().save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="employee_upload_template.xlsx"'},
+    )
+
+
+@router.get("/roster/bulk-upload/existing.xlsx")
+def roster_bulk_upload_existing(
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    buf = io.BytesIO()
+    bulk_upload.build_existing_employees_workbook(db).save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="existing_employees.xlsx"'},
+    )
+
+
+@router.post("/roster/bulk-upload")
+def roster_bulk_upload(
+    request: Request,
+    file: UploadFile = File(...),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
+        flash(request, "Please upload an .xlsx file — use the sample template.", "err")
+        return RedirectResponse("/admin/roster/bulk-upload", status_code=303)
+    try:
+        wb = load_workbook(io.BytesIO(file.file.read()), data_only=True)
+    except Exception:
+        flash(request, "Couldn't read that file — is it a valid, unprotected .xlsx?", "err")
+        return RedirectResponse("/admin/roster/bulk-upload", status_code=303)
+
+    result = bulk_upload.process_upload(db, wb)
+    if result["header_error"]:
+        flash(request, result["header_error"], "err")
+        return RedirectResponse("/admin/roster/bulk-upload", status_code=303)
+    if result["added"] or result["updated"]:
+        audit(db, admin.name, "roster_bulk_upload", "Employee", "",
+              {"added": result["added"], "updated": result["updated"],
+               "deactivated": result["deactivated"], "skipped": len(result["skipped"])})
+    summary = f"{result['added']} employee(s) added, {result['updated']} updated"
+    summary += f" ({result['deactivated']} deactivated)." if result["deactivated"] else "."
+    if result["skipped"]:
+        summary += f" {len(result['skipped'])} row(s) skipped — see details below."
+    flash(request, summary, "ok" if (result["added"] or result["updated"]) else "err")
+    return render(request, "admin/roster_bulk_upload.html", {"user": admin, "result": result}, db=db)
 
 
 # --------------------------------------------------------------------------

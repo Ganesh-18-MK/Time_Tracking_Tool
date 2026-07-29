@@ -15,6 +15,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app import models as m
+from app import rate_limit
 from app.auth import AUTH_MODE, authenticate, current_user, find_by_email, login_choices
 from app.db import get_db
 from app.security import hash_password
@@ -23,6 +24,11 @@ from app.templating import flash, render
 MIN_PASSWORD_LEN = 8
 
 router = APIRouter()
+
+
+def _lockout_message(wait_seconds: int) -> str:
+    minutes = max(1, (wait_seconds + 59) // 60)
+    return f"Too many failed attempts. Try again in {minutes} minute{'s' if minutes != 1 else ''}."
 
 
 @router.get("/")
@@ -62,13 +68,19 @@ def login_employee(
 ):
     if AUTH_MODE == "dev":
         return RedirectResponse("/login", status_code=303)
+    wait = rate_limit.seconds_until_unlock("login", email)
+    if wait:
+        flash(request, _lockout_message(wait), "err")
+        return RedirectResponse("/login/employee", status_code=303)
     emp = authenticate(db, email, password)
     if emp is None:
+        rate_limit.record_failure("login", email)
         flash(request, "Email or password is incorrect.", "err")
         return RedirectResponse("/login/employee", status_code=303)
     if emp.is_admin:
         flash(request, "This is an admin account — please use Admin Login instead.", "err")
         return RedirectResponse("/login", status_code=303)
+    rate_limit.clear("login", email)
     request.session["employee_id"] = emp.id
     return RedirectResponse("/", status_code=303)
 
@@ -93,13 +105,21 @@ def login_admin(
 ):
     if AUTH_MODE == "dev":
         return RedirectResponse("/login", status_code=303)
+    wait = rate_limit.seconds_until_unlock("login", email)
+    if wait:
+        flash(request, _lockout_message(wait), "err")
+        return RedirectResponse("/login/admin", status_code=303)
     emp = authenticate(db, email, password)
     if emp is None or not emp.is_admin:
         # deliberately identical whether the email doesn't exist, the
         # password is wrong, or it's a perfectly valid employee account —
-        # never confirm or deny which emails have admin access
+        # never confirm or deny which emails have admin access. Still
+        # counts as a failure for lockout purposes either way, so the
+        # lockout itself can't be used to infer admin status either.
+        rate_limit.record_failure("login", email)
         flash(request, "Access denied — this account doesn't have admin access.", "err")
         return RedirectResponse("/login/admin", status_code=303)
+    rate_limit.clear("login", email)
     request.session["employee_id"] = emp.id
     return RedirectResponse("/", status_code=303)
 
@@ -131,8 +151,16 @@ def signup(
     confirm: str = Form(...),
     db: Session = Depends(get_db),
 ):
+    wait = rate_limit.seconds_until_unlock("signup", email)
+    if wait:
+        flash(request, _lockout_message(wait), "err")
+        return RedirectResponse("/signup", status_code=303)
     emp = find_by_email(db, email)
     if emp is None:
+        # counted against the lockout too — repeated "not on roster"
+        # attempts are exactly how someone would fish for which emails
+        # exist in the roster, so slow that down the same as a bad password.
+        rate_limit.record_failure("signup", email)
         flash(
             request,
             "That email isn't on the roster yet — ask an admin to add you before signing up.",

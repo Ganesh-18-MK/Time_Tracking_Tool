@@ -17,7 +17,10 @@
 
 <div class="card">
   <h2 style="margin-top:0">Your questions</h2>
-  <table>
+  <div class="searchbar">
+    <input type="search" data-filter-table="my-support-table" placeholder="Search your questions…">
+  </div>
+  <table id="my-support-table">
     <thead><tr><th>Submitted</th><th>Message</th><th>Status</th><th>Admin reply</th></tr></thead>
     <tbody>
       {% for r in records %}

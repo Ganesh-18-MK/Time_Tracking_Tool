@@ -1,18 +1,33 @@
 """MK Internal Timekeeping & Compliance App — POC entrypoint."""
+import logging
 import os
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import RedirectResponse
-from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.auth import AUTH_MODE, Forbidden, RequiresLogin
-from app.db import init_db
+from app.db import SessionLocal, get_db, init_db
 from app.routes import admin as admin_routes
 from app.routes import auth as auth_routes
 from app.routes import employee as employee_routes
 from app.routes import exports as export_routes
-from app.templating import templates  # noqa: F401 (registers filters)
+from app.routes import reports as report_routes
+from app.templating import render, templates  # noqa: F401 (templates import registers filters)
+from app.util import ensure_employee_codes
+
+# Render (and most hosts) just capture stdout — a basic config here is the
+# difference between "the logs say what broke" and "nothing at all" once
+# this isn't running on a laptop where you can rm tms.db and start over.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger("app")
 
 _SECRET_KEY = os.environ.get("SECRET_KEY")
 if not _SECRET_KEY:
@@ -43,6 +58,7 @@ app.include_router(auth_routes.router)
 app.include_router(employee_routes.router)
 app.include_router(admin_routes.router)
 app.include_router(export_routes.router)
+app.include_router(report_routes.router)
 
 
 @app.exception_handler(RequiresLogin)
@@ -55,6 +71,50 @@ async def _forbidden(request: Request, exc: Forbidden):
     return RedirectResponse("/", status_code=303)
 
 
+@app.exception_handler(StarletteHTTPException)
+async def _http_exception(request: Request, exc: StarletteHTTPException):
+    # Covers unmatched routes (404) and any explicit HTTPException raises.
+    # Without this, FastAPI's default is a bare JSON {"detail": ...} body —
+    # fine for an API, jarring for a server-rendered Jinja app real people
+    # click around in.
+    if exc.status_code == 404:
+        heading, message = "Page not found", "That page doesn't exist, or you don't have access to it."
+    else:
+        heading, message = f"Error {exc.status_code}", str(exc.detail) or "Something went wrong."
+    return render(request, "error.html", {"heading": heading, "message": message}, status_code=exc.status_code)
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception(request: Request, exc: Exception):
+    # Last resort for real bugs — log the full traceback (so it's visible
+    # in Render's log stream) and show a friendly page instead of a raw
+    # stack trace to whichever of the ~45 employees happened to hit it.
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return render(
+        request, "error.html",
+        {
+            "heading": "Something went wrong",
+            "message": "We've logged the error — try again in a moment, or contact your admin if it keeps happening.",
+        },
+        status_code=500,
+    )
+
+
+@app.get("/healthz")
+def healthz(db: Session = Depends(get_db)):
+    """Uptime-monitor target for Render (or anything else pinging this
+    service). Checks real DB connectivity, not just that the process is
+    alive — a hung/unreachable database is exactly the kind of failure a
+    process-alive check would miss."""
+    db.execute(text("SELECT 1"))
+    return {"status": "ok"}
+
+
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
+    db = SessionLocal()
+    try:
+        ensure_employee_codes(db)
+    finally:
+        db.close()

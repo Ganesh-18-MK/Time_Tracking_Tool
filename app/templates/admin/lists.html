@@ -13,7 +13,10 @@ Deactivating hides a value from new entries without breaking old rows.</p>
       <div style="flex:1"><input name="name" placeholder="Add client / employer" style="width:100%"></div>
       <div><button class="small">Add</button></div>
     </form>
-    <table>
+    <div class="searchbar">
+      <input type="search" data-filter-table="projects-table" placeholder="Search projects…">
+    </div>
+    <table id="projects-table">
       {% for p in projects %}
       <tr {% if not p.active %}style="opacity:.5"{% endif %}>
         <td>{{ p.name }}</td>
@@ -30,7 +33,10 @@ Deactivating hides a value from new entries without breaking old rows.</p>
       <div style="flex:1"><input name="name" placeholder="Add task type" style="width:100%"></div>
       <div><button class="small">Add</button></div>
     </form>
-    <table>
+    <div class="searchbar">
+      <input type="search" data-filter-table="tasks-table" placeholder="Search tasks…">
+    </div>
+    <table id="tasks-table">
       {% for t in tasks %}
       <tr {% if not t.active %}style="opacity:.5"{% endif %}>
         <td>{{ t.name }}</td>

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% set active_nav = 'support' %}
+{% set active_nav = 'admin_support' %}
 {% block title %}Support · MK Timekeeping{% endblock %}
 {% block content %}
 <h1>Support queries</h1>
@@ -12,7 +12,10 @@
 </div>
 
 <div class="card">
-  <table>
+  <div class="searchbar">
+    <input type="search" data-filter-table="support-table" placeholder="Search queries…">
+  </div>
+  <table id="support-table">
     <thead><tr><th>Employee</th><th>Message</th><th>Submitted</th><th>Status</th><th>Reply / resolve</th></tr></thead>
     <tbody>
       {% for r in rows %}

@@ -6,6 +6,7 @@
   {% if emp.photo_path %}<img src="/static/uploads/avatars/{{ emp.photo_path }}" class="avatar-sm" style="width:30px;height:30px" alt="">{% endif %}
   {{ emp.name }}
   <span class="muted" style="font-size:14px;font-weight:400">
+    {% if emp.employee_code %}{{ emp.employee_code }} · {% endif %}
     {{ emp.department or '—' }}{% if emp.designation %} · {{ emp.designation }}{% endif %}
     · target {{ emp.daily_target_minutes|hm }}/day
     {% if not emp.active %} · <strong style="color:var(--bad)">deactivated</strong>{% endif %}

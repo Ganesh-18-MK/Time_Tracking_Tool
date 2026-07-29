@@ -4,7 +4,10 @@
 {% block content %}
 <h1>Audit log <span class="muted small">(last 300)</span></h1>
 <div class="card">
-  <table>
+  <div class="searchbar">
+    <input type="search" data-filter-table="audit-table" placeholder="Search audit log…">
+  </div>
+  <table id="audit-table">
     <thead><tr><th>When (UTC)</th><th>Actor</th><th>Action</th><th>Entity</th><th>Detail</th></tr></thead>
     <tbody>
       {% for r in rows %}

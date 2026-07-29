@@ -2,19 +2,26 @@
 {% set active_nav = 'roster' %}
 {% block title %}Roster · MK Timekeeping{% endblock %}
 {% block content %}
-<h1>Roster</h1>
+<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
+  <h1 style="margin-bottom:0">Roster</h1>
+  <a class="btn secondary small" href="/admin/roster/bulk-upload">Bulk upload employees</a>
+</div>
 <p class="small">
   <a href="/admin/roster?show=active" class="{{ 'muted' if show != 'active' }}">Active</a> ·
   <a href="/admin/roster?show=all" class="{{ 'muted' if show != 'all' }}">All (incl. deactivated)</a>
 </p>
 
 <div class="card">
-  <table>
-    <thead><tr><th>Name</th><th>Department</th><th>Designation</th><th>Target/day</th>
+  <div class="searchbar">
+    <input type="search" data-filter-table="roster-table" placeholder="Search employees…">
+  </div>
+  <table id="roster-table">
+    <thead><tr><th>ID</th><th>Name</th><th>Department</th><th>Designation</th><th>Target/day</th>
       <th>Work days</th><th>Start date</th><th>Flags</th><th></th></tr></thead>
     <tbody>
       {% for e in emps %}
       <tr {% if not e.active %}style="opacity:.55"{% endif %}>
+        <td class="small muted nowrap">{{ e.employee_code or '—' }}</td>
         <td>
           {% if e.photo_path %}<img src="/static/uploads/avatars/{{ e.photo_path }}" class="avatar-sm" alt="">{% endif %}
           <a href="/admin/person/{{ e.id }}">{{ e.name }}</a>
@@ -43,10 +50,12 @@
   <form method="post" action="/admin/roster/add" class="formrow">
     <div><label>Name</label><input name="name" required></div>
     <div><label>Email</label><input name="email" type="email"></div>
+    <div><label>Phone</label><input name="phone"></div>
     <div><label>Department</label><input name="department"></div>
     <div><label>Designation</label><input name="designation"></div>
     <div><label>Target hours/day</label><input name="target_hours" value="8" style="width:70px"></div>
     <div><label>Start date</label><input type="date" name="start_date"></div>
+    <div><label>Date of birth</label><input type="date" name="dob"></div>
     <div>
       <label>Work days</label>
       <div class="small">
