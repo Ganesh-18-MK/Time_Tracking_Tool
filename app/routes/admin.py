@@ -76,6 +76,13 @@ def dashboard(
     # live today-snapshot for the landing KPI cards — independent of which
     # month's grid is being browsed below (see engine.today_attendance)
     attendance = engine.today_attendance(db, cfg, today)
+    # same snapshot, broken down per department — feeds the "N present
+    # today" number on each department card (dept_counts stays the total
+    # headcount, shown alongside it).
+    dept_present = {}
+    for e in attendance["logged"]:
+        key = e.department or "—"
+        dept_present[key] = dept_present.get(key, 0) + 1
 
     by_emp = engine.statuses_for_month(db, year, month)
     comp_erases = cfg.get("comp_erases_strike") == "1"
@@ -141,6 +148,7 @@ def dashboard(
             "groups": groups,
             "all_depts": all_depts,
             "dept_counts": dept_counts,
+            "dept_present": dept_present,
             "total_emps": total_emps,
             "show_grid": show_grid,
             "attendance": attendance,
@@ -479,7 +487,20 @@ def roster(
     emps = list(db.execute(q).scalars())
     if show == "active":
         emps = [e for e in emps if e.active]
-    return render(request, "admin/roster.html", {"user": admin, "emps": emps, "show": show}, db=db)
+
+    # department pill row above the table — counts reflect whatever's
+    # actually listed (respects the active/all toggle above)
+    dept_counts: dict = {}
+    for e in emps:
+        key = e.department or "—"
+        dept_counts[key] = dept_counts.get(key, 0) + 1
+    all_depts = sorted(dept_counts)
+
+    return render(
+        request, "admin/roster.html",
+        {"user": admin, "emps": emps, "show": show, "dept_counts": dept_counts, "all_depts": all_depts},
+        db=db,
+    )
 
 
 def _emp_from_form(

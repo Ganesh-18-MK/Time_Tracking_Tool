@@ -151,6 +151,7 @@ td.strikecol { font-weight: 700; }
 .deptcard:hover { border-color: var(--accent-light); text-decoration: none; transform: translateY(-1px); }
 .deptcard.active { border-color: var(--accent); background: var(--pending-bg); }
 .deptcard .n { font-size: 20px; font-weight: 700; }
+.deptcard .n .of { font-size: 13px; font-weight: 500; color: var(--muted); }
 .deptcard .l { font-size: 12px; color: var(--muted); margin-top: 2px;
   overflow-wrap: break-word; }
 
@@ -165,6 +166,21 @@ details.kpi summary .n, details.kpi summary .l { display: block; }
 .avatar-lg { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; }
 .avatar-placeholder { display: flex; align-items: center; justify-content: center;
   background: var(--accent-light); color: var(--brand-dark); font-weight: 700; font-size: 24px; }
+
+/* department pills (roster) — rounded chip row, deliberately distinct from
+   the dashboard's boxy .deptcards grid; click to filter the table below */
+.deptpills { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.deptpill { display: inline-flex; align-items: center; gap: 6px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 999px; padding: 5px 6px 5px 12px;
+  font-size: 12px; font-weight: 600; color: var(--ink); cursor: pointer; user-select: none;
+  transition: background .15s, border-color .15s, color .15s; }
+.deptpill:hover { border-color: var(--accent-light); }
+.deptpill .cnt { display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; height: 20px; border-radius: 999px; background: var(--accent-light);
+  color: var(--brand-dark); font-size: 11px; font-weight: 700; padding: 0 5px; }
+.deptpill.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.deptpill.active .cnt { background: rgba(255, 255, 255, .28); color: var(--accent-ink); }
+tr.hide-dept { display: none !important; }
 
 .gapflag { color: var(--warn); font-size: 11px; }
 .lockbanner { background: var(--leave-bg); color: var(--leave); border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; }
