@@ -1,6 +1,11 @@
 # MK Internal Timekeeping & Compliance App (POC)
 
-**Status:** ✅ Feature-complete against [PRD Draft v1](docs/PRD.md) · ✅ Acceptance test passing (**168/168** historical strike counts reproduced) · ✅ 145 unit tests green · Updated 29 Jul 2026
+**Status**
+
+- ✅ Feature-complete against [PRD Draft v1](docs/PRD.md)
+- ✅ Acceptance test passing (**168/168** historical strike counts reproduced)
+- ✅ 145 unit tests green
+- Updated 29 Jul 2026
 
 One web app that replaces the three manual spreadsheets used to run offshore time tracking — the per-person **Task Summary** files, the 57-tab **Leave Tracker**, and the monthly **Compliance sheet**. The employee logs time once; leave, hours variance, and compliance status all derive from that single entry automatically. Interim tool until the third-party HR pilot concludes: **designed for export, not permanence.**
 
@@ -202,37 +207,55 @@ rm tms.db && .venv/bin/python -m legacy.import_legacy && .venv/bin/python -m leg
 
 ```
 app/
-  main.py            FastAPI app, session middleware, exception→error-page handlers, /healthz, startup hooks
-  db.py              engine/session; SQLite default, DATABASE_URL for Postgres
-  models.py          all entities (PRD §8) + CONFIG_DEFAULTS  — minutes everywhere
-  engine.py          status/variance/strike computation, recompute, ledger, today_attendance()
-  validation.py      PRD §4 entry rules + back-dating window + gap flags
-  auth.py            AUTH_MODE (dev / password / entra) — the Entra ID swap point
-  security.py        stdlib password hashing (AUTH_MODE=password)
-  rate_limit.py       in-memory login/signup lockout after repeated failures
-  bulk_upload.py     roster Excel parsing: onboard / update / bulk-deactivate
-  reports.py         Attendance/Strike report aggregation, cascading filters
-  util.py            formatting filters, FormError, audit(), employee-code generation, xlsx_response()
-  templating.py      Jinja env, filters (hm, hm_signed, clock, tojson), flash helpers, nav badges
-  routes/            auth (login/signup), employee (Today/My Month/Leave/Support/Profile),
-                     admin (dashboard/roster/lists/leave/config/audit/support), reports, exports
-  templates/         base + employee pages + admin/ pages (server-rendered, small inline JS)
-  static/            app.css, tablefilter.js (table search), combo.js (searchable select)
+├── routes/
+├── templates/
+│   └── admin/
+├── static/
+├── main.py
+├── db.py
+├── models.py
+├── engine.py
+├── validation.py
+├── auth.py
+├── security.py
+├── rate_limit.py
+├── bulk_upload.py
+├── reports.py
+├── util.py
+└── templating.py
 legacy/
-  ods_reader.py      streaming ODS parser (stdlib only)
-  extract_tasks.py   Task Summary → JSONL cache (reusable per person)
-  import_legacy.py   the seed importer (PRD §9)
-  verify_strikes.py  acceptance test (PRD §12.3)
-  cache/             extraction cache + import_report.json
 demo/
-  make_demo_db.py    builds the anonymized tms_demo.db (+ seeds fixed test logins)
-  run_demo.py        runs the app against tms_demo.db on port 8128
-  seed_test_logins.py  sets fixed admin@example.com/employee@example.com test accounts
-tests/               145 tests: engine, validation, util, bulk_upload, reports
-docs/PRD.md          the requirements this was built against
-HANDOFF.md           read this first if you're picking the project up
-MK_Timekeeping_Documentation.pdf   plain-English page/feature guide + flow diagram, for non-technical stakeholders
+tests/
+docs/
+HANDOFF.md
+MK_Timekeeping_Documentation.pdf
 ```
+
+**Key files**
+
+| Path | What's there |
+|---|---|
+| `app/main.py` | FastAPI app, session middleware, exception → error-page handlers, `/healthz`, startup hooks |
+| `app/db.py` | Engine/session setup; SQLite by default, `DATABASE_URL` for Postgres |
+| `app/models.py` | All entities (PRD §8) + `CONFIG_DEFAULTS` — minutes everywhere |
+| `app/engine.py` | Status/variance/strike computation, recompute, ledger, `today_attendance()` |
+| `app/validation.py` | PRD §4 entry rules, back-dating window, gap flags |
+| `app/auth.py` | `AUTH_MODE` (`dev` / `password` / `entra`) — the Entra ID swap point |
+| `app/security.py` | Stdlib password hashing (`AUTH_MODE=password`) |
+| `app/rate_limit.py` | In-memory login/signup lockout after repeated failures |
+| `app/bulk_upload.py` | Roster Excel parsing: onboard / update / bulk-deactivate |
+| `app/reports.py` | Attendance/Strike report aggregation, cascading filters |
+| `app/util.py` | Formatting filters, `FormError`, `audit()`, employee-code generation, `xlsx_response()` |
+| `app/templating.py` | Jinja env, filters (`hm`, `hm_signed`, `clock`, `tojson`), flash helpers, nav badges |
+| `app/routes/` | `auth` (login/signup), `employee` (Today/My Month/Leave/Support/Profile), `admin` (dashboard/roster/lists/leave/config/audit/support), `reports`, `exports` |
+| `app/templates/` | Base layout + employee pages + `admin/` pages (server-rendered, small inline JS) |
+| `app/static/` | `app.css`, `tablefilter.js` (table search), `combo.js` (searchable select) |
+| `legacy/` | Streaming ODS reader, task extractor, importer, acceptance verifier — see [The legacy import](#the-legacy-import) |
+| `demo/` | `make_demo_db.py` (builds anonymized `tms_demo.db` + seeds fixed test logins), `run_demo.py` (runs on port 8128), `seed_test_logins.py` |
+| `tests/` | 145 tests: engine, validation, util, bulk_upload, reports |
+| `docs/PRD.md` | The requirements this was built against |
+| `HANDOFF.md` | Read this first if you're picking the project up |
+| `MK_Timekeeping_Documentation.pdf` | Plain-English page/feature guide + flow diagram, for non-technical stakeholders |
 
 No JS framework, no build step; the only runtime deps are FastAPI, SQLAlchemy, Jinja2, openpyxl (see `requirements.txt` for the full list, including `psycopg[binary]` for Postgres).
 
