@@ -11,7 +11,7 @@ from openpyxl import load_workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import bulk_upload, engine, models as m
+from app import bulk_upload, engine, leave_bulk_upload, models as m
 from app.auth import require_admin
 from app.db import get_db
 from app.templating import flash, render
@@ -796,16 +796,92 @@ def leave_page(
             .order_by(m.LeaveRecord.created_at)
         ).scalars()
     )
-    recent = list(
+    approved = list(
         db.execute(
-            select(m.LeaveRecord).order_by(m.LeaveRecord.created_at.desc()).limit(60)
+            select(m.LeaveRecord)
+            .where(m.LeaveRecord.status == m.LEAVE_APPROVED)
+            .order_by(m.LeaveRecord.created_at.desc())
+            .limit(100)
         ).scalars()
     )
     return render(
         request, "admin/leave.html",
-        {"user": admin, "emps": emps, "pending": pending, "recent": recent, "leave_types": m.LEAVE_TYPES},
+        {
+            "user": admin, "emps": emps, "pending": pending, "approved": approved,
+            "leave_types": m.LEAVE_TYPES,
+        },
         db=db,
     )
+
+
+# --------------------------------------------------------------------------
+# Bulk leave-allocation assignment (Leave -> Bulk assign leaves) — parsing
+# rules live in app/leave_bulk_upload.py
+# --------------------------------------------------------------------------
+@router.get("/leave/bulk-upload")
+def leave_bulk_upload_page(
+    request: Request,
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return render(request, "admin/leave_bulk_upload.html", {"user": admin, "result": None}, db=db)
+
+
+@router.get("/leave/bulk-upload/sample.xlsx")
+def leave_bulk_upload_sample(admin: m.Employee = Depends(require_admin)):
+    buf = io.BytesIO()
+    leave_bulk_upload.build_sample_workbook().save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="leave_allocation_template.xlsx"'},
+    )
+
+
+@router.get("/leave/bulk-upload/existing.xlsx")
+def leave_bulk_upload_existing(
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    buf = io.BytesIO()
+    leave_bulk_upload.build_existing_allocations_workbook(db).save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="existing_leave_allocations.xlsx"'},
+    )
+
+
+@router.post("/leave/bulk-upload")
+def leave_bulk_upload_post(
+    request: Request,
+    file: UploadFile = File(...),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
+        flash(request, "Please upload an .xlsx file — use the sample template.", "err")
+        return RedirectResponse("/admin/leave/bulk-upload", status_code=303)
+    try:
+        wb = load_workbook(io.BytesIO(file.file.read()), data_only=True)
+    except Exception:
+        flash(request, "Couldn't read that file — is it a valid, unprotected .xlsx?", "err")
+        return RedirectResponse("/admin/leave/bulk-upload", status_code=303)
+
+    result = leave_bulk_upload.process_upload(db, wb)
+    if result["header_error"]:
+        flash(request, result["header_error"], "err")
+        return RedirectResponse("/admin/leave/bulk-upload", status_code=303)
+    if result["updated"]:
+        audit(db, admin.name, "leave_bulk_upload", "Employee", "",
+              {"updated": result["updated"], "skipped": len(result["skipped"])})
+    summary = f"{result['updated']} employee(s) had leave allocations updated."
+    if result["skipped"]:
+        summary += f" {len(result['skipped'])} row(s) skipped — see details below."
+    flash(request, summary, "ok" if result["updated"] else "err")
+    return render(request, "admin/leave_bulk_upload.html", {"user": admin, "result": result}, db=db)
 
 
 @router.post("/leave/{leave_id}/approve")

@@ -79,6 +79,14 @@ class Employee(Base):
     # /profile. Local disk for now; see note on SupportQuery/deployment re:
     # Render's ephemeral filesystem before this goes live long-term.
     photo_path: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Annual entitlement, in whole days — set via Leave -> Bulk assign leaves
+    # (see app/leave_bulk_upload.py). Display-only for now (PRD open question
+    # 6 said "no quotas enforced, totals displayed"; this is that display —
+    # nothing blocks an admin from approving leave past these numbers).
+    # NULL means "not set yet", shown as 0 rather than blank.
+    casual_leave_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    sick_leave_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    vacation_leave_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     entries = relationship("TaskEntry", back_populates="employee")
 

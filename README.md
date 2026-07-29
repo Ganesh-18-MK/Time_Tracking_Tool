@@ -110,7 +110,8 @@ Everyone signs in through one login page (`/login`), then lands in one of two zo
 | Roster → Bulk upload | `/admin/roster/bulk-upload` | One Excel upload handles three things at once, told apart per row by whether **Employee ID** is filled: blank → onboard a new hire (Full Name/Department/Designation/Target-day/Workdays required); filled → update only the columns provided (blank cells are left untouched, not cleared); filled **+ Action=Deactivate** → bulk-offboard that person (soft deactivate, history kept, never a hard delete). Download a blank template or an export of all current employees to edit and re-upload. See `app/bulk_upload.py`. |
 | Reports → Attendance / Strikes | `/admin/reports/attendance`, `/admin/reports/strikes` | Two report pages sharing one cascading filter bar: Department → Employee → Date range (Last 7 days / Last month / Last 3 months / custom). Pick "All Employees" for a summary table (attendance % or strike count per person); pick one person for their day-by-day detail instead. Both export to XLSX. See `app/reports.py`. |
 | Lists | `/admin/lists` | Manage Project/Employer and Task dropdowns. Deactivating hides a value from new entries without breaking old rows. |
-| Leave requests | `/admin/leave` | Approve/reject pending employee leave requests (with a note), or record already-approved leave directly on someone's behalf. Recomputes affected days immediately. |
+| Leave requests | `/admin/leave` | Approve/reject pending employee leave requests (with a note), or record already-approved leave directly on someone's behalf. Recomputes affected days immediately. Below that: a leave-balances table (annual Casual/Sick/Vacation entitlement per employee, display only — see §10.6) and the full history split into Approved / Rejected sections. |
+| Bulk assign leaves | `/admin/leave/bulk-upload` | Set (or bulk-correct) each employee's annual Casual/Sick/Vacation entitlement via a small Employee-ID-keyed Excel sheet — same overwrite-on-reupload pattern as the roster bulk upload, but never creates employees. |
 | Config | `/admin/config` | Every PRD §10 open question as a dial (including the daily break allowance), plus the company holiday table. |
 | Audit | `/admin/audit` | Last 300 audited actions (unlocks, overrides, config changes, imports, comp links, bulk uploads…). Read-only — nothing here can be edited or deleted from the UI. |
 | Support inbox | `/admin/support` | See and reply to open employee support questions; mark resolved. |
@@ -244,6 +245,7 @@ MK_Timekeeping_Documentation.pdf
 | `app/security.py` | Stdlib password hashing (`AUTH_MODE=password`) |
 | `app/rate_limit.py` | In-memory login/signup lockout after repeated failures |
 | `app/bulk_upload.py` | Roster Excel parsing: onboard / update / bulk-deactivate |
+| `app/leave_bulk_upload.py` | Leave-allocation Excel parsing: bulk-set Casual/Sick/Vacation entitlement by Employee ID |
 | `app/reports.py` | Attendance/Strike report aggregation, cascading filters |
 | `app/util.py` | Formatting filters, `FormError`, `audit()`, employee-code generation, `xlsx_response()` |
 | `app/templating.py` | Jinja env, filters (`hm`, `hm_signed`, `clock`, `tojson`), flash helpers, nav badges |
@@ -252,7 +254,7 @@ MK_Timekeeping_Documentation.pdf
 | `app/static/` | `app.css`, `tablefilter.js` (table search), `combo.js` (searchable select) |
 | `legacy/` | Streaming ODS reader, task extractor, importer, acceptance verifier — see [The legacy import](#the-legacy-import) |
 | `demo/` | `make_demo_db.py` (builds anonymized `tms_demo.db` + seeds fixed test logins), `run_demo.py` (runs on port 8128), `seed_test_logins.py` |
-| `tests/` | 145 tests: engine, validation, util, bulk_upload, reports |
+| `tests/` | 173 tests: engine, validation, util, bulk_upload, leave_bulk_upload, reports |
 | `docs/PRD.md` | The requirements this was built against |
 | `HANDOFF.md` | Read this first if you're picking the project up |
 | `MK_Timekeeping_Documentation.pdf` | Plain-English page/feature guide + flow diagram, for non-technical stakeholders |
@@ -269,6 +271,7 @@ No JS framework, no build step; the only runtime deps are FastAPI, SQLAlchemy, J
 - `test_validation.py` — overlaps, touching rows, midnight/duration/details rules, locked days, deactivated dropdown values, back-dating across weekends and holidays, gap flags.
 - `test_util.py` — formatting/parsing helpers.
 - `test_bulk_upload.py` — header matching, required-vs-optional fields by mode (new hire vs update), partial-update semantics, bulk-deactivate via the Action column, sample/export workbook round-trips.
+- `test_leave_bulk_upload.py` — Employee-ID resolution, blank-vs-provided leave-count semantics (blank = unchanged, 0 = provided), whole-number validation, sample/export workbook round-trips.
 - `test_reports.py` — date-range resolution (presets, custom, fallback), department/employee scoping, summary vs. daily-drill-down output, strike-exempt exclusion.
 
 Schema changes: there's deliberately no migration tool in the POC — `rm tms.db`, re-run the importer (~40 s total). New nullable columns are picked up automatically at next startup via `app/db.py`'s additive-migration guard; anything more involved than adding a nullable column still means `rm tms.db` + re-import.

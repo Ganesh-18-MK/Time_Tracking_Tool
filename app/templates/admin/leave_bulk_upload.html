@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% set active_nav = 'admin_leave' %}
+{% block title %}Bulk assign leaves · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Bulk assign leaves</h1>
+<p class="muted small"><a href="/admin/leave">← Back to Leave</a></p>
+
+<div class="cols">
+  <div class="card">
+    <h2 style="margin-top:0">Blank template</h2>
+    <p class="small muted">Employee ID, Casual/Sick/Vacation leaves per year. Employee ID must match
+    an existing employee — this sheet never creates new ones.</p>
+    <a class="btn secondary" href="/admin/leave/bulk-upload/sample.xlsx">Download blank template</a>
+  </div>
+  <div class="card">
+    <h2 style="margin-top:0">Current allocations</h2>
+    <p class="small muted">Every active employee with their current Casual/Sick/Vacation entitlement
+    (0 where unset). Edit only the numbers you're changing — blank cells are left untouched, so
+    re-uploading unchanged is a safe no-op.</p>
+    <a class="btn secondary" href="/admin/leave/bulk-upload/existing.xlsx">Download current allocations</a>
+  </div>
+</div>
+
+<div class="card" style="max-width:640px">
+  <h2 style="margin-top:0">Upload your sheet</h2>
+  <p class="small muted">These are annual entitlements shown next to each employee on the Leave
+  page — display only for now, nothing here blocks approving leave past them.</p>
+  <form method="post" action="/admin/leave/bulk-upload" enctype="multipart/form-data" class="formrow">
+    <div><input type="file" name="file" accept=".xlsx" required></div>
+    <div><button>Upload</button></div>
+  </form>
+</div>
+
+{% if result %}
+<div class="card" style="max-width:760px">
+  <h2 style="margin-top:0">Result</h2>
+  <p>{{ result.updated }} employee(s) updated.</p>
+  {% if result.skipped %}
+  <table>
+    <thead><tr><th>Row</th><th>Name / ID</th><th>Reason skipped</th></tr></thead>
+    <tbody>
+      {% for s in result.skipped %}
+      <tr><td>{{ s.row }}</td><td>{{ s.name }}</td><td class="small">{{ s.reason }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

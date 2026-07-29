@@ -2,7 +2,10 @@
 {% set active_nav = 'admin_leave' %}
 {% block title %}Leave · MK Timekeeping{% endblock %}
 {% block content %}
-<h1>Leave entry</h1>
+<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
+  <h1 style="margin-bottom:0">Leave entry</h1>
+  <a class="btn secondary small" href="/admin/leave/bulk-upload">Bulk assign leaves</a>
+</div>
 <div class="card">
   <form method="post" action="/admin/leave/add" class="formrow">
     <div>
@@ -57,28 +60,73 @@
 {% endif %}
 
 <div class="card">
-  <h2>Recent leave records</h2>
+  <h2>Approved leaves</h2>
   <div class="searchbar">
-    <input type="search" data-filter-table="leave-records-table" placeholder="Search leave records…">
+    <input type="search" data-filter-table="leave-approved-table" placeholder="Search approved leave…">
   </div>
-  <table id="leave-records-table">
-    <thead><tr><th>Employee</th><th>When</th><th>Type</th><th>Hours/day</th><th>Note</th><th>Status</th><th>By</th><th></th></tr></thead>
+  <table id="leave-approved-table">
+    <thead><tr><th>Employee</th><th>When</th><th>Type</th><th>Hours/day</th><th>Note</th><th>By</th><th></th></tr></thead>
     <tbody>
-      {% for lv in recent %}
+      {% for lv in approved %}
       <tr>
         <td><a href="/admin/person/{{ lv.employee_id }}">{{ lv.employee.name }}</a></td>
         <td class="nowrap">{{ lv.start_date.isoformat() }}{% if lv.end_date != lv.start_date %} → {{ lv.end_date.isoformat() }}{% endif %}</td>
         <td>{{ lv.type }}</td>
         <td>{{ 'full day' if lv.minutes_per_day is none else lv.minutes_per_day|hm }}</td>
         <td class="small">{{ lv.note }}{% if lv.imported %} <span class="muted">(legacy)</span>{% endif %}</td>
-        <td>
-          {% if lv.status == 'approved' %}<span class="badge b-complete">approved</span>
-          {% elif lv.status == 'rejected' %}<span class="badge b-missing">rejected</span>
-          {% else %}<span class="badge b-partial">pending</span>{% endif %}
-        </td>
         <td class="small muted">{{ lv.entered_by }}</td>
         <td><form method="post" action="/admin/leave/{{ lv.id }}/delete" class="inline"
           onsubmit="return confirm('Delete leave record?')"><button class="small secondary">✕</button></form></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if not approved %}<p class="muted small" style="margin:8px 0 0">No approved leave yet.</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Pending leaves</h2>
+  <p class="small muted" style="margin:-4px 0 10px">Requests not yet approved or rejected — same list as
+  "Pending requests" above, searchable here. Use the Approve/Reject buttons above to act on one.</p>
+  <div class="searchbar">
+    <input type="search" data-filter-table="leave-pending-table" placeholder="Search pending leave…">
+  </div>
+  <table id="leave-pending-table">
+    <thead><tr><th>Employee</th><th>When</th><th>Type</th><th>Hours/day</th><th>Note</th><th>By</th></tr></thead>
+    <tbody>
+      {% for lv in pending %}
+      <tr>
+        <td><a href="/admin/person/{{ lv.employee_id }}">{{ lv.employee.name }}</a></td>
+        <td class="nowrap">{{ lv.start_date.isoformat() }}{% if lv.end_date != lv.start_date %} → {{ lv.end_date.isoformat() }}{% endif %}</td>
+        <td>{{ lv.type }}</td>
+        <td>{{ 'full day' if lv.minutes_per_day is none else lv.minutes_per_day|hm }}</td>
+        <td class="small">{{ lv.note }}</td>
+        <td class="small muted">{{ lv.entered_by }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if not pending %}<p class="muted small" style="margin:8px 0 0">No pending leave requests.</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Leave balances</h2>
+  <p class="small muted" style="margin:-4px 0 10px">Annual entitlement per employee — set via
+  <a href="/admin/leave/bulk-upload">Bulk assign leaves</a>. Display only: nothing here blocks
+  recording or approving leave past these numbers.</p>
+  <div class="searchbar">
+    <input type="search" data-filter-table="leave-balances-table" placeholder="Search employees…">
+  </div>
+  <table id="leave-balances-table">
+    <thead><tr><th>Employee</th><th>Department</th><th>Casual/yr</th><th>Sick/yr</th><th>Vacation/yr</th></tr></thead>
+    <tbody>
+      {% for e in emps %}
+      <tr>
+        <td><a href="/admin/person/{{ e.id }}">{{ e.name }}</a></td>
+        <td>{{ e.department or '—' }}</td>
+        <td>{{ e.casual_leave_days or 0 }}</td>
+        <td>{{ e.sick_leave_days or 0 }}</td>
+        <td>{{ e.vacation_leave_days or 0 }}</td>
       </tr>
       {% endfor %}
     </tbody>
