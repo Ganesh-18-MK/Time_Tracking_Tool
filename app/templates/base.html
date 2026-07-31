@@ -35,6 +35,8 @@
     {% else %}
       <a href="/admin" class="{{ 'on' if active_nav == 'dash' }}">Dashboard</a>
       <a href="/admin/leave" class="{{ 'on' if active_nav == 'admin_leave' }}">Leave Requests{% if nav_badges and nav_badges.pending_leave %}<span class="navbadge">{{ nav_badges.pending_leave }}</span>{% endif %}</a>
+      <a href="/admin/suggestions" class="{{ 'on' if active_nav == 'suggestions' }}">Suggestions{% if nav_badges and nav_badges.pending_suggestions %}<span class="navbadge">{{ nav_badges.pending_suggestions }}</span>{% endif %}</a>
+      <a href="/admin/assignments" class="{{ 'on' if active_nav == 'assignments' }}">Assignments</a>
       <details class="navdrop">
         <summary class="{{ 'on' if active_nav == 'reports' }}">Reports ▾</summary>
         <div class="navdrop-menu">

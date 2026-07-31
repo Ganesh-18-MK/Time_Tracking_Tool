@@ -99,8 +99,20 @@ class Employee(Base):
     casual_leave_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     sick_leave_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     vacation_leave_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Who this employee reports to (Ganesh, 2026-08-01) — self-referencing,
+    # optional (NULL for anyone not yet assigned a lead, e.g. top-level
+    # leadership). Display/reference only for now — nothing in the
+    # compliance engine reads this; it's set via Roster -> Edit or the
+    # bulk-upload "Reports To" column (matched by employee code, same key
+    # bulk *updates* already use — see app/bulk_upload.py).
+    reports_to_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), nullable=True)
 
     entries = relationship("TaskEntry", back_populates="employee")
+    # remote_side=[id]: tells SQLAlchemy this is the "many" side pointing at
+    # the "one" parent row on the same table (self-referencing FK) — without
+    # it, SQLAlchemy can't tell which side of employees.id <-> reports_to_id
+    # is the parent.
+    reports_to = relationship("Employee", remote_side=[id], foreign_keys=[reports_to_id])
     # uselist=False: one row per employee, not a list — see
     # EmployeePersonalDetails/EmployeeBankDetails below. Both are optional
     # (None until the employee fills the form in on Profile) and separate
@@ -192,11 +204,32 @@ class EmployeeBankDetails(Base):
     employee = relationship("Employee", back_populates="bank_details")
 
 
+# Project/TaskType suggestion workflow (Ganesh, 2026-08-01): employees and
+# leads can suggest a new one; it's usable immediately by whoever suggested
+# it (see app/routes/employee.py's dropdown-visibility filter: approved OR
+# created_by_employee_id == me) but stays invisible to everyone else until
+# a team lead approves it. Every row created before this existed, and every
+# row an admin adds directly via Lists/bulk-upload, defaults straight to
+# LIST_APPROVED — nothing already in the roster is retroactively hidden.
+LIST_APPROVED = "approved"
+LIST_PENDING = "pending"
+LIST_REJECTED = "rejected"
+LIST_STATUSES = (LIST_APPROVED, LIST_PENDING, LIST_REJECTED)
+
+
 class Project(Base):
     __tablename__ = "projects"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(200), unique=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[str] = mapped_column(String(20), default=LIST_APPROVED)
+    created_by_employee_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    reviewed_by: Mapped[str] = mapped_column(String(120), default="")
+    reviewed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    review_note: Mapped[str] = mapped_column(Text, default="")
+
+    created_by = relationship("Employee", foreign_keys=[created_by_employee_id])
 
 
 class TaskType(Base):
@@ -204,6 +237,52 @@ class TaskType(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(200), unique=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[str] = mapped_column(String(20), default=LIST_APPROVED)
+    created_by_employee_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    reviewed_by: Mapped[str] = mapped_column(String(120), default="")
+    reviewed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    review_note: Mapped[str] = mapped_column(Text, default="")
+
+    created_by = relationship("Employee", foreign_keys=[created_by_employee_id])
+
+
+class ProjectAssignment(Base):
+    """A team lead's 'this employee works on this project' marker (Ganesh,
+    2026-08-01). Deliberately advisory, NOT enforced — app/validation.py
+    does not reject a TaskEntry against an unassigned project. An
+    assignment only changes what's shown first/highlighted on the Today
+    entry form (see app/routes/employee.py), so nobody is ever blocked
+    from logging time just because assignments haven't been set up for
+    them yet — safe to roll out gradually, department by department."""
+
+    __tablename__ = "project_assignments"
+    __table_args__ = (UniqueConstraint("employee_id", "project_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    assigned_by: Mapped[str] = mapped_column(String(120), default="")
+    assigned_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    employee = relationship("Employee", foreign_keys=[employee_id])
+    project = relationship("Project")
+
+
+class TaskAssignment(Base):
+    """Same idea as ProjectAssignment, for TaskType — see that docstring."""
+
+    __tablename__ = "task_assignments"
+    __table_args__ = (UniqueConstraint("employee_id", "task_type_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True)
+    task_type_id: Mapped[int] = mapped_column(ForeignKey("task_types.id"), index=True)
+    assigned_by: Mapped[str] = mapped_column(String(120), default="")
+    assigned_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    employee = relationship("Employee", foreign_keys=[employee_id])
+    task_type = relationship("TaskType")
 
 
 class TaskEntry(Base):
@@ -295,6 +374,54 @@ class PunchSession(Base):
         if self.punched_out_at is None:
             return None
         return int((self.punched_out_at - self.punched_in_at).total_seconds() // 60)
+
+
+class ActiveTaskTimer(Base):
+    """The one currently-running task timer for an employee (Ganesh,
+    2026-08-01: "auto time capture... timer similar to break button").
+
+    Deliberately a SEPARATE table from TaskEntry, not a nullable-end_minute
+    row on TaskEntry itself: app/engine.py and the strike/day-status math
+    only ever read *finished* TaskEntry rows, so keeping "what does a
+    running timer mean to compliance" out of TaskEntry entirely means
+    engine.py never has to answer that question — a timer only becomes
+    real data (an ordinary TaskEntry, indistinguishable from one typed in
+    by hand) the moment it's stopped. Same open/closed philosophy as
+    BreakEntry/PunchSession, just closed by *creating* a row elsewhere
+    instead of filling in an end column on itself.
+
+    Exactly one active timer per employee (unique constraint on
+    employee_id) — single-timer, not multi-timer (Ganesh, 2026-08-01).
+    Starting a new one auto-stops and saves the previous one as a real
+    TaskEntry first (see app/routes/employee.py start_task_timer) rather
+    than allowing several to run at once."""
+
+    __tablename__ = "active_task_timers"
+    __table_args__ = (UniqueConstraint("employee_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True)
+    date: Mapped[dt.date] = mapped_column(Date)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    task_type_id: Mapped[int] = mapped_column(ForeignKey("task_types.id"))
+    details: Mapped[str] = mapped_column(Text, default="")
+    # Local clock-face minute at Start (dt.datetime.now(), NOT started_at
+    # below) — same split BreakEntry/PunchSession already use: this is what
+    # becomes TaskEntry.start_minute when the timer stops, so it must be
+    # the same "employee's local working time" every other minute value in
+    # this app is (see module docstring's no-timezones rule). started_at is
+    # a full UTC timestamp, kept only so the live count-up widget survives
+    # a page refresh — it is NEVER read for the minute-of-day value.
+    start_minute: Mapped[int] = mapped_column(Integer)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    employee = relationship("Employee")
+    project = relationship("Project")
+    task_type = relationship("TaskType")
+
+    @property
+    def elapsed_minutes(self) -> int:
+        return int((dt.datetime.utcnow() - self.started_at).total_seconds() // 60)
 
 
 class DaySubmission(Base):

@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app import compensation, engine, models as m
@@ -128,6 +128,15 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
     # overtime live (see today.html); this is the "day's done" summary.
     punch_overtime = overtime_minutes(completed_punch_minutes, target) if active_punch is None else 0
 
+    # Auto time-capture timer (Ganesh, 2026-08-01) — single active timer per
+    # employee, not per-date (see ActiveTaskTimer docstring), so this is
+    # fetched by employee only; today.html only shows the widget when
+    # `date == today`, same as how Start Break/Punch In are hardcoded to
+    # "today" regardless of which day is currently being viewed.
+    active_timer = db.execute(
+        select(m.ActiveTaskTimer).where(m.ActiveTaskTimer.employee_id == emp.id)
+    ).scalar_one_or_none()
+
     flags = gap_flags(entries, engine.cfg_int(cfg, "gap_flag_minutes"))
     if flags:
         ordered = sorted(entries, key=lambda e: e.start_minute)
@@ -159,7 +168,48 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
         "completed_punch_minutes": completed_punch_minutes,
         "punch_remaining": punch_remaining,
         "punch_overtime": punch_overtime,
+        "active_timer": active_timer,
     }
+
+
+def _visible_projects_and_tasks(db: Session, user: m.Employee):
+    """What a given employee is allowed to pick from Today's Project/Task
+    dropdowns: every approved, active one, PLUS any pending suggestion
+    THEY made themselves (Ganesh, 2026-08-01 — usable by the submitter
+    right away, invisible to everyone else until a team lead approves it).
+    validate_entry() enforces the same rule server-side, so this filter is
+    a UI convenience, not the only thing standing between an employee and
+    someone else's not-yet-approved suggestion."""
+    visible = or_(
+        m.Project.status == m.LIST_APPROVED,
+        and_(m.Project.status == m.LIST_PENDING, m.Project.created_by_employee_id == user.id),
+    )
+    projects = list(
+        db.execute(
+            select(m.Project).where(m.Project.active.is_(True), visible).order_by(m.Project.name)
+        ).scalars()
+    )
+    visible_t = or_(
+        m.TaskType.status == m.LIST_APPROVED,
+        and_(m.TaskType.status == m.LIST_PENDING, m.TaskType.created_by_employee_id == user.id),
+    )
+    tasks = list(
+        db.execute(
+            select(m.TaskType).where(m.TaskType.active.is_(True), visible_t).order_by(m.TaskType.name)
+        ).scalars()
+    )
+    return projects, tasks
+
+
+def _combo_items(objs, assigned_ids: set) -> list:
+    """ORM rows -> plain {id, name} dicts for the searchable-combo widget
+    (see today.html/combo.js), with whatever this employee is assigned to
+    (Ganesh, 2026-08-01: team-lead project/task assignment) sorted first
+    and starred — advisory only, everything else stays just as pickable,
+    only the ordering/label changes."""
+    starred = [{"id": o.id, "name": f"★ {o.name}"} for o in objs if o.id in assigned_ids]
+    rest = [{"id": o.id, "name": o.name} for o in objs if o.id not in assigned_ids]
+    return starred + rest
 
 
 @router.get("/today")
@@ -171,16 +221,17 @@ def today_page(
 ):
     cfg = engine.get_config(db)
     day = dt.date.fromisoformat(date) if date else dt.date.today()
-    projects = list(
-        db.execute(
-            select(m.Project).where(m.Project.active.is_(True)).order_by(m.Project.name)
-        ).scalars()
-    )
-    tasks = list(
-        db.execute(
-            select(m.TaskType).where(m.TaskType.active.is_(True)).order_by(m.TaskType.name)
-        ).scalars()
-    )
+    projects, tasks = _visible_projects_and_tasks(db, user)
+    assigned_project_ids = {
+        row[0] for row in db.execute(
+            select(m.ProjectAssignment.project_id).where(m.ProjectAssignment.employee_id == user.id)
+        ).all()
+    }
+    assigned_task_ids = {
+        row[0] for row in db.execute(
+            select(m.TaskAssignment.task_type_id).where(m.TaskAssignment.employee_id == user.id)
+        ).all()
+    }
     ctx = _day_context(db, user, day, cfg)
     last_end = max((e.end_minute for e in ctx["entries"]), default=None)
     ctx.update(
@@ -191,9 +242,11 @@ def today_page(
             "today": dt.date.today(),
             "allowed_dates": _allowed_dates(db, user, cfg),
             # plain dicts, not ORM objects — the template feeds these straight
-            # into the searchable-combo widget via |tojson
-            "projects": [{"id": p.id, "name": p.name} for p in projects],
-            "tasks": [{"id": t.id, "name": t.name} for t in tasks],
+            # into the searchable-combo widget via |tojson. Assigned ones
+            # (Ganesh, 2026-08-01) sort first and get a ★ — advisory only,
+            # everything else stays just as pickable.
+            "projects": _combo_items(projects, assigned_project_ids),
+            "tasks": _combo_items(tasks, assigned_task_ids),
             "max_row_minutes": engine.cfg_int(cfg, "max_row_minutes"),
             "gap_minutes": engine.cfg_int(cfg, "gap_flag_minutes"),
         }
@@ -326,6 +379,122 @@ def end_break(
         active.ended_at = dt.datetime.utcnow()
         db.commit()
         flash(request, f"Break ended — {active.duration_minutes} min.", "ok")
+    return RedirectResponse("/today", status_code=303)
+
+
+def _finish_task_timer(db: Session, user: m.Employee, timer: m.ActiveTaskTimer, cfg: dict):
+    """Converts a running ActiveTaskTimer into a real TaskEntry, through
+    the exact same validate_entry() every manually-typed row goes through
+    (overlap / 4h-cap / details-length / locked-day checks) — an
+    auto-captured entry is never held to looser rules than a typed one.
+    Returns (True, None) on success; on failure returns (False, message)
+    and leaves the timer running/untouched so nothing is silently lost —
+    the employee can fix Details and try Stop again, or keep working."""
+    now = dt.datetime.now()
+    end_minute = clamp_break_end(timer.start_minute, now.hour * 60 + now.minute)
+    try:
+        validate_entry(
+            db, user, timer.date, timer.project_id, timer.task_type_id,
+            timer.details, timer.start_minute, end_minute, cfg,
+        )
+    except EntryError as e:
+        return False, "; ".join(e.errors)
+    db.add(m.TaskEntry(
+        employee_id=user.id, date=timer.date, project_id=timer.project_id,
+        task_type_id=timer.task_type_id, details=timer.details.strip(),
+        start_minute=timer.start_minute, end_minute=end_minute,
+    ))
+    db.delete(timer)
+    db.commit()
+    return True, None
+
+
+@router.post("/task-timer/start")
+def start_task_timer(
+    request: Request,
+    project_id: int = Form(...),
+    task_type_id: int = Form(...),
+    details: str = Form(""),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Auto-captures the start time from the system clock — same
+    right-now convention as Punch In and Break Start. Single active timer
+    per employee (Ganesh, 2026-08-01): starting a new one auto-stops and
+    saves whatever was already running as a real TaskEntry first, rather
+    than allowing several to run at once (see ActiveTaskTimer docstring)."""
+    cfg = engine.get_config(db)
+    today = dt.date.today()
+
+    existing = db.execute(
+        select(m.ActiveTaskTimer).where(m.ActiveTaskTimer.employee_id == user.id)
+    ).scalar_one_or_none()
+    if existing is not None:
+        ok, error = _finish_task_timer(db, user, existing, cfg)
+        if not ok:
+            # can't silently drop the running timer's time — make the
+            # employee resolve it (e.g. add Details) before starting a new one
+            flash(request, f"Couldn't save the timer already running: {error}", "err")
+            return RedirectResponse("/today", status_code=303)
+
+    project = db.get(m.Project, project_id)
+    task = db.get(m.TaskType, task_type_id)
+    if project is None or not project.active or task is None or not task.active:
+        flash(request, "Choose a Project and Task before starting the timer.", "err")
+        return RedirectResponse("/today", status_code=303)
+
+    now = dt.datetime.now()
+    db.add(m.ActiveTaskTimer(
+        employee_id=user.id, date=today, project_id=project_id, task_type_id=task_type_id,
+        details=details.strip(), start_minute=now.hour * 60 + now.minute,
+        started_at=dt.datetime.utcnow(),
+    ))
+    db.commit()
+    flash(request, "Timer started.", "ok")
+    return RedirectResponse("/today", status_code=303)
+
+
+@router.post("/task-timer/stop")
+def stop_task_timer(
+    request: Request,
+    details: str = Form(""),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    cfg = engine.get_config(db)
+    active = db.execute(
+        select(m.ActiveTaskTimer).where(m.ActiveTaskTimer.employee_id == user.id)
+    ).scalar_one_or_none()
+    if active is None:
+        flash(request, "No timer is running.", "err")
+        return RedirectResponse("/today", status_code=303)
+    # top up Details at Stop time — the Start form may have been left blank
+    # if the employee wasn't sure what to type until the work was done
+    if details.strip():
+        active.details = details.strip()
+    ok, error = _finish_task_timer(db, user, active, cfg)
+    if not ok:
+        flash(request, error, "err")
+        return RedirectResponse("/today", status_code=303)
+    flash(request, "Timer stopped — entry logged.", "ok")
+    return RedirectResponse("/today", status_code=303)
+
+
+@router.post("/task-timer/cancel")
+def cancel_task_timer(
+    request: Request,
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Discards a running timer with no TaskEntry created — for a
+    mis-started timer (wrong project/task picked), not a normal Stop."""
+    active = db.execute(
+        select(m.ActiveTaskTimer).where(m.ActiveTaskTimer.employee_id == user.id)
+    ).scalar_one_or_none()
+    if active is not None:
+        db.delete(active)
+        db.commit()
+        flash(request, "Timer cancelled — no entry was logged.", "ok")
     return RedirectResponse("/today", status_code=303)
 
 
@@ -603,6 +772,38 @@ def support_page(
         ).scalars()
     )
     return render(request, "support.html", {"user": user, "records": records})
+
+
+@router.post("/suggestions")
+def suggest_list_item(
+    request: Request,
+    kind: str = Form(...),
+    name: str = Form(...),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Employee/lead-suggested Project or Task (Ganesh, 2026-08-01) —
+    usable by whoever suggested it right away (see
+    _visible_projects_and_tasks and validate_entry above), invisible to
+    everyone else until a team lead approves it (see app/routes/admin.py
+    suggestions_page / suggestion_approve)."""
+    name = name.strip()
+    if not name:
+        flash(request, "Enter a name before suggesting it.", "err")
+        return RedirectResponse("/today", status_code=303)
+    model = {"project": m.Project, "task": m.TaskType}.get(kind)
+    if model is None:
+        flash(request, "Unknown suggestion type.", "err")
+        return RedirectResponse("/today", status_code=303)
+    existing = db.execute(select(model).where(model.name == name)).scalar_one_or_none()
+    if existing is not None:
+        flash(request, f"'{name}' already exists — pick it from the list instead of suggesting it again.", "err")
+        return RedirectResponse("/today", status_code=303)
+    db.add(model(name=name, active=True, status=m.LIST_PENDING, created_by_employee_id=user.id))
+    db.commit()
+    label = "Project" if kind == "project" else "Task"
+    flash(request, f"{label} '{name}' suggested — you can use it right away; a team lead will review it soon.", "ok")
+    return RedirectResponse("/today", status_code=303)
 
 
 @router.post("/support/submit")

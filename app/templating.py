@@ -81,6 +81,26 @@ def _admin_nav_badges(db, user) -> dict:
     it would count pending leave they have no way to act on. Support
     Inbox is super-admin-only and isn't even in their nav, so its count
     is skipped for them entirely."""
+    def _pending_suggestions_count(dept=None) -> int:
+        # dept=None -> org-wide (super admin); otherwise scoped to whichever
+        # department the SUBMITTER (not the suggestion itself, which has no
+        # department of its own) belongs to.
+        total = 0
+        for model in (m.Project, m.TaskType):
+            q = select(func.count()).select_from(model).where(model.status == m.LIST_PENDING)
+            if dept is not None:
+                q = (
+                    select(func.count())
+                    .select_from(model)
+                    .join(m.Employee, m.Employee.id == model.created_by_employee_id)
+                    .where(
+                        model.status == m.LIST_PENDING,
+                        func.coalesce(func.nullif(m.Employee.department, ""), "—") == dept,
+                    )
+                )
+            total += db.execute(q).scalar() or 0
+        return total
+
     if getattr(user, "is_admin", False) and not getattr(user, "is_super_admin", False):
         dept = user.department or "—"
         pending_leave = db.execute(
@@ -92,7 +112,10 @@ def _admin_nav_badges(db, user) -> dict:
                 func.coalesce(func.nullif(m.Employee.department, ""), "—") == dept,
             )
         ).scalar() or 0
-        return {"pending_leave": pending_leave, "open_support": 0}
+        return {
+            "pending_leave": pending_leave, "open_support": 0,
+            "pending_suggestions": _pending_suggestions_count(dept),
+        }
     pending_leave = db.execute(
         select(func.count()).select_from(m.LeaveRecord).where(
             m.LeaveRecord.status == m.LEAVE_REQUESTED
@@ -103,7 +126,10 @@ def _admin_nav_badges(db, user) -> dict:
             m.SupportQuery.status == m.SUPPORT_OPEN
         )
     ).scalar() or 0
-    return {"pending_leave": pending_leave, "open_support": open_support}
+    return {
+        "pending_leave": pending_leave, "open_support": open_support,
+        "pending_suggestions": _pending_suggestions_count(None),
+    }
 
 
 def render(request, name: str, ctx: dict, db=None, status_code: int = 200):

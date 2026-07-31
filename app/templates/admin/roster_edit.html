@@ -47,6 +47,15 @@
         <option value="super_admin" {{ 'selected' if current_role == 'super_admin' }}>Super Admin — sees every department and every admin screen</option>
       </select>
     </div>
+    <div style="margin-top:10px">
+      <label class="f">Reports to</label>
+      <select name="reports_to_id">
+        <option value="">— none —</option>
+        {% for lead in lead_choices %}
+        <option value="{{ lead.id }}" {{ 'selected' if emp.reports_to_id == lead.id }}>{{ lead.name }}{% if lead.department %} ({{ lead.department }}){% endif %}</option>
+        {% endfor %}
+      </select>
+    </div>
     <div style="margin-top:14px">
       <button>Save</button>
       <a class="btn secondary" href="/admin/roster">Cancel</a>

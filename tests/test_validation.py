@@ -24,7 +24,16 @@ def db():
         m.TaskType(id=1, name="Check emails"),
     ])
     emp = m.Employee(id=1, name="Test", daily_target_minutes=480)
-    s.add(emp)
+    other = m.Employee(id=2, name="Someone Else", daily_target_minutes=480)
+    s.add_all([emp, other])
+    s.commit()
+    # employee/lead-suggested Project/Task (Ganesh, 2026-08-01) — usable by
+    # the submitter only while pending
+    s.add_all([
+        m.Project(id=3, name="Suggested By Emp1", status=m.LIST_PENDING, created_by_employee_id=1),
+        m.TaskType(id=2, name="Suggested Task By Emp1", status=m.LIST_PENDING, created_by_employee_id=1),
+        m.Project(id=4, name="Rejected Suggestion", status=m.LIST_REJECTED, active=False, created_by_employee_id=1),
+    ])
     s.commit()
     yield s, emp
     s.close()
@@ -68,6 +77,35 @@ class TestRowRules:
 
     def test_future_date_rejected(self, db):
         assert "future" in errs(*db, date=TODAY + dt.timedelta(days=1))
+
+
+class TestSuggestionStatus:
+    """Employee/lead-suggested Project/Task (Ganesh, 2026-08-01) — usable
+    ONLY by whoever suggested it while pending, enforced here server-side
+    (not just hidden client-side — see app/routes/employee.py
+    _visible_projects_and_tasks for the matching dropdown filter)."""
+
+    def test_submitter_can_use_their_own_pending_project(self, db):
+        v(*db, project_id=3)  # emp (id=1) suggested project id=3
+
+    def test_submitter_can_use_their_own_pending_task(self, db):
+        v(*db, task_type_id=2)  # emp (id=1) suggested task id=2
+
+    def test_someone_else_cannot_use_a_pending_project_not_their_own(self, db):
+        s, _emp = db
+        other = s.get(m.Employee, 2)
+        assert "Project/Employer" in errs(s, other, project_id=3)
+
+    def test_someone_else_cannot_use_a_pending_task_not_their_own(self, db):
+        s, _emp = db
+        other = s.get(m.Employee, 2)
+        assert "Task" in errs(s, other, task_type_id=2)
+
+    def test_rejected_suggestion_unusable_even_by_the_submitter(self, db):
+        # rejected also sets active=False (see app/routes/admin.py
+        # suggestion_reject) — the "usable while pending" carve-out only
+        # applies to genuinely pending rows, not rejected ones
+        assert "Project/Employer" in errs(*db, project_id=4)
 
 
 class TestOverlaps:

@@ -36,11 +36,12 @@ _PENDING = -1  # sentinel: "claimed by a new-employee row earlier in this same u
 
 TEMPLATE_HEADERS = [
     "Employee ID", "Full Name", "Department", "Designation", "Target/day",
-    "Workdays", "Joining Date", "DOB", "Email", "Country Code", "Phone", "Role", "Action",
+    "Workdays", "Joining Date", "DOB", "Email", "Country Code", "Phone", "Role",
+    "Reports To", "Action",
 ]
 REQUIRED_FOR_NEW = ["Full Name", "Department", "Designation", "Target/day", "Workdays"]
-COL_WIDTHS = [12, 22, 16, 18, 11, 16, 14, 12, 26, 12, 16, 10, 12]
-COL_LETTERS = "ABCDEFGHIJKLM"  # one per TEMPLATE_HEADERS column, in order
+COL_WIDTHS = [12, 22, 16, 18, 11, 16, 14, 12, 26, 12, 16, 10, 14, 12]
+COL_LETTERS = "ABCDEFGHIJKLMN"  # one per TEMPLATE_HEADERS column, in order
 
 # Both the exact letter-codes from the spec (M/T/W/Th/F/S/Su) and a few
 # common 3-letter aliases, so a sheet that says "Mon,Tue,Wed" instead still
@@ -274,6 +275,18 @@ def parse_row(raw: dict, code_to_id: Dict[str, int]) -> dict:
     elif not is_update:
         fields["is_admin"], fields["is_super_admin"] = False, False  # default for new rows only
 
+    # Must reference an employee who already exists BEFORE this upload —
+    # two new-hire rows in the same sheet can't point at each other, since
+    # neither has an Employee ID yet. Matches the same code_to_id lookup
+    # Employee ID itself uses for update-mode rows.
+    reports_to_raw = _text("Reports To")
+    if reports_to_raw:
+        reports_to_id = code_to_id.get(reports_to_raw.upper())
+        if reports_to_id is None:
+            errors.append(f"Reports To '{reports_to_raw}' isn't a known Employee ID")
+        else:
+            fields["reports_to_id"] = reports_to_id
+
     deactivate = None
     try:
         deactivate = parse_action(raw.get("Action"))
@@ -430,7 +443,7 @@ def build_sample_workbook() -> Workbook:
     ws.append([
         "", "Jane Doe", "Accounts", "Associate", 8,
         "M,T,W,Th,F", "2026-08-03", "1990-05-14", "jane.doe@example.com",
-        "+1", "555 0100", "Employee", "",
+        "+1", "555 0100", "Employee", "", "",
     ])
     for col, width in zip(COL_LETTERS, COL_WIDTHS):
         ws.column_dimensions[col].width = width
@@ -452,6 +465,8 @@ def build_sample_workbook() -> Workbook:
         ("Country Code", "No", "e.g. +91, +1 — kept separate from Phone so it always round-trips cleanly"),
         ("Phone", "No", "Just the number, without the country code, e.g. 9876543210"),
         ("Role", "No — defaults to Employee", "Employee, Admin (own department only), or Super Admin (all departments)"),
+        ("Reports To", "No", "The Employee ID (e.g. LOMK003) of their team lead/manager — must already exist; "
+         "can't point at another new hire in the same sheet"),
         ("Action", "No — only valid on an update row (Employee ID filled in)",
          "Blank, or 'Deactivate' to offboard — keeps all their history, same as Roster -> Edit -> untick Active"),
         ("", "", ""),
@@ -478,6 +493,12 @@ def build_existing_employees_workbook(db) -> Workbook:
             .order_by(m.Employee.department, m.Employee.name)
         ).scalars()
     )
+    # id -> code for EVERY employee (not just active ones), so a lead who's
+    # since been deactivated still round-trips correctly on export
+    code_by_id = {
+        row.id: row.employee_code
+        for row in db.execute(select(m.Employee.id, m.Employee.employee_code)).all()
+    }
     wb = Workbook()
     ws = wb.active
     ws.title = "Employees"
@@ -494,6 +515,7 @@ def build_existing_employees_workbook(db) -> Workbook:
             {"employee": "Employee", "admin": "Admin", "super_admin": "Super Admin"}[
                 flags_to_role(e.is_admin, e.is_super_admin)
             ],
+            (code_by_id.get(e.reports_to_id) or "") if e.reports_to_id else "",
             "",
         ])
     for col, width in zip(COL_LETTERS, COL_WIDTHS):

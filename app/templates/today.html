@@ -198,6 +198,60 @@
 
 {% if not (sub and sub.locked) %}
 <div class="card">
+  <h2>Auto time capture</h2>
+  {% if active_timer %}
+  <div class="totalbar">
+    <span class="big" id="tasktimer">00:00</span>
+    <span class="muted">{{ active_timer.project.name }} · {{ active_timer.task_type.name }} — started {{ active_timer.start_minute|clock }}</span>
+    <form method="post" action="/task-timer/stop" class="inline">
+      <input name="details" placeholder="Details{% if active_timer.details %} (already set — optional to change){% else %} (min 5 chars){% endif %}" style="width:220px">
+      <button>Stop &amp; Log</button>
+    </form>
+    <form method="post" action="/task-timer/cancel" class="inline" onsubmit="return confirm('Discard this timer — nothing gets logged?')">
+      <button class="small secondary">Cancel</button>
+    </form>
+  </div>
+  <script>
+  (function () {
+    // Same epoch-based count-up as the break timer above — started_at is
+    // a full-precision UTC timestamp, appending 'Z' tells the browser to
+    // parse it as UTC so this is correct regardless of server/browser
+    // timezone.
+    const startEpoch = new Date("{{ active_timer.started_at.isoformat() }}Z").getTime();
+    const el = document.getElementById('tasktimer');
+    function tick() {
+      const elapsedSec = Math.max(0, Math.floor((Date.now() - startEpoch) / 1000));
+      const h = Math.floor(elapsedSec / 3600), mi = Math.floor((elapsedSec % 3600) / 60), s = elapsedSec % 60;
+      el.textContent = (h ? h + ':' : '') + String(mi).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    }
+    tick();
+    setInterval(tick, 1000);
+  })();
+  </script>
+  {% else %}
+  <form method="post" action="/task-timer/start" class="formrow">
+    <div class="combo" id="combo-timer-project" data-placeholder="a project">
+      <label>Project/Employer</label>
+      <input type="text" class="combo-input" autocomplete="off" placeholder="Type to search…" required>
+      <input type="hidden" name="project_id">
+      <div class="combo-menu" hidden></div>
+    </div>
+    <div class="combo" id="combo-timer-task" data-placeholder="a task">
+      <label>Task</label>
+      <input type="text" class="combo-input" autocomplete="off" placeholder="Type to search…" required>
+      <input type="hidden" name="task_type_id">
+      <div class="combo-menu" hidden></div>
+    </div>
+    <div style="flex:1 1 200px"><label>Details (optional now, needed by Stop)</label><input name="details" style="width:100%"></div>
+    <div><button class="secondary">Start Timer</button></div>
+  </form>
+  {% endif %}
+  <p class="small muted" style="margin:6px 0 0">Starts a live timer and auto-fills Start/End from the clock when you stop —
+    same rules apply (min 5 char details, no overlaps, {{ (max_row_minutes // 60) }}h max per row). Starting a new
+    timer auto-stops and logs whatever's already running.</p>
+</div>
+
+<div class="card">
   <h2>Add row</h2>
   <form method="post" action="/entries" class="formrow" id="addrow">
     <input type="hidden" name="date" value="{{ day.isoformat() }}">
@@ -235,10 +289,34 @@
     max {{ (max_row_minutes // 60) }}h per row — break long work down · gaps over {{ gap_minutes }} min get flagged, not blocked.</div>
 </div>
 
+<details class="card">
+  <summary style="cursor:pointer;font-weight:600">Don't see your project or task? Suggest a new one</summary>
+  <form method="post" action="/suggestions" class="formrow" style="margin-top:10px">
+    <div>
+      <label>Type</label>
+      <select name="kind">
+        <option value="project">Project/Employer</option>
+        <option value="task">Task</option>
+      </select>
+    </div>
+    <div style="flex:1 1 240px"><label>Name</label><input name="name" required style="width:100%"></div>
+    <div><button class="secondary">Suggest</button></div>
+  </form>
+  <p class="small muted" style="margin:6px 0 0">You can use it right away on your own entries — it stays hidden from
+    everyone else until a team lead approves it.</p>
+</details>
+
 <script src="/static/combo.js?v={{ static_version }}"></script>
 <script>
 initCombo(document.getElementById('combo-project'), {{ projects|tojson }});
 initCombo(document.getElementById('combo-task'), {{ tasks|tojson }});
+{% if not active_timer %}
+// only present when no timer is currently running (see the Start Timer
+// form further up the page — it's replaced by a Stop/Cancel widget
+// instead, whenever a timer is already active)
+initCombo(document.getElementById('combo-timer-project'), {{ projects|tojson }});
+initCombo(document.getElementById('combo-timer-task'), {{ tasks|tojson }});
+{% endif %}
 
 (function () {
   const f = document.getElementById('addrow');

@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import RedirectResponse, StreamingResponse
 from openpyxl import load_workbook
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app import bulk_upload, compensation, engine, leave_bulk_upload, lists_bulk_upload, models as m
@@ -524,10 +524,16 @@ def roster(
         key = e.department or "—"
         dept_counts[key] = dept_counts.get(key, 0) + 1
     all_depts = sorted(dept_counts)
+    # dropdown always offers active people to report to, regardless of the
+    # active/all toggle above (which only controls the table listing)
+    lead_choices = [e for e in emps if e.active]
 
     return render(
         request, "admin/roster.html",
-        {"user": admin, "emps": emps, "show": show, "dept_counts": dept_counts, "all_depts": all_depts},
+        {
+            "user": admin, "emps": emps, "show": show, "dept_counts": dept_counts,
+            "all_depts": all_depts, "lead_choices": lead_choices,
+        },
         db=db,
     )
 
@@ -535,6 +541,7 @@ def roster(
 def _emp_from_form(
     db: Session, emp: m.Employee, name, email, department, designation, target_hours,
     work_days, start_date, active, tracked, role, dob="", phone="", country_code="",
+    reports_to_id="",
 ):
     emp.name = name.strip()
     emp.country_code = country_code.strip() or None
@@ -568,6 +575,11 @@ def _emp_from_form(
     emp.active = bool(active)
     emp.tracked = bool(tracked)
     emp.is_admin, emp.is_super_admin = role_to_flags(role)
+    # blank/"0" -> no reporting lead set; never allow someone to report to
+    # themselves (silently ignored rather than a hard error — a stray
+    # self-selection shouldn't block saving the rest of the form).
+    rid = int(reports_to_id) if str(reports_to_id).strip().isdigit() else None
+    emp.reports_to_id = rid if rid and rid != emp.id else None
 
 
 @router.post("/roster/add")
@@ -586,6 +598,7 @@ def roster_add(
     active: str = Form("1"),
     tracked: str = Form("1"),
     role: str = Form(ROLE_EMPLOYEE),
+    reports_to_id: str = Form(""),
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
@@ -593,7 +606,7 @@ def roster_add(
     try:
         _emp_from_form(db, emp, name, email, department, designation, target_hours,
                        work_days, start_date, active == "1", tracked == "1", role,
-                       dob, phone, country_code)
+                       dob, phone, country_code, reports_to_id)
     except FormError as e:
         flash(request, e.message, "err")
         return RedirectResponse("/admin/roster", status_code=303)
@@ -636,7 +649,17 @@ def roster_edit_page(
     emp = db.get(m.Employee, emp_id)
     if emp is None:
         return RedirectResponse("/admin/roster", status_code=303)
-    return render(request, "admin/roster_edit.html", {"user": admin, "emp": emp}, db=db)
+    lead_choices = list(
+        db.execute(
+            select(m.Employee)
+            .where(m.Employee.active.is_(True), m.Employee.id != emp_id)
+            .order_by(m.Employee.name)
+        ).scalars()
+    )
+    return render(
+        request, "admin/roster_edit.html",
+        {"user": admin, "emp": emp, "lead_choices": lead_choices}, db=db,
+    )
 
 
 @router.post("/roster/{emp_id}/edit")
@@ -656,6 +679,7 @@ def roster_edit(
     active: str = Form(""),
     tracked: str = Form(""),
     role: str = Form(ROLE_EMPLOYEE),
+    reports_to_id: str = Form(""),
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
@@ -671,7 +695,7 @@ def roster_edit(
     try:
         _emp_from_form(db, emp, name, email, department, designation, target_hours,
                        work_days, start_date, active == "1", tracked == "1", role,
-                       dob, phone, country_code)
+                       dob, phone, country_code, reports_to_id)
     except FormError as e:
         flash(request, e.message, "err")
         return RedirectResponse("/admin/roster", status_code=303)
@@ -887,6 +911,201 @@ def lists_toggle(
         db.commit()
         audit(db, admin.name, f"toggle_{kind}", kind, item.name, {"active": item.active})
     return RedirectResponse("/admin/lists", status_code=303)
+
+
+# --------------------------------------------------------------------------
+# Suggestions (Ganesh, 2026-08-01) — employee/lead-suggested Projects/Tasks
+# awaiting review. Deliberately require_admin, not require_super_admin,
+# same tier as Leave Requests: "Team lead approval gatekeeping" was the
+# explicit ask, so a department-scoped admin needs to be able to act on
+# their own team's suggestions without needing org-wide access. Scoped by
+# the SUBMITTER's department (a suggestion has no department of its own).
+# --------------------------------------------------------------------------
+def _pending_suggestions(db: Session, admin: m.Employee):
+    scope = admin_department_scope(admin)
+    projects = list(
+        db.execute(
+            select(m.Project).where(m.Project.status == m.LIST_PENDING).order_by(m.Project.created_at)
+        ).scalars()
+    )
+    tasks = list(
+        db.execute(
+            select(m.TaskType).where(m.TaskType.status == m.LIST_PENDING).order_by(m.TaskType.created_at)
+        ).scalars()
+    )
+    if scope is not None:
+        projects = [p for p in projects if p.created_by and (p.created_by.department or "—") == scope]
+        tasks = [t for t in tasks if t.created_by and (t.created_by.department or "—") == scope]
+    return projects, tasks
+
+
+@router.get("/suggestions")
+def suggestions_page(
+    request: Request,
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    projects, tasks = _pending_suggestions(db, admin)
+    return render(
+        request, "admin/suggestions.html",
+        {"user": admin, "projects": projects, "tasks": tasks}, db=db,
+    )
+
+
+def _suggestion_or_forbidden(db: Session, admin: m.Employee, kind: str, item_id: int):
+    model = m.Project if kind == "project" else m.TaskType
+    item = db.get(model, item_id)
+    if item is None:
+        return None
+    scope = admin_department_scope(admin)
+    if scope is not None:
+        submitter_dept = (item.created_by.department or "—") if item.created_by else None
+        if submitter_dept != scope:
+            # Not just a UI filter — a department-scoped admin can't approve/
+            # reject someone else's team's suggestion even via a direct POST.
+            raise Forbidden()
+    return item
+
+
+@router.post("/suggestions/{kind}/{item_id}/approve")
+def suggestion_approve(
+    kind: str,
+    item_id: int,
+    request: Request,
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    item = _suggestion_or_forbidden(db, admin, kind, item_id)
+    if item is None:
+        return RedirectResponse("/admin/suggestions", status_code=303)
+    item.status = m.LIST_APPROVED
+    item.reviewed_by = admin.name
+    item.reviewed_at = dt.datetime.utcnow()
+    db.commit()
+    audit(db, admin.name, f"suggestion_approve_{kind}", kind, item.name, {})
+    flash(request, f"Approved '{item.name}' — now visible to everyone.", "ok")
+    return RedirectResponse("/admin/suggestions", status_code=303)
+
+
+@router.post("/suggestions/{kind}/{item_id}/reject")
+def suggestion_reject(
+    kind: str,
+    item_id: int,
+    request: Request,
+    review_note: str = Form(""),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    item = _suggestion_or_forbidden(db, admin, kind, item_id)
+    if item is None:
+        return RedirectResponse("/admin/suggestions", status_code=303)
+    item.status = m.LIST_REJECTED
+    # also deactivate: a rejected suggestion must stop being usable even by
+    # the person who submitted it (the "usable while pending" carve-out only
+    # applies to genuinely pending rows — see validate_entry/
+    # _visible_projects_and_tasks in app/routes/employee.py)
+    item.active = False
+    item.reviewed_by = admin.name
+    item.reviewed_at = dt.datetime.utcnow()
+    item.review_note = review_note.strip()
+    db.commit()
+    audit(db, admin.name, f"suggestion_reject_{kind}", kind, item.name, {"reason": review_note.strip()})
+    flash(request, f"Rejected '{item.name}'.", "ok")
+    return RedirectResponse("/admin/suggestions", status_code=303)
+
+
+# --------------------------------------------------------------------------
+# Project/Task assignment (Ganesh, 2026-08-01) — a team lead's "this
+# employee works on this project/task" marker. Deliberately advisory, NOT
+# enforced: app/validation.py never rejects a TaskEntry against an
+# unassigned project — this only changes what's shown first/highlighted on
+# the Today entry form (see app/routes/employee.py
+# _visible_projects_and_tasks). Same require_admin + department-scope tier
+# as Leave Requests/Suggestions — a team lead manages their own team only.
+# --------------------------------------------------------------------------
+@router.get("/assignments")
+def assignments_page(
+    request: Request,
+    employee_id: Optional[int] = None,
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    scope = admin_department_scope(admin)
+    emps = list(
+        db.execute(select(m.Employee).where(m.Employee.active.is_(True)).order_by(m.Employee.name)).scalars()
+    )
+    if scope is not None:
+        emps = [e for e in emps if (e.department or "—") == scope]
+
+    selected = next((e for e in emps if e.id == employee_id), None) if employee_id is not None else None
+
+    projects = list(
+        db.execute(
+            select(m.Project)
+            .where(m.Project.active.is_(True), m.Project.status == m.LIST_APPROVED)
+            .order_by(m.Project.name)
+        ).scalars()
+    )
+    tasks = list(
+        db.execute(
+            select(m.TaskType)
+            .where(m.TaskType.active.is_(True), m.TaskType.status == m.LIST_APPROVED)
+            .order_by(m.TaskType.name)
+        ).scalars()
+    )
+
+    assigned_project_ids, assigned_task_ids = set(), set()
+    if selected is not None:
+        assigned_project_ids = {
+            row[0] for row in db.execute(
+                select(m.ProjectAssignment.project_id).where(m.ProjectAssignment.employee_id == selected.id)
+            ).all()
+        }
+        assigned_task_ids = {
+            row[0] for row in db.execute(
+                select(m.TaskAssignment.task_type_id).where(m.TaskAssignment.employee_id == selected.id)
+            ).all()
+        }
+
+    return render(
+        request, "admin/assignments.html",
+        {
+            "user": admin, "emps": emps, "selected": selected, "projects": projects, "tasks": tasks,
+            "assigned_project_ids": assigned_project_ids, "assigned_task_ids": assigned_task_ids,
+        },
+        db=db,
+    )
+
+
+@router.post("/assignments/{employee_id}")
+def assignments_save(
+    employee_id: int,
+    request: Request,
+    project_ids: list = Form([]),
+    task_type_ids: list = Form([]),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    emp = db.get(m.Employee, employee_id)
+    if emp is None:
+        return RedirectResponse("/admin/assignments", status_code=303)
+    scope = admin_department_scope(admin)
+    if scope is not None and (emp.department or "—") != scope:
+        raise Forbidden()
+
+    # replace-all: simplest correct way to sync a set of checkboxes without
+    # tracking individual add/remove diffs
+    db.execute(delete(m.ProjectAssignment).where(m.ProjectAssignment.employee_id == employee_id))
+    db.execute(delete(m.TaskAssignment).where(m.TaskAssignment.employee_id == employee_id))
+    for pid in project_ids:
+        db.add(m.ProjectAssignment(employee_id=employee_id, project_id=int(pid), assigned_by=admin.name))
+    for tid in task_type_ids:
+        db.add(m.TaskAssignment(employee_id=employee_id, task_type_id=int(tid), assigned_by=admin.name))
+    db.commit()
+    audit(db, admin.name, "assignments_save", "Employee", employee_id,
+          {"projects": len(project_ids), "tasks": len(task_type_ids)})
+    flash(request, f"Saved assignments for {emp.name}.", "ok")
+    return RedirectResponse(f"/admin/assignments?employee_id={employee_id}", status_code=303)
 
 
 # --------------------------------------------------------------------------

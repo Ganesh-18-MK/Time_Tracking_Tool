@@ -75,11 +75,21 @@ def validate_entry(
         errors.append("This day is submitted and locked. Ask an admin to unlock it.")
 
     # --- dropdowns only (no free text) ----------------------------------------
+    # A pending suggestion (Ganesh, 2026-08-01: employee/lead-suggested
+    # projects/tasks) is usable ONLY by whoever suggested it, until a team
+    # lead approves it — enforced here, not just hidden client-side, since
+    # the dropdown filter alone would only be a UI nicety, not a real rule.
     project = db.get(m.Project, project_id) if project_id else None
-    if project is None or not project.active:
+    if project is None or not project.active or not (
+        project.status == m.LIST_APPROVED
+        or (project.status == m.LIST_PENDING and project.created_by_employee_id == emp.id)
+    ):
         errors.append("Choose a Project/Employer from the list.")
     task = db.get(m.TaskType, task_type_id) if task_type_id else None
-    if task is None or not task.active:
+    if task is None or not task.active or not (
+        task.status == m.LIST_APPROVED
+        or (task.status == m.LIST_PENDING and task.created_by_employee_id == emp.id)
+    ):
         errors.append("Choose a Task from the list.")
 
     # --- details ----------------------------------------------------------------

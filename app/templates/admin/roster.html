@@ -22,7 +22,7 @@
     <input type="search" data-filter-table="roster-table" placeholder="Search employees…">
   </div>
   <table id="roster-table">
-    <thead><tr><th>ID</th><th>Name</th><th>Department</th><th>Designation</th><th>Target/day</th>
+    <thead><tr><th>ID</th><th>Name</th><th>Department</th><th>Designation</th><th>Reports to</th><th>Target/day</th>
       <th>Work days</th><th>Start date</th><th>Flags</th><th></th></tr></thead>
     <tbody>
       {% for e in emps %}
@@ -34,6 +34,7 @@
         </td>
         <td>{{ e.department or '—' }}</td>
         <td>{{ e.designation or '—' }}</td>
+        <td class="small">{{ e.reports_to.name if e.reports_to else '—' }}</td>
         <td>{{ e.daily_target_minutes|hm }}</td>
         <td class="small">{% set names = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}
           {% for d in e.work_day_set|sort %}{{ names[d] }}{% if not loop.last %} {% endif %}{% endfor %}</td>
@@ -70,6 +71,15 @@
         <option value="employee" selected>Employee</option>
         <option value="admin">Admin (own department)</option>
         <option value="super_admin">Super Admin (all departments)</option>
+      </select>
+    </div>
+    <div>
+      <label>Reports to</label>
+      <select name="reports_to_id">
+        <option value="">— none —</option>
+        {% for lead in lead_choices %}
+        <option value="{{ lead.id }}">{{ lead.name }}{% if lead.department %} ({{ lead.department }}){% endif %}</option>
+        {% endfor %}
       </select>
     </div>
     <div>

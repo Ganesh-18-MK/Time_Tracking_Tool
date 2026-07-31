@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% set active_nav = 'suggestions' %}
+{% block title %}Suggestions · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Project &amp; task suggestions</h1>
+<p class="small muted">Employees can suggest a new project or task straight from Today — they can use it themselves
+  right away, but it stays hidden from everyone else until you approve it here.
+  {% if not user.is_super_admin %}Showing your department only.{% endif %}</p>
+
+<div class="card">
+  <h2>Projects/Employers ({{ projects|length }} pending)</h2>
+  {% if projects %}
+  <table>
+    <thead><tr><th>Name</th><th>Suggested by</th><th>Department</th><th>When</th><th>Decision</th></tr></thead>
+    <tbody>
+      {% for p in projects %}
+      <tr>
+        <td>{{ p.name }}</td>
+        <td>{{ p.created_by.name if p.created_by else '—' }}</td>
+        <td>{{ (p.created_by.department or '—') if p.created_by else '—' }}</td>
+        <td class="small nowrap">{{ p.created_at.strftime('%d %b %H:%M') }} UTC</td>
+        <td class="nowrap">
+          <form method="post" action="/admin/suggestions/project/{{ p.id }}/approve" class="inline">
+            <button class="small">Approve</button>
+          </form>
+          <form method="post" action="/admin/suggestions/project/{{ p.id }}/reject" class="inline"
+                onsubmit="return confirm('Reject &quot;{{ p.name }}&quot;? It stops being usable, including for whoever suggested it.')">
+            <button class="small secondary">Reject</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted small">Nothing pending.</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Tasks ({{ tasks|length }} pending)</h2>
+  {% if tasks %}
+  <table>
+    <thead><tr><th>Name</th><th>Suggested by</th><th>Department</th><th>When</th><th>Decision</th></tr></thead>
+    <tbody>
+      {% for t in tasks %}
+      <tr>
+        <td>{{ t.name }}</td>
+        <td>{{ t.created_by.name if t.created_by else '—' }}</td>
+        <td>{{ (t.created_by.department or '—') if t.created_by else '—' }}</td>
+        <td class="small nowrap">{{ t.created_at.strftime('%d %b %H:%M') }} UTC</td>
+        <td class="nowrap">
+          <form method="post" action="/admin/suggestions/task/{{ t.id }}/approve" class="inline">
+            <button class="small">Approve</button>
+          </form>
+          <form method="post" action="/admin/suggestions/task/{{ t.id }}/reject" class="inline"
+                onsubmit="return confirm('Reject &quot;{{ t.name }}&quot;? It stops being usable, including for whoever suggested it.')">
+            <button class="small secondary">Reject</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted small">Nothing pending.</p>{% endif %}
+</div>
+{% endblock %}

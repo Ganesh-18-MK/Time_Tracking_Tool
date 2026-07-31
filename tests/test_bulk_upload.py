@@ -260,6 +260,42 @@ class TestParseRowUpdate:
         assert "country_code" not in result["fields"]
 
 
+class TestParseRowReportsTo:
+    """The 'Reports To' column (Ganesh, 2026-08-01) — resolved against the
+    SAME code_to_id map Employee ID itself uses, since it can only point at
+    someone who already exists before this upload runs (two new-hire rows
+    in one sheet can't reference each other — neither has a code yet)."""
+
+    def test_blank_is_not_included_in_patch(self):
+        row = {"Employee ID": "LOMK001", "Phone": "123"}
+        result = parse_row(row, {"LOMK001": 1})
+        assert "reports_to_id" not in result["fields"]
+
+    def test_known_code_resolves_to_id(self):
+        row = {"Employee ID": "LOMK002", "Reports To": "LOMK001"}
+        result = parse_row(row, {"LOMK001": 1, "LOMK002": 2})
+        assert result["error"] is None
+        assert result["fields"]["reports_to_id"] == 1
+
+    def test_case_insensitive_match(self):
+        row = {"Employee ID": "LOMK002", "Reports To": "lomk001"}
+        result = parse_row(row, {"LOMK001": 1, "LOMK002": 2})
+        assert result["error"] is None
+        assert result["fields"]["reports_to_id"] == 1
+
+    def test_unknown_code_is_an_error(self):
+        row = dict(NEW_ROW, **{"Reports To": "LOMK999"})
+        result = parse_row(row, {})
+        assert result["mode"] == "error"
+        assert "Reports To" in result["error"]
+
+    def test_works_on_a_new_hire_row_too(self):
+        row = dict(NEW_ROW, **{"Reports To": "LOMK001"})
+        result = parse_row(row, {"LOMK001": 1})
+        assert result["error"] is None
+        assert result["fields"]["reports_to_id"] == 1
+
+
 class TestSampleAndExportWorkbooks:
     def test_sample_workbook_new_hire_row_parses_cleanly(self):
         wb = build_sample_workbook()
