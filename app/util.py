@@ -2,6 +2,7 @@
 import datetime as dt
 import io
 import json
+import os
 import re
 from typing import Optional
 
@@ -190,6 +191,51 @@ def ensure_super_admin_backfill(db: Session) -> None:
         return
     for emp in rows:
         emp.is_super_admin = True
+    db.commit()
+
+
+def ensure_bootstrap_admins(db: Session) -> None:
+    """Creates the initial Super Admin account(s) from the BOOTSTRAP_ADMINS
+    env var, but ONLY if the employees table is completely empty.
+
+    Solves a chicken-and-egg problem on a brand-new deploy: Postgres starts
+    with zero rows, and /signup only lets someone *claim* an existing
+    roster row (see app/routes/auth.py) — it never creates one. Without
+    this, nobody, including the first admin, could ever sign in on a fresh
+    production database.
+
+    Format: "Name:email,Name:email,..." (see deploy_azure.sh). No-op if
+    the env var isn't set (local dev's tms.db is seeded by hand instead —
+    see seed_dummy_data.py), and no-op the instant any employee exists —
+    so BOOTSTRAP_ADMINS can be left in Azure App Settings permanently
+    without ever touching real data after the very first startup. Same
+    safe-to-call-every-startup pattern as ensure_employee_codes /
+    ensure_super_admin_backfill above."""
+    raw = os.environ.get("BOOTSTRAP_ADMINS", "").strip()
+    if not raw:
+        return
+    if db.execute(select(m.Employee)).first() is not None:
+        return
+    n = highest_employee_code_number(db) + 1
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry or ":" not in entry:
+            continue
+        name, email = (part.strip() for part in entry.split(":", 1))
+        if not name or not email:
+            continue
+        db.add(
+            m.Employee(
+                name=name,
+                email=email,
+                employee_code=format_employee_code(n),
+                active=True,
+                is_admin=True,
+                is_super_admin=True,
+                tracked=False,  # admin accounts excluded from compliance runs, same Roster default
+            )
+        )
+        n += 1
     db.commit()
 
 

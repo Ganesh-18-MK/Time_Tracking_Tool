@@ -89,12 +89,14 @@ class TestParseRole:
         assert parse_role(None) is None
 
     def test_employee_case_insensitive(self):
-        assert parse_role("employee") is False
-        assert parse_role("Employee") is False
+        # (is_admin, is_super_admin) — see role_to_flags in app/util.py
+        assert parse_role("employee") == (False, False)
+        assert parse_role("Employee") == (False, False)
 
     def test_admin_case_insensitive(self):
-        assert parse_role("admin") is True
-        assert parse_role("Admin") is True
+        # department-scoped admin tier: is_admin=True, is_super_admin=False
+        assert parse_role("admin") == (True, False)
+        assert parse_role("Admin") == (True, False)
 
     def test_anything_else_raises(self):
         with pytest.raises(ValueError):

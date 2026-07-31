@@ -1,6 +1,13 @@
 """Small pure-function helpers in app/util.py."""
+import pytest
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
+
+from app import models as m
+from app.db import Base
 from app.util import (
     clamp_break_end,
+    ensure_bootstrap_admins,
     flags_to_role,
     mask_tail,
     overtime_minutes,
@@ -127,3 +134,64 @@ class TestFlagsToRole:
     def test_round_trips_through_role_to_flags(self):
         for role in ("employee", "admin", "super_admin"):
             assert flags_to_role(*role_to_flags(role)) == role
+
+
+class TestEnsureBootstrapAdmins:
+    """The BOOTSTRAP_ADMINS startup step (Ganesh, 2026-07-31) — solves a
+    fresh-Postgres-deploy chicken-and-egg problem where /signup can't work
+    because nobody is on the roster yet. Must stay a no-op the instant any
+    employee exists, so it's safe to leave set in Azure App Settings
+    forever without ever clobbering real onboarded data."""
+
+    @pytest.fixture()
+    def db(self):
+        eng = create_engine("sqlite://")
+        Base.metadata.create_all(eng)
+        s = sessionmaker(bind=eng)()
+        yield s
+        s.close()
+
+    def test_noop_when_env_var_unset(self, db, monkeypatch):
+        monkeypatch.delenv("BOOTSTRAP_ADMINS", raising=False)
+        ensure_bootstrap_admins(db)
+        assert db.execute(select(m.Employee)).first() is None
+
+    def test_noop_when_employees_already_exist(self, db, monkeypatch):
+        db.add(m.Employee(name="Existing Person", email="existing@mkimmigrationlaw.com"))
+        db.commit()
+        monkeypatch.setenv("BOOTSTRAP_ADMINS", "New Leader:new@mkimmigrationlaw.com")
+        ensure_bootstrap_admins(db)
+        # only the pre-existing row — nothing added on top of real data
+        names = [e.name for e in db.execute(select(m.Employee)).scalars()]
+        assert names == ["Existing Person"]
+
+    def test_creates_three_super_admins_from_env_var(self, db, monkeypatch):
+        monkeypatch.setenv(
+            "BOOTSTRAP_ADMINS",
+            "Deepthi Divakaran:Deepthi@mkimmigrationlaw.com,"
+            "Steve Kennedy:Steve@mkimmigrationlaw.com,"
+            "Norine:Norine@mkimmigrationlaw.com",
+        )
+        ensure_bootstrap_admins(db)
+        emps = list(db.execute(select(m.Employee)).scalars())
+        assert len(emps) == 3
+        for e in emps:
+            assert e.is_admin is True
+            assert e.is_super_admin is True
+            assert e.active is True
+            assert e.tracked is False  # excluded from compliance runs, same as any admin
+        emails = {e.email for e in emps}
+        assert emails == {
+            "Deepthi@mkimmigrationlaw.com",
+            "Steve@mkimmigrationlaw.com",
+            "Norine@mkimmigrationlaw.com",
+        }
+        codes = {e.employee_code for e in emps}
+        assert codes == {"LOMK001", "LOMK002", "LOMK003"}
+
+    def test_malformed_entries_are_skipped_not_fatal(self, db, monkeypatch):
+        monkeypatch.setenv("BOOTSTRAP_ADMINS", "no-colon-here,Valid Leader:valid@mkimmigrationlaw.com")
+        ensure_bootstrap_admins(db)
+        emps = list(db.execute(select(m.Employee)).scalars())
+        assert len(emps) == 1
+        assert emps[0].email == "valid@mkimmigrationlaw.com"

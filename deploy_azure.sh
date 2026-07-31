@@ -40,11 +40,18 @@ echo "== App settings =="
 SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
 DATABASE_URL="postgresql+psycopg://${PG_ADMIN}:${PG_PASSWORD}@${PG_SERVER}.postgres.database.azure.com/${DB_NAME}?sslmode=require"
 
+# Bootstraps the first Super Admin accounts on a brand-new (empty) database
+# — see app/util.py ensure_bootstrap_admins for why this is needed at all.
+# Safe to leave set permanently: it's a no-op the moment any employee row
+# exists, so it never overwrites real data after the very first startup.
+BOOTSTRAP_ADMINS="Deepthi Divakaran:Deepthi@mkimmigrationlaw.com,Steve Kennedy:Steve@mkimmigrationlaw.com,Norine:Norine@mkimmigrationlaw.com"
+
 az webapp config appsettings set -g "$RG" -n "$APP" --settings \
   AUTH_MODE=password \
   SECRET_KEY="$SECRET_KEY" \
   DATABASE_URL="$DATABASE_URL" \
   AVATAR_UPLOAD_DIR="/home/data/avatars" \
+  BOOTSTRAP_ADMINS="$BOOTSTRAP_ADMINS" \
   SCM_DO_BUILD_DURING_DEPLOYMENT=true
 
 echo "== Packaging code =="
