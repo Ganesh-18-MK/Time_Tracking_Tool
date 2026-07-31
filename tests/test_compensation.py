@@ -60,6 +60,13 @@ def _punch(db, emp_id, date, in_minute, out_minute):
     ))
 
 
+def _break(db, emp_id, date, start_minute, end_minute, break_type=m.BREAK_PERSONAL):
+    db.add(m.BreakEntry(
+        employee_id=emp_id, date=date, break_type=break_type,
+        start_minute=start_minute, end_minute=end_minute,
+    ))
+
+
 class TestMonthlySummary:
     def test_shortfall_day_adds_to_balance(self, db, emp):
         d = dt.date(YEAR, MONTH, 1)
@@ -181,3 +188,76 @@ class TestMonthlySummary:
     def test_empty_month_returns_zeroed_summary(self, db, emp):
         result = monthly_summary(db, emp, YEAR, MONTH, today=TODAY)
         assert result == {"balance": 0, "shortfall_total": 0, "overtime_total": 0, "days": []}
+
+
+class TestBreakTimeExcludedFromPunchedMinutes:
+    """Ganesh, 2026-08-01: "whenever we are taking a break the punch in
+    timer should stop... then again punch timer should continue" — a
+    PunchSession's raw duration includes any breaks taken while punched
+    in, so a completed break must be netted out before comparing punched
+    minutes to target, or break time would silently count as productive
+    work in the automatic balance."""
+
+    def test_break_taken_during_punch_session_reduces_punched_minutes(self, db, emp):
+        d = dt.date(YEAR, MONTH, 1)
+        _status(db, emp.id, d, 480)
+        _punch(db, emp.id, d, 0, 480)          # punched a full 480 raw
+        _break(db, emp.id, d, 100, 130)        # but 30 of those were a break
+        db.commit()
+        result = monthly_summary(db, emp, YEAR, MONTH, today=TODAY)
+        # 480 raw - 30 break = 450 actual work -> 30 short, not exactly on target
+        assert result["shortfall_total"] == 30
+        assert result["overtime_total"] == 0
+        assert result["balance"] == -30
+
+    def test_still_running_break_is_not_netted_out_yet(self, db, emp):
+        # only a *completed* break counts, same "not a finished fact yet"
+        # convention as an open punch session
+        d = dt.date(YEAR, MONTH, 1)
+        _status(db, emp.id, d, 480)
+        _punch(db, emp.id, d, 0, 480)
+        db.add(m.BreakEntry(
+            employee_id=emp.id, date=d, break_type=m.BREAK_PERSONAL,
+            start_minute=100, end_minute=None,
+        ))
+        db.commit()
+        result = monthly_summary(db, emp, YEAR, MONTH, today=TODAY)
+        assert result["shortfall_total"] == 0  # full 480 still counts, break not closed
+
+    def test_multiple_breaks_same_day_all_netted_out(self, db, emp):
+        d = dt.date(YEAR, MONTH, 1)
+        _status(db, emp.id, d, 480)
+        _punch(db, emp.id, d, 0, 500)
+        _break(db, emp.id, d, 100, 115)   # 15
+        _break(db, emp.id, d, 300, 320)   # 20
+        db.commit()
+        result = monthly_summary(db, emp, YEAR, MONTH, today=TODAY)
+        # 500 raw - 35 break = 465 actual -> 15 short
+        assert result["shortfall_total"] == 15
+
+    def test_break_time_never_pushes_punched_minutes_negative(self, db, emp):
+        # a pathological/edge case (break minutes exceeding a short punch
+        # session) must floor at 0, not go negative and flip into overtime
+        d = dt.date(YEAR, MONTH, 1)
+        _status(db, emp.id, d, 480)
+        _punch(db, emp.id, d, 0, 20)
+        _break(db, emp.id, d, 0, 20)
+        db.commit()
+        result = monthly_summary(db, emp, YEAR, MONTH, today=TODAY)
+        assert result["shortfall_total"] == 480
+        assert result["overtime_total"] == 0
+
+    def test_break_alone_does_not_affect_target(self, db, emp):
+        # the >30 min break-allowance-extends-target rule is engine.py's
+        # job (already baked into DayStatus.target_minutes before this
+        # module ever sees it) — this module must not double-apply it by
+        # also touching target, only punched minutes
+        d = dt.date(YEAR, MONTH, 1)
+        _status(db, emp.id, d, 480)  # target as computed/stored — unchanged by this module
+        _punch(db, emp.id, d, 0, 510)
+        _break(db, emp.id, d, 100, 140)  # 40 min break -> 510 - 40 = 470 punched, 10 short
+        db.commit()
+        result = monthly_summary(db, emp, YEAR, MONTH, today=TODAY)
+        assert result["days"][0]["target"] == 480
+        assert result["days"][0]["punched"] == 470
+        assert result["shortfall_total"] == 10

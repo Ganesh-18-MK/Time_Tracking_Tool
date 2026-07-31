@@ -194,6 +194,29 @@ def ensure_super_admin_backfill(db: Session) -> None:
     db.commit()
 
 
+def ensure_list_status_backfill(db: Session) -> None:
+    """Backfill for the Project/TaskType `status` column added 2026-08-01
+    (employee/lead suggestions with approval). Same root cause as
+    ensure_super_admin_backfill above: SQLite's ADD COLUMN gives every
+    existing row NULL, not the ORM-level default — without this, every
+    project/task created before this feature shipped would silently
+    disappear from the Today picker and be rejected by validate_entry
+    (both only treat status == LIST_APPROVED, or a still-pending row's own
+    submitter, as usable — NULL matches neither). Every pre-existing row is
+    an already-in-use, already-trusted entry, not a suggestion awaiting
+    review, so it backfills straight to approved rather than pending.
+    A no-op once every row already has a status — safe on every startup,
+    same pattern as ensure_employee_codes / ensure_super_admin_backfill."""
+    changed = False
+    for model in (m.Project, m.TaskType):
+        rows = list(db.execute(select(model).where(model.status.is_(None))).scalars())
+        for row in rows:
+            row.status = m.LIST_APPROVED
+            changed = True
+    if changed:
+        db.commit()
+
+
 def ensure_bootstrap_admins(db: Session) -> None:
     """Creates the initial Super Admin account(s) from the BOOTSTRAP_ADMINS
     env var, but ONLY if the employees table is completely empty.

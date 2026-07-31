@@ -55,20 +55,35 @@
     // ending a break) is what picks up a newly-extended target.
     const startEpoch = new Date("{{ active_punch.punched_in_at.isoformat() }}Z").getTime();
     const remainingAtLoad = {{ punch_remaining }} * 60;
+    // A break isn't work — the countdown must not tick through it (Ganesh,
+    // 2026-08-01: "whenever we are taking a break the punch in timer
+    // should stop... then again punch timer should continue").
+    // completedBreakSec is every break already ended today, known at page
+    // load, subtracted from elapsed so resuming after a break doesn't
+    // "catch up" and count that time as work. breakStartEpoch is set only
+    // while a break is currently running — the timer freezes at that
+    // instant (elapsed pinned to breakStart - punchStart) instead of
+    // advancing through it; ending the break reloads the page, which
+    // recomputes everything server-side fresh.
+    const completedBreakSec = {{ total_break_minutes }} * 60;
+    const breakStartEpoch = {% if active_break %}new Date("{{ active_break.started_at.isoformat() }}Z").getTime(){% else %}null{% endif %};
     const el = document.getElementById('punchtimer');
     const label = document.getElementById('punchlabel');
     const banner = document.getElementById('overtimeBanner');
     const targetText = "({{ target|hm }}{% if break_excess %}, includes {{ break_excess|hm }} break-allowance extension{% endif %})";
     let overtimeShown = {{ 'true' if punch_remaining < 0 else 'false' }};
     function tick() {
-      const elapsedSec = Math.max(0, Math.floor((Date.now() - startEpoch) / 1000));
+      const refEpoch = breakStartEpoch !== null ? breakStartEpoch : Date.now();
+      const rawElapsedSec = Math.max(0, Math.floor((refEpoch - startEpoch) / 1000));
+      const elapsedSec = Math.max(0, rawElapsedSec - completedBreakSec);
       const remain = remainingAtLoad - elapsedSec;
       const over = remain < 0;
       const abs = Math.abs(remain);
       const h = Math.floor(abs / 3600), mi = Math.floor((abs % 3600) / 60), s = abs % 60;
       el.textContent = (over ? '+' : '') + h + ':' + String(mi).padStart(2, '0') + ':' + String(s).padStart(2, '0');
       el.style.color = over ? 'var(--bad)' : 'var(--ok)';
-      label.textContent = (over ? "overtime — past today's target " : "time left to reach today's target ") + targetText;
+      const pausedNote = breakStartEpoch !== null ? " — paused for your break" : "";
+      label.textContent = (over ? "overtime — past today's target " : "time left to reach today's target ") + targetText + pausedNote;
       // banner shows once, the moment overtime starts — not re-hidden if
       // they somehow dip back under (can't happen with a monotonic clock,
       // but stays a one-way flag rather than toggling every tick regardless)

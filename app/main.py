@@ -18,7 +18,12 @@ from app.routes import employee as employee_routes
 from app.routes import exports as export_routes
 from app.routes import reports as report_routes
 from app.templating import render, templates  # noqa: F401 (templates import registers filters)
-from app.util import ensure_bootstrap_admins, ensure_employee_codes, ensure_super_admin_backfill
+from app.util import (
+    ensure_bootstrap_admins,
+    ensure_employee_codes,
+    ensure_list_status_backfill,
+    ensure_super_admin_backfill,
+)
 
 # Most hosts (Azure App Service included) just capture stdout — a basic
 # config here is the difference between "the logs say what broke" and
@@ -126,6 +131,7 @@ def _startup() -> None:
     try:
         ensure_employee_codes(db)
         ensure_super_admin_backfill(db)
+        ensure_list_status_backfill(db)
         ensure_bootstrap_admins(db)
     finally:
         db.close()

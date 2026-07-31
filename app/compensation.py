@@ -23,6 +23,16 @@ leave/holiday/break-adjusted) as the day's expected minutes and compares
 it against completed Punch In/Out minutes — nothing here writes back to
 DayStatus, so no verify_strikes re-check is triggered by this feature.
 
+Break time never counts as punched/productive minutes (Ganesh,
+2026-08-01: "whenever we are taking a break the punch in timer should
+stop... then again punch timer should continue") — a PunchSession's raw
+duration includes any breaks taken while punched in, so completed
+BreakEntry minutes for that day are netted out before comparing punched
+minutes to target. The other half of that request — break time beyond
+the configured allowance adding to the hours owed — is already handled
+by engine.compute_day's break_excess_min extending DayStatus.target_minutes
+itself, so it doesn't need repeating here.
+
 Resets every calendar month (Ganesh: "compensate by end of the month") —
 each month_summary() call is scoped to one year/month and starts fresh.
 """
@@ -49,6 +59,27 @@ def _completed_punch_minutes_by_day(
             m.PunchSession.employee_id == employee_id,
             m.PunchSession.date.between(start, end),
             m.PunchSession.punched_out_at.isnot(None),
+        )
+    ).scalars():
+        out[row.date] = out.get(row.date, 0) + (row.duration_minutes or 0)
+    return out
+
+
+def _completed_break_minutes_by_day(
+    db: Session, employee_id: int, start: dt.date, end: dt.date
+) -> Dict[dt.date, int]:
+    """date -> total completed break minutes that day. Netted out of
+    Punch In/Out duration below — a break isn't productive time, so it
+    must not count toward the automatic compensation balance (Ganesh,
+    2026-08-01). Only closed breaks count, same convention as completed
+    punch sessions above — a still-running break's not-yet-known duration
+    is excluded until it ends."""
+    out: Dict[dt.date, int] = {}
+    for row in db.execute(
+        select(m.BreakEntry).where(
+            m.BreakEntry.employee_id == employee_id,
+            m.BreakEntry.date.between(start, end),
+            m.BreakEntry.end_minute.isnot(None),
         )
     ).scalars():
         out[row.date] = out.get(row.date, 0) + (row.duration_minutes or 0)
@@ -89,6 +120,7 @@ def monthly_summary(
         ).scalars()
     )
     punch_by_day = _completed_punch_minutes_by_day(db, employee.id, first, end)
+    break_by_day = _completed_break_minutes_by_day(db, employee.id, first, end)
 
     shortfall_total = overtime_total = 0
     days = []
@@ -96,7 +128,11 @@ def monthly_summary(
         target = row.target_minutes
         if not target:  # None or 0 -> leave/holiday/weekend/no data yet
             continue
-        punched = punch_by_day.get(row.date, 0)
+        # break time is netted out here, not added to target — the >30 min
+        # portion already extended target_minutes itself, see module
+        # docstring, so this is purely "breaks aren't work", not a second
+        # penalty on top of the first.
+        punched = max(0, punch_by_day.get(row.date, 0) - break_by_day.get(row.date, 0))
         day_shortfall = max(0, target - punched)
         day_overtime = overtime_minutes(punched, target)
         shortfall_total += day_shortfall

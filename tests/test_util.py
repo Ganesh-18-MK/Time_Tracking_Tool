@@ -8,6 +8,7 @@ from app.db import Base
 from app.util import (
     clamp_break_end,
     ensure_bootstrap_admins,
+    ensure_list_status_backfill,
     flags_to_role,
     mask_tail,
     overtime_minutes,
@@ -195,3 +196,57 @@ class TestEnsureBootstrapAdmins:
         emps = list(db.execute(select(m.Employee)).scalars())
         assert len(emps) == 1
         assert emps[0].email == "valid@mkimmigrationlaw.com"
+
+
+class TestEnsureListStatusBackfill:
+    """The Project/TaskType `status` column (Ganesh, 2026-08-01 suggestions
+    feature) — regression coverage for a real bug: SQLite's ADD COLUMN
+    leaves every pre-existing row's status NULL, not the ORM default of
+    'approved'. NULL fails both the Today picker filter and
+    validate_entry's status check, so a project/task created before this
+    feature shipped would silently become unpickable and unloggable until
+    backfilled. See ensure_super_admin_backfill for the identical
+    prior-art pattern (same SQLite ADD COLUMN gap)."""
+
+    @pytest.fixture()
+    def db(self):
+        eng = create_engine("sqlite://")
+        Base.metadata.create_all(eng)
+        s = sessionmaker(bind=eng)()
+        yield s
+        s.close()
+
+    def test_backfills_null_status_to_approved(self, db):
+        # simulates a row created before the status column existed —
+        # inserting with status left unset, same as SQLite's ADD COLUMN
+        p = m.Project(name="Legacy Project", active=True)
+        t = m.TaskType(name="Legacy Task", active=True)
+        db.add_all([p, t])
+        db.commit()
+        assert p.status is None and t.status is None  # sanity: nothing set it yet
+
+        ensure_list_status_backfill(db)
+
+        db.refresh(p)
+        db.refresh(t)
+        assert p.status == m.LIST_APPROVED
+        assert t.status == m.LIST_APPROVED
+
+    def test_noop_when_status_already_set(self, db):
+        # a pending suggestion must NOT get silently promoted to approved
+        pending = m.Project(name="Suggested Project", active=True, status=m.LIST_PENDING)
+        approved = m.Project(name="Approved Project", active=True, status=m.LIST_APPROVED)
+        db.add_all([pending, approved])
+        db.commit()
+
+        ensure_list_status_backfill(db)
+
+        db.refresh(pending)
+        db.refresh(approved)
+        assert pending.status == m.LIST_PENDING
+        assert approved.status == m.LIST_APPROVED
+
+    def test_noop_when_nothing_to_backfill(self, db):
+        # safe to call on every startup even with zero projects/tasks
+        ensure_list_status_backfill(db)
+        assert list(db.execute(select(m.Project)).scalars()) == []
