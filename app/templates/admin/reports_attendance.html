@@ -10,7 +10,7 @@
     <div>
       <label>Department</label>
       <select name="dept" onchange="document.getElementById('emp-select').value='0'; this.form.submit()">
-        <option value="" {{ 'selected' if not dept }}>All Departments</option>
+        {% if user.is_super_admin %}<option value="" {{ 'selected' if not dept }}>All Departments</option>{% endif %}
         {% for d in departments %}
         <option value="{{ d }}" {{ 'selected' if dept == d }}>{{ d }}</option>
         {% endfor %}
@@ -49,12 +49,16 @@
 <div class="card">
   <h2 style="margin-top:0">{{ result.employee.name }} — daily attendance</h2>
   <table>
-    <thead><tr><th>Date</th><th>Status</th></tr></thead>
+    <thead><tr><th>Date</th><th>Status</th><th>Overtime</th></tr></thead>
     <tbody>
       {% for r in result.rows %}
-      <tr><td>{{ r.date.isoformat() }}</td><td>{{ STATUS_NAMES.get(r.status, r.status) }}</td></tr>
+      <tr>
+        <td>{{ r.date.isoformat() }}</td>
+        <td>{{ STATUS_NAMES.get(r.status, r.status) }}</td>
+        <td>{{ r.overtime|hm if r.overtime else '—' }}</td>
+      </tr>
       {% else %}
-      <tr><td colspan="2" class="muted">No days in range.</td></tr>
+      <tr><td colspan="3" class="muted">No days in range.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -67,7 +71,7 @@
   <table id="att-summary-table">
     <thead>
       <tr><th>Name</th><th>Department</th><th>Complete</th><th>Partial</th><th>Missing</th>
-        <th>Leave</th><th>Holiday</th><th>Weekend</th><th>Attendance %</th></tr>
+        <th>Leave</th><th>Holiday</th><th>Weekend</th><th>Attendance %</th><th>Overtime</th></tr>
     </thead>
     <tbody>
       {% for r in result.rows %}
@@ -81,9 +85,10 @@
         <td>{{ r.counts.holiday }}</td>
         <td>{{ r.counts.weekend }}</td>
         <td>{{ r.attendance_pct ~ '%' if r.attendance_pct is not none else '—' }}</td>
+        <td>{{ r.overtime_minutes|hm if r.overtime_minutes else '—' }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="9" class="muted">No tracked employees match this filter.</td></tr>
+      <tr><td colspan="10" class="muted">No tracked employees match this filter.</td></tr>
       {% endfor %}
     </tbody>
   </table>

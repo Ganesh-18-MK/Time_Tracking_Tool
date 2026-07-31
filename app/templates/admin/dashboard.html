@@ -41,10 +41,12 @@
   <h2 style="margin-top:0">Departments</h2>
   <p class="small muted" style="margin:-4px 0 10px">Present today / total headcount — click a department for its day-by-day grid.</p>
   <div class="deptcards">
+    {% if user.is_super_admin %}
     <a class="deptcard {{ 'active' if show_grid and not dept }}" href="/admin?ym={{ ym }}&dept=">
       <div class="n">{{ attendance.logged|length }}<span class="of">/{{ total_emps }}</span></div>
       <div class="l">All departments</div>
     </a>
+    {% endif %}
     {% for d in all_depts %}
     <a class="deptcard {{ 'active' if dept == d }}" href="/admin?ym={{ ym }}&dept={{ d }}">
       <div class="n">{{ dept_present.get(d, 0) }}<span class="of">/{{ dept_counts.get(d, 0) }}</span></div>
@@ -183,7 +185,9 @@
     {% else %}
     <p class="muted small" style="margin:0">No recent activity.</p>
     {% endif %}
+    {% if user.is_super_admin %}
     <p class="small" style="margin:10px 0 0"><a href="/admin/audit">View full audit log →</a></p>
+    {% endif %}
   </div>
 </div>
 {% endif %}

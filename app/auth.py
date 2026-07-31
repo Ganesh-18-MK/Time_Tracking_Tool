@@ -48,6 +48,26 @@ def require_admin(user: m.Employee = Depends(current_user)) -> m.Employee:
     return user
 
 
+def require_super_admin(admin: m.Employee = Depends(require_admin)) -> m.Employee:
+    """Gate for admin screens that stay org-wide only: Roster, Settings,
+    Audit Log, Support Inbox, Projects & Tasks, bulk uploads, and the
+    person-detail actions that change history (override/unlock/compensation
+    links). A department-scoped admin (is_admin=True, is_super_admin=False)
+    gets Forbidden() here same as a non-admin does from require_admin —
+    see Employee.is_super_admin's docstring for the tier split."""
+    if not admin.is_super_admin:
+        raise Forbidden()
+    return admin
+
+
+def admin_department_scope(admin: m.Employee) -> Optional[str]:
+    """None => no restriction (super admin sees every department).
+    Otherwise the exact department string a department-scoped admin is
+    limited to on Dashboard/Leave Requests/Reports — matches the "—"
+    fallback used everywhere else for a blank Employee.department."""
+    return None if admin.is_super_admin else (admin.department or "—")
+
+
 def login_choices(db: Session):
     emps = list(
         db.execute(

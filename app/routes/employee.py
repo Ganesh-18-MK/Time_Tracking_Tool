@@ -8,23 +8,41 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import engine, models as m
+from app import compensation, engine, models as m
 from app.auth import current_user
 from app.db import get_db
 from app.templating import flash, render
-from app.util import FormError, audit, clamp_break_end, parse_date_field, parse_hhmm
+from app.util import (
+    FormError,
+    audit,
+    clamp_break_end,
+    overtime_minutes,
+    parse_date_field,
+    parse_hhmm,
+    parse_int_field,
+    punch_remaining_minutes,
+)
 from app.validation import EntryError, earliest_allowed_date, gap_flags, validate_entry
 
 router = APIRouter()
 
 # ---- profile photo storage --------------------------------------------------
-# Local disk under app/static/uploads/avatars/, served by the existing
-# /static mount (see app/main.py) — no new mount needed. NOTE: on Render's
-# default filesystem this is ephemeral (wiped on redeploy/restart); a
-# persistent disk or object storage (e.g. S3-compatible) is needed before
-# this can be trusted long-term in production. Fine for the POC/demo.
+# Local disk, served via a dedicated StaticFiles mount at the same
+# /static/uploads/avatars URL prefix the app already used (see app/main.py)
+# — no template changes needed regardless of where the directory itself
+# lives. AVATAR_UPLOAD_DIR is env-overridable so the directory can point at
+# a host's persistent storage instead of the deployed code directory:
+# most PaaS hosts wipe everything outside an explicit persistent path on
+# every deploy (Railway needs a mounted Volume; Azure App Service persists
+# /home automatically — pointing this at e.g. /home/data/avatars survives
+# redeploys without depending on the deployed wwwroot tree itself staying
+# untouched, since a fresh deploy replaces wwwroot's contents). Falls back
+# to the original in-repo path when the env var isn't set — unchanged
+# behavior for local dev and anywhere this is already handled another way.
+# Object storage (S3-compatible / Azure Blob) is the longer-term fix if
+# this ever needs to survive across multiple regions/instances.
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
-AVATAR_DIR = os.path.join(_STATIC_DIR, "uploads", "avatars")
+AVATAR_DIR = os.environ.get("AVATAR_UPLOAD_DIR") or os.path.join(_STATIC_DIR, "uploads", "avatars")
 ALLOWED_PHOTO_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 MAX_PHOTO_BYTES = 2 * 1024 * 1024  # 2 MB
 
@@ -89,6 +107,27 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
     break_excess = 0 if on_full_day_leave else max(0, total_break_minutes - max_break)
     target = base_target + break_excess
 
+    # Punch In/Out: a personal countdown-to-target widget, always keyed off
+    # "today" in practice (see /punch/in, /punch/out below — same
+    # right-now-only convention as breaks). Deliberately reuses `target`
+    # (already break-excess/leave adjusted, above) rather than computing
+    # its own — see PunchSession's docstring for why.
+    punches_today = list(
+        db.execute(
+            select(m.PunchSession)
+            .where(m.PunchSession.employee_id == emp.id, m.PunchSession.date == date)
+            .order_by(m.PunchSession.punched_in_at)
+        ).scalars()
+    )
+    active_punch = next((p for p in punches_today if p.punched_out_at is None), None)
+    completed_punches = [p for p in punches_today if p.punched_out_at is not None]
+    completed_punch_minutes = sum(p.duration_minutes for p in completed_punches)
+    punch_remaining = punch_remaining_minutes(target, completed_punch_minutes)
+    # only meaningful once punched out for the day — while a session is
+    # still open, `punch_remaining` going negative already communicates
+    # overtime live (see today.html); this is the "day's done" summary.
+    punch_overtime = overtime_minutes(completed_punch_minutes, target) if active_punch is None else 0
+
     flags = gap_flags(entries, engine.cfg_int(cfg, "gap_flag_minutes"))
     if flags:
         ordered = sorted(entries, key=lambda e: e.start_minute)
@@ -115,6 +154,11 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
         "total_break_minutes": total_break_minutes,
         "break_excess": break_excess,
         "max_break_minutes": max_break,
+        "active_punch": active_punch,
+        "completed_punches": completed_punches,
+        "completed_punch_minutes": completed_punch_minutes,
+        "punch_remaining": punch_remaining,
+        "punch_overtime": punch_overtime,
     }
 
 
@@ -285,6 +329,52 @@ def end_break(
     return RedirectResponse("/today", status_code=303)
 
 
+@router.post("/punch/in")
+def punch_in(
+    request: Request,
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Personal countdown timer only — see PunchSession's docstring.
+    Deliberately always 'today', same reasoning as start_break: this is a
+    live, right-now action, not something logged after the fact."""
+    today = dt.date.today()
+    already_open = db.execute(
+        select(m.PunchSession).where(
+            m.PunchSession.employee_id == user.id, m.PunchSession.date == today,
+            m.PunchSession.punched_out_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if already_open is not None:
+        flash(request, "You're already punched in.", "err")
+        return RedirectResponse("/today", status_code=303)
+
+    db.add(m.PunchSession(employee_id=user.id, date=today, punched_in_at=dt.datetime.utcnow()))
+    db.commit()
+    flash(request, "Punched in — timer's running.", "ok")
+    return RedirectResponse("/today", status_code=303)
+
+
+@router.post("/punch/out")
+def punch_out(
+    request: Request,
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    today = dt.date.today()
+    active = db.execute(
+        select(m.PunchSession).where(
+            m.PunchSession.employee_id == user.id, m.PunchSession.date == today,
+            m.PunchSession.punched_out_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if active is not None:
+        active.punched_out_at = dt.datetime.utcnow()
+        db.commit()
+        flash(request, f"Punched out — {active.duration_minutes} min this session.", "ok")
+    return RedirectResponse("/today", status_code=303)
+
+
 @router.post("/submit-day")
 def submit_day(
     request: Request,
@@ -381,6 +471,7 @@ def my_month(
 
     ledger = engine.running_ledger(db, user, first, min(last, dt.date.today()))
     balance = ledger[-1]["balance"] if ledger else 0
+    comp = compensation.monthly_summary(db, user, year, month)
     (py, pm), (ny, nm) = prev_next_month(year, month)
     return render(
         request,
@@ -396,6 +487,7 @@ def my_month(
             "leave_totals": leave_totals,
             "ledger": ledger,
             "balance": balance,
+            "comp": comp,
             "prev_ym": f"{py}-{pm:02d}",
             "next_ym": f"{ny}-{nm:02d}",
             "today": dt.date.today(),
@@ -540,7 +632,7 @@ def profile_page(
     request: Request,
     user: m.Employee = Depends(current_user),
 ):
-    return render(request, "profile.html", {"user": user})
+    return render(request, "profile.html", {"user": user, "pd": user.personal_details, "bd": user.bank_details})
 
 
 @router.post("/profile/photo")
@@ -575,4 +667,161 @@ def upload_photo(
     user.photo_path = filename
     db.commit()
     flash(request, "Profile photo updated.", "ok")
+    return RedirectResponse("/profile", status_code=303)
+
+
+# --------------------------------------------------------------------------
+# Profile: Personal Details — personal info + contact info in one card, per
+# Ganesh's instruction. Employee.date_of_birth/country_code/phone already
+# exist and are edited here too rather than duplicated into the new table;
+# Employee.email ("Company Email") is deliberately NOT editable from this
+# form — it's the /signup match key (see app/routes/auth.py), so changing
+# it here could silently break the employee's own login or collide with
+# someone else's roster row. It's shown read-only with a pointer to admin.
+# --------------------------------------------------------------------------
+@router.get("/profile/personal-details")
+def personal_details_page(
+    request: Request,
+    user: m.Employee = Depends(current_user),
+):
+    return render(request, "profile_personal_details.html", {"user": user, "pd": user.personal_details})
+
+
+@router.post("/profile/personal-details")
+def personal_details_save(
+    request: Request,
+    date_of_birth: str = Form(""),
+    country_code: str = Form(""),
+    phone: str = Form(""),
+    blood_type: str = Form(""),
+    gender: str = Form(""),
+    marital_status: str = Form(""),
+    family_members: str = Form(""),
+    nationality: str = Form(""),
+    hobbies: str = Form(""),
+    professional_skills: str = Form(""),
+    special_skills: str = Form(""),
+    known_languages: str = Form(""),
+    company_contact: str = Form(""),
+    alternate_phone: str = Form(""),
+    emergency_phone: str = Form(""),
+    whatsapp_number: str = Form(""),
+    personal_email: str = Form(""),
+    current_address: str = Form(""),
+    permanent_address: str = Form(""),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    if date_of_birth.strip():
+        try:
+            user.date_of_birth = parse_date_field(date_of_birth, "Date of birth")
+        except FormError as e:
+            flash(request, e.message, "err")
+            return RedirectResponse("/profile/personal-details", status_code=303)
+    else:
+        user.date_of_birth = None
+    user.country_code = country_code.strip() or None
+    user.phone = phone.strip() or None
+
+    family_members_val = None
+    if family_members.strip():
+        try:
+            family_members_val = parse_int_field(family_members, "Number of family members")
+        except FormError as e:
+            flash(request, e.message, "err")
+            return RedirectResponse("/profile/personal-details", status_code=303)
+
+    pd = user.personal_details
+    if pd is None:
+        pd = m.EmployeePersonalDetails(employee_id=user.id)
+        db.add(pd)
+    pd.blood_type = blood_type.strip() or None
+    pd.gender = gender.strip() or None
+    pd.marital_status = marital_status.strip() or None
+    pd.family_members = family_members_val
+    pd.nationality = nationality.strip() or None
+    pd.hobbies = hobbies.strip() or None
+    pd.professional_skills = professional_skills.strip() or None
+    pd.special_skills = special_skills.strip() or None
+    pd.known_languages = known_languages.strip() or None
+    pd.company_contact = company_contact.strip() or None
+    pd.alternate_phone = alternate_phone.strip() or None
+    pd.emergency_phone = emergency_phone.strip() or None
+    pd.whatsapp_number = whatsapp_number.strip() or None
+    pd.personal_email = personal_email.strip() or None
+    pd.current_address = current_address.strip() or None
+    pd.permanent_address = permanent_address.strip() or None
+    pd.updated_at = dt.datetime.utcnow()
+    pd.updated_by = user.name
+
+    db.commit()
+    audit(db, user.name, "profile_personal_details_updated", "Employee", user.id, {})
+    flash(request, "Personal details saved.", "ok")
+    return RedirectResponse("/profile", status_code=303)
+
+
+# --------------------------------------------------------------------------
+# Profile: Employment Details — bank account + statutory IDs (PAN/Aadhaar/
+# UAN/ESI). Sensitive fields are never sent back to the browser once saved
+# (see profile_employment_details.html) — the form field for each starts
+# blank with a masked "currently set: ...1234" hint next to it, so a blank
+# submission means "leave this one alone", not "clear it". Non-sensitive
+# fields (holder name, bank/branch name, account type, IFSC) are prefilled
+# and behave like every other edit form in the app: blank clears them.
+# --------------------------------------------------------------------------
+@router.get("/profile/employment-details")
+def employment_details_page(
+    request: Request,
+    user: m.Employee = Depends(current_user),
+):
+    return render(request, "profile_employment_details.html", {"user": user, "bd": user.bank_details})
+
+
+@router.post("/profile/employment-details")
+def employment_details_save(
+    request: Request,
+    account_holder_name: str = Form(""),
+    account_number: str = Form(""),
+    ifsc_code: str = Form(""),
+    bank_name: str = Form(""),
+    branch_name: str = Form(""),
+    account_type: str = Form(""),
+    pan_number: str = Form(""),
+    aadhaar_number: str = Form(""),
+    uan_number: str = Form(""),
+    esi_number: str = Form(""),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    bd = user.bank_details
+    if bd is None:
+        bd = m.EmployeeBankDetails(employee_id=user.id)
+        db.add(bd)
+
+    bd.account_holder_name = account_holder_name.strip() or None
+    bd.ifsc_code = ifsc_code.strip().upper() or None
+    bd.bank_name = bank_name.strip() or None
+    bd.branch_name = branch_name.strip() or None
+    bd.account_type = account_type.strip() or None
+
+    # blank = "leave unchanged" for every sensitive field — see docstring above
+    if account_number.strip():
+        bd.account_number = account_number.strip()
+    if pan_number.strip():
+        bd.pan_number = pan_number.strip().upper()
+    if aadhaar_number.strip():
+        bd.aadhaar_number = aadhaar_number.strip()
+    if uan_number.strip():
+        bd.uan_number = uan_number.strip()
+    if esi_number.strip():
+        bd.esi_number = esi_number.strip()
+
+    bd.updated_at = dt.datetime.utcnow()
+    bd.updated_by = user.name
+    db.commit()
+    # detail dict deliberately empty — never write sensitive values into the
+    # audit log, even a masked one; "something changed, by whom, when" is
+    # all the trail needs.
+    audit(db, user.name, "profile_employment_details_updated", "Employee", user.id, {})
+    flash(request, "Employment details saved.", "ok")
     return RedirectResponse("/profile", status_code=303)

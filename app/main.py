@@ -18,11 +18,12 @@ from app.routes import employee as employee_routes
 from app.routes import exports as export_routes
 from app.routes import reports as report_routes
 from app.templating import render, templates  # noqa: F401 (templates import registers filters)
-from app.util import ensure_employee_codes
+from app.util import ensure_employee_codes, ensure_super_admin_backfill
 
-# Render (and most hosts) just capture stdout — a basic config here is the
-# difference between "the logs say what broke" and "nothing at all" once
-# this isn't running on a laptop where you can rm tms.db and start over.
+# Most hosts (Azure App Service included) just capture stdout — a basic
+# config here is the difference between "the logs say what broke" and
+# "nothing at all" once this isn't running on a laptop where you can rm
+# tms.db and start over.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -52,6 +53,14 @@ app.add_middleware(
 )
 
 static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+# Avatar directory may live outside app/static entirely (see
+# app/routes/employee.py AVATAR_DIR — AVATAR_UPLOAD_DIR env var) so it can
+# point at a host's persistent storage instead of the deployed code tree.
+# Mounted first, at the same /static/uploads/avatars prefix the app has
+# always used, so it wins over the general /static mount below and no
+# template ever needs to know where the directory actually lives.
+os.makedirs(employee_routes.AVATAR_DIR, exist_ok=True)
+app.mount("/static/uploads/avatars", StaticFiles(directory=employee_routes.AVATAR_DIR), name="avatars")
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 app.include_router(auth_routes.router)
@@ -87,7 +96,7 @@ async def _http_exception(request: Request, exc: StarletteHTTPException):
 @app.exception_handler(Exception)
 async def _unhandled_exception(request: Request, exc: Exception):
     # Last resort for real bugs — log the full traceback (so it's visible
-    # in Render's log stream) and show a friendly page instead of a raw
+    # in the host's log stream) and show a friendly page instead of a raw
     # stack trace to whichever of the ~45 employees happened to hit it.
     logger.exception("Unhandled error on %s %s", request.method, request.url.path)
     return render(
@@ -102,10 +111,10 @@ async def _unhandled_exception(request: Request, exc: Exception):
 
 @app.get("/healthz")
 def healthz(db: Session = Depends(get_db)):
-    """Uptime-monitor target for Render (or anything else pinging this
-    service). Checks real DB connectivity, not just that the process is
-    alive — a hung/unreachable database is exactly the kind of failure a
-    process-alive check would miss."""
+    """Uptime-monitor target for Azure App Service (or anything else pinging
+    this service). Checks real DB connectivity, not just that the process
+    is alive — a hung/unreachable database is exactly the kind of failure
+    a process-alive check would miss."""
     db.execute(text("SELECT 1"))
     return {"status": "ok"}
 
@@ -116,5 +125,14 @@ def _startup() -> None:
     db = SessionLocal()
     try:
         ensure_employee_codes(db)
+        ensure_super_admin_backfill(db)
     finally:
         db.close()
+    # Printed so the exact absolute path is visible in the host's deploy
+    # logs — on Azure App Service, set AVATAR_UPLOAD_DIR to a path under
+    # /home (e.g. /home/data/avatars) so uploads survive a redeploy; /home
+    # persists automatically there, unlike the rest of the deployed code
+    # tree. No env var set = falls back to the in-repo path (fine for local
+    # dev; on hosts without a persistent /home equivalent, mount a volume
+    # at whichever path this prints and point AVATAR_UPLOAD_DIR at it).
+    logger.info("Avatar uploads directory: %s", employee_routes.AVATAR_DIR)

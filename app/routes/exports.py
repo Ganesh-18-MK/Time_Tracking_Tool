@@ -7,14 +7,14 @@ import io
 from typing import Optional
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import engine, models as m
-from app.auth import require_admin
+from app.auth import Forbidden, admin_department_scope, require_admin, require_super_admin
 from app.db import get_db
 from app.util import STATUS_LABELS, fmt_hm, parse_ym
 
@@ -67,6 +67,12 @@ def dashboard_xlsx(
             .order_by(m.Employee.department, m.Employee.name)
         ).scalars()
     )
+    scope = admin_department_scope(admin)
+    if scope is not None:
+        # Department-scoped admin — this export mirrors the Dashboard grid,
+        # which is already restricted to their own department; the XLSX
+        # must match, not quietly hand back every department.
+        emps = [e for e in emps if (e.department or "—") == scope]
     by_emp = engine.statuses_for_month(db, year, month)
     last_dept = None
     for e in emps:
@@ -111,6 +117,11 @@ def person_xlsx(
     db: Session = Depends(get_db),
 ):
     emp = db.get(m.Employee, emp_id)
+    if emp is None:
+        return RedirectResponse("/admin/roster", status_code=303)
+    scope = admin_department_scope(admin)
+    if scope is not None and (emp.department or "—") != scope:
+        raise Forbidden()
     year, month = parse_ym(ym)
     first, last = engine.month_range(year, month)
 
@@ -169,9 +180,12 @@ def person_xlsx(
 def entries_csv(
     start: str,
     end: str,
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
+    # Not linked from any Dashboard/Leave/Reports screen a department-scoped
+    # admin can see — an org-wide, department-unfiltered raw dump, so it
+    # stays super-admin-only rather than trying to retrofit scoping onto it.
     s, e = dt.date.fromisoformat(start), dt.date.fromisoformat(end)
     buf = io.StringIO()
     w = csv.writer(buf)

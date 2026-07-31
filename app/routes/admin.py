@@ -11,12 +11,13 @@ from openpyxl import load_workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import bulk_upload, engine, leave_bulk_upload, models as m
-from app.auth import require_admin
+from app import bulk_upload, compensation, engine, leave_bulk_upload, lists_bulk_upload, models as m
+from app.auth import Forbidden, admin_department_scope, require_admin, require_super_admin
 from app.db import get_db
 from app.templating import flash, render
 from app.util import (
     FormError,
+    ROLE_EMPLOYEE,
     audit,
     next_employee_code,
     parse_date_field,
@@ -24,6 +25,7 @@ from app.util import (
     parse_int_field,
     parse_ym,
     prev_next_month,
+    role_to_flags,
 )
 
 router = APIRouter(prefix="/admin")
@@ -50,6 +52,12 @@ def dashboard(
     if first <= today:
         engine.recompute_all(db, first, min(last, today))
 
+    # Department-scoped admin (team lead): None for a super admin (no
+    # restriction). Filtering all_emps here — before any downstream
+    # list/count is built from it — scopes the whole page in one place;
+    # nothing below needs to know the difference between the two tiers.
+    scope = admin_department_scope(admin)
+
     all_emps = list(
         db.execute(
             select(m.Employee)
@@ -57,6 +65,10 @@ def dashboard(
             .order_by(m.Employee.department, m.Employee.name)
         ).scalars()
     )
+    if scope is not None:
+        all_emps = [e for e in all_emps if (e.department or "—") == scope]
+        if dept is not None:
+            dept = scope  # ignore/override ?dept= tampering — always their own
     all_depts = sorted({e.department or "—" for e in all_emps})
     dept_counts = {}
     for e in all_emps:
@@ -104,23 +116,32 @@ def dashboard(
                 .limit(5)
             ).scalars()
         )
-        open_support_rows = list(
-            db.execute(
-                select(m.SupportQuery)
-                .where(m.SupportQuery.status == m.SUPPORT_OPEN)
-                .order_by(m.SupportQuery.created_at)
-                .limit(5)
-            ).scalars()
-        )
+        # Support Inbox and Audit Log are super-admin-only screens (see
+        # require_super_admin) — a department-scoped admin doesn't get
+        # these landing-page previews either, since neither can be safely
+        # scoped to "their department only" (support queries aren't
+        # department-tagged, and audit entries span every entity type).
+        if scope is None:
+            open_support_rows = list(
+                db.execute(
+                    select(m.SupportQuery)
+                    .where(m.SupportQuery.status == m.SUPPORT_OPEN)
+                    .order_by(m.SupportQuery.created_at)
+                    .limit(5)
+                ).scalars()
+            )
+            recent_audit = list(
+                db.execute(select(m.AuditLog).order_by(m.AuditLog.at.desc()).limit(8)).scalars()
+            )
+        else:
+            scoped_ids = {e.id for e in all_emps}
+            pending_leave_rows = [lv for lv in pending_leave_rows if lv.employee_id in scoped_ids]
         for e in all_emps:
             e_strikes = engine.strikes_in(by_emp.get(e.id, {}).values(), comp_erases)
             if e_strikes >= threshold:
                 violations.append((e, e_strikes))
         violations.sort(key=lambda pair: -pair[1])
         violations = violations[:8]
-        recent_audit = list(
-            db.execute(select(m.AuditLog).order_by(m.AuditLog.at.desc()).limit(8)).scalars()
-        )
 
     groups = {}
     for e in emps:
@@ -198,6 +219,12 @@ def person(
     emp = db.get(m.Employee, emp_id)
     if emp is None:
         return RedirectResponse("/admin/roster", status_code=303)
+    scope = admin_department_scope(admin)
+    if scope is not None and (emp.department or "—") != scope:
+        # Department-scoped admin trying to view someone outside their own
+        # team (e.g. by guessing/editing the URL) — same "you don't have
+        # access" redirect as any other Forbidden.
+        raise Forbidden()
     cfg = engine.get_config(db)
     year, month = parse_ym(ym)
     first, last = engine.month_range(year, month)
@@ -260,6 +287,7 @@ def person(
         if (r.variance_minutes or 0) < 0 and r.effective_status(comp_erases) in m.STRIKE_STATUSES
     ]
     surpluses = [r for r in statuses if (r.variance_minutes or 0) > 0]
+    comp = compensation.monthly_summary(db, emp, year, month, today)
     (py, pm), (ny, nm) = prev_next_month(year, month)
     return render(
         request,
@@ -284,6 +312,7 @@ def person(
             "comp_erases": comp_erases,
             "shortfalls": shortfalls,
             "surpluses": surpluses,
+            "comp": comp,
             "year": year,
             "month": month,
             "ym": f"{year}-{month:02d}",
@@ -302,7 +331,7 @@ def unlock_day(
     date: str = Form(...),
     reason: str = Form(...),
     ym: str = Form(""),
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     try:
@@ -338,7 +367,7 @@ def override_day(
     status: str = Form(""),
     reason: str = Form(""),
     ym: str = Form(""),
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     emp = db.get(m.Employee, emp_id)
@@ -402,7 +431,7 @@ def add_complink(
     surplus_dates: str = Form(...),
     note: str = Form(""),
     ym: str = Form(""),
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     try:
@@ -452,7 +481,7 @@ def delete_complink(
     link_id: int,
     request: Request,
     ym: str = Form(""),
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     link = db.get(m.CompensationLink, link_id)
@@ -480,7 +509,7 @@ def delete_complink(
 def roster(
     request: Request,
     show: str = "active",
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     q = select(m.Employee).order_by(m.Employee.active.desc(), m.Employee.department, m.Employee.name)
@@ -505,7 +534,7 @@ def roster(
 
 def _emp_from_form(
     db: Session, emp: m.Employee, name, email, department, designation, target_hours,
-    work_days, start_date, active, tracked, is_admin, dob="", phone="", country_code="",
+    work_days, start_date, active, tracked, role, dob="", phone="", country_code="",
 ):
     emp.name = name.strip()
     emp.country_code = country_code.strip() or None
@@ -538,7 +567,7 @@ def _emp_from_form(
     emp.date_of_birth = parse_date_field(dob, "Date of birth") if dob else None
     emp.active = bool(active)
     emp.tracked = bool(tracked)
-    emp.is_admin = bool(is_admin)
+    emp.is_admin, emp.is_super_admin = role_to_flags(role)
 
 
 @router.post("/roster/add")
@@ -556,14 +585,14 @@ def roster_add(
     phone: str = Form(""),
     active: str = Form("1"),
     tracked: str = Form("1"),
-    is_admin: str = Form(""),
-    admin: m.Employee = Depends(require_admin),
+    role: str = Form(ROLE_EMPLOYEE),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     emp = m.Employee(name=name.strip())
     try:
         _emp_from_form(db, emp, name, email, department, designation, target_hours,
-                       work_days, start_date, active == "1", tracked == "1", is_admin == "1",
+                       work_days, start_date, active == "1", tracked == "1", role,
                        dob, phone, country_code)
     except FormError as e:
         flash(request, e.message, "err")
@@ -580,7 +609,7 @@ def roster_add(
 def roster_reset_password(
     emp_id: int,
     request: Request,
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     """Clears the stored hash so the employee can re-run /signup. Stand-in
@@ -601,7 +630,7 @@ def roster_reset_password(
 def roster_edit_page(
     emp_id: int,
     request: Request,
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     emp = db.get(m.Employee, emp_id)
@@ -626,8 +655,8 @@ def roster_edit(
     phone: str = Form(""),
     active: str = Form(""),
     tracked: str = Form(""),
-    is_admin: str = Form(""),
-    admin: m.Employee = Depends(require_admin),
+    role: str = Form(ROLE_EMPLOYEE),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     emp = db.get(m.Employee, emp_id)
@@ -637,10 +666,11 @@ def roster_edit(
         "name": emp.name, "department": emp.department, "designation": emp.designation,
         "target": emp.daily_target_minutes, "work_days": emp.work_days,
         "active": emp.active, "tracked": emp.tracked, "is_admin": emp.is_admin,
+        "is_super_admin": emp.is_super_admin,
     }
     try:
         _emp_from_form(db, emp, name, email, department, designation, target_hours,
-                       work_days, start_date, active == "1", tracked == "1", is_admin == "1",
+                       work_days, start_date, active == "1", tracked == "1", role,
                        dob, phone, country_code)
     except FormError as e:
         flash(request, e.message, "err")
@@ -657,14 +687,14 @@ def roster_edit(
 @router.get("/roster/bulk-upload")
 def roster_bulk_upload_page(
     request: Request,
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     return render(request, "admin/roster_bulk_upload.html", {"user": admin, "result": None}, db=db)
 
 
 @router.get("/roster/bulk-upload/sample.xlsx")
-def roster_bulk_upload_sample(admin: m.Employee = Depends(require_admin)):
+def roster_bulk_upload_sample(admin: m.Employee = Depends(require_super_admin)):
     buf = io.BytesIO()
     bulk_upload.build_sample_workbook().save(buf)
     buf.seek(0)
@@ -677,7 +707,7 @@ def roster_bulk_upload_sample(admin: m.Employee = Depends(require_admin)):
 
 @router.get("/roster/bulk-upload/existing.xlsx")
 def roster_bulk_upload_existing(
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     buf = io.BytesIO()
@@ -694,7 +724,7 @@ def roster_bulk_upload_existing(
 def roster_bulk_upload(
     request: Request,
     file: UploadFile = File(...),
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
@@ -728,7 +758,7 @@ def roster_bulk_upload(
 @router.get("/lists")
 def lists_page(
     request: Request,
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     projects = list(db.execute(select(m.Project).order_by(m.Project.active.desc(), m.Project.name)).scalars())
@@ -741,7 +771,7 @@ def lists_add(
     request: Request,
     kind: str = Form(...),
     name: str = Form(...),
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     model = m.Project if kind == "project" else m.TaskType
@@ -757,12 +787,96 @@ def lists_add(
     return RedirectResponse("/admin/lists", status_code=303)
 
 
+# --------------------------------------------------------------------------
+# Bulk upload (Projects & Tasks -> Bulk upload) — one column per sheet,
+# add-only; parsing rules live in app/lists_bulk_upload.py
+# --------------------------------------------------------------------------
+@router.get("/lists/bulk-upload")
+def lists_bulk_upload_page(
+    request: Request,
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    return render(request, "admin/lists_bulk_upload.html", {"user": admin, "result": None, "result_kind": None}, db=db)
+
+
+@router.get("/lists/bulk-upload/sample.xlsx")
+def lists_bulk_upload_sample(
+    kind: str,
+    admin: m.Employee = Depends(require_super_admin),
+):
+    buf = io.BytesIO()
+    lists_bulk_upload.build_sample_workbook(kind).save(buf)
+    buf.seek(0)
+    filename = "projects_upload_template.xlsx" if kind == "project" else "tasks_upload_template.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/lists/bulk-upload/existing.xlsx")
+def lists_bulk_upload_existing(
+    kind: str,
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    buf = io.BytesIO()
+    lists_bulk_upload.build_existing_workbook(db, kind).save(buf)
+    buf.seek(0)
+    filename = "existing_projects.xlsx" if kind == "project" else "existing_tasks.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/lists/bulk-upload")
+def lists_bulk_upload_post(
+    request: Request,
+    kind: str = Form(...),
+    file: UploadFile = File(...),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    if kind not in ("project", "task"):
+        flash(request, "Unknown list — use the Projects or Tasks upload form.", "err")
+        return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
+        flash(request, "Please upload an .xlsx file — use the sample template.", "err")
+        return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+    try:
+        wb = load_workbook(io.BytesIO(file.file.read()), data_only=True)
+    except Exception:
+        flash(request, "Couldn't read that file — is it a valid, unprotected .xlsx?", "err")
+        return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+
+    result = lists_bulk_upload.process_upload(db, wb, kind)
+    if result["header_error"]:
+        flash(request, result["header_error"], "err")
+        return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+    if result["added"]:
+        audit(db, admin.name, f"lists_bulk_upload_{kind}", kind, "",
+              {"added": result["added"], "skipped": len(result["skipped"])})
+    label = "project(s)" if kind == "project" else "task(s)"
+    summary = f"{result['added']} {label} added."
+    if result["skipped"]:
+        summary += f" {len(result['skipped'])} row(s) skipped — see details below."
+    flash(request, summary, "ok" if result["added"] else "err")
+    return render(
+        request, "admin/lists_bulk_upload.html",
+        {"user": admin, "result": result, "result_kind": kind}, db=db,
+    )
+
+
 @router.post("/lists/{kind}/{item_id}/toggle")
 def lists_toggle(
     kind: str,
     item_id: int,
     request: Request,
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     model = m.Project if kind == "project" else m.TaskType
@@ -784,11 +898,22 @@ def leave_page(
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    # Department-scoped admin (team lead) — Leave Requests is one of the
+    # three screens they keep (see Employee.is_super_admin docstring), but
+    # only for their own team: the employee picker, pending queue and
+    # approved history are all filtered to it. LeaveRecord has no
+    # department column of its own, so this filters by employee_id
+    # membership in the scoped roster instead.
+    scope = admin_department_scope(admin)
     emps = list(
         db.execute(
             select(m.Employee).where(m.Employee.active.is_(True)).order_by(m.Employee.name)
         ).scalars()
     )
+    if scope is not None:
+        emps = [e for e in emps if (e.department or "—") == scope]
+    scoped_ids = {e.id for e in emps} if scope is not None else None
+
     pending = list(
         db.execute(
             select(m.LeaveRecord)
@@ -796,14 +921,20 @@ def leave_page(
             .order_by(m.LeaveRecord.created_at)
         ).scalars()
     )
-    approved = list(
-        db.execute(
-            select(m.LeaveRecord)
-            .where(m.LeaveRecord.status == m.LEAVE_APPROVED)
-            .order_by(m.LeaveRecord.created_at.desc())
-            .limit(100)
-        ).scalars()
+    approved_q = (
+        select(m.LeaveRecord)
+        .where(m.LeaveRecord.status == m.LEAVE_APPROVED)
+        .order_by(m.LeaveRecord.created_at.desc())
     )
+    if scoped_ids is None:
+        approved_q = approved_q.limit(100)
+    approved = list(db.execute(approved_q).scalars())
+    if scoped_ids is not None:
+        # filter *before* trimming to 100 — otherwise a small team's older
+        # approved leave could get pushed out by other departments' more
+        # recent rows before the scoping filter ever sees them
+        pending = [lv for lv in pending if lv.employee_id in scoped_ids]
+        approved = [lv for lv in approved if lv.employee_id in scoped_ids][:100]
     return render(
         request, "admin/leave.html",
         {
@@ -821,14 +952,14 @@ def leave_page(
 @router.get("/leave/bulk-upload")
 def leave_bulk_upload_page(
     request: Request,
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     return render(request, "admin/leave_bulk_upload.html", {"user": admin, "result": None}, db=db)
 
 
 @router.get("/leave/bulk-upload/sample.xlsx")
-def leave_bulk_upload_sample(admin: m.Employee = Depends(require_admin)):
+def leave_bulk_upload_sample(admin: m.Employee = Depends(require_super_admin)):
     buf = io.BytesIO()
     leave_bulk_upload.build_sample_workbook().save(buf)
     buf.seek(0)
@@ -841,7 +972,7 @@ def leave_bulk_upload_sample(admin: m.Employee = Depends(require_admin)):
 
 @router.get("/leave/bulk-upload/existing.xlsx")
 def leave_bulk_upload_existing(
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     buf = io.BytesIO()
@@ -858,7 +989,7 @@ def leave_bulk_upload_existing(
 def leave_bulk_upload_post(
     request: Request,
     file: UploadFile = File(...),
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
@@ -896,6 +1027,12 @@ def leave_approve(
     if lv is None:
         return RedirectResponse("/admin/leave", status_code=303)
     emp = db.get(m.Employee, lv.employee_id)
+    scope = admin_department_scope(admin)
+    if scope is not None and emp is not None and (emp.department or "—") != scope:
+        # Not just a UI filter — block a department-scoped admin from
+        # approving/rejecting leave for someone outside their team even if
+        # they craft the POST directly.
+        raise Forbidden()
     lv.status = m.LEAVE_APPROVED
     lv.reviewed_by = admin.name
     lv.reviewed_at = dt.datetime.utcnow()
@@ -921,6 +1058,9 @@ def leave_reject(
     if lv is None:
         return RedirectResponse("/admin/leave", status_code=303)
     emp = db.get(m.Employee, lv.employee_id)
+    scope = admin_department_scope(admin)
+    if scope is not None and emp is not None and (emp.department or "—") != scope:
+        raise Forbidden()
     lv.status = m.LEAVE_REJECTED
     lv.reviewed_by = admin.name
     lv.reviewed_at = dt.datetime.utcnow()
@@ -949,6 +1089,9 @@ def leave_add(
     emp = db.get(m.Employee, employee_id)
     if emp is None:
         return RedirectResponse("/admin/leave", status_code=303)
+    scope = admin_department_scope(admin)
+    if scope is not None and (emp.department or "—") != scope:
+        raise Forbidden()
     try:
         start = parse_date_field(start_date, "Start date")
         end = parse_date_field(end_date, "End date") if end_date else start
@@ -992,6 +1135,9 @@ def leave_delete(
     lv = db.get(m.LeaveRecord, leave_id)
     if lv is not None:
         emp = db.get(m.Employee, lv.employee_id)
+        scope = admin_department_scope(admin)
+        if scope is not None and emp is not None and (emp.department or "—") != scope:
+            raise Forbidden()
         db.delete(lv)
         db.commit()
         audit(db, admin.name, "leave_delete", "LeaveRecord", leave_id,
@@ -1007,7 +1153,7 @@ def leave_delete(
 @router.get("/config")
 def config_page(
     request: Request,
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     cfg = engine.get_config(db)
@@ -1027,7 +1173,7 @@ def config_save(
     max_break_minutes: str = Form("30"),
     comp_erases_strike: str = Form(""),
     live_start_date: str = Form(""),
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     before = engine.get_config(db)
@@ -1064,7 +1210,7 @@ def holiday_add(
     request: Request,
     date: str = Form(...),
     name: str = Form(""),
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     try:
@@ -1083,7 +1229,7 @@ def holiday_add(
 def holiday_delete(
     holiday_id: int,
     request: Request,
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     h = db.get(m.Holiday, holiday_id)
@@ -1101,7 +1247,7 @@ def holiday_delete(
 def support_inbox(
     request: Request,
     status: str = "open",
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     q = select(m.SupportQuery).order_by(m.SupportQuery.created_at.desc())
@@ -1119,7 +1265,7 @@ def support_resolve(
     query_id: int,
     request: Request,
     reply: str = Form(""),
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     q = db.get(m.SupportQuery, query_id)
@@ -1141,7 +1287,7 @@ def support_resolve(
 @router.get("/audit")
 def audit_page(
     request: Request,
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     rows = list(

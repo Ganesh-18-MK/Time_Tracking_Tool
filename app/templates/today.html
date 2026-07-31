@@ -30,6 +30,75 @@
 
 {% if day == today %}
 <div class="card">
+  {% if active_punch %}
+  <div class="lockbanner" id="overtimeBanner"
+       style="background:var(--warn-bg);color:var(--warn);{{ '' if punch_remaining < 0 else 'display:none' }}">
+    ⏱ Target reached — now tracking overtime.
+  </div>
+  <div class="totalbar">
+    <span class="big" id="punchtimer" style="color:{{ 'var(--bad)' if punch_remaining < 0 else 'var(--ok)' }}">0:00:00</span>
+    <span class="muted" id="punchlabel">
+      {{ 'overtime — past today\'s target' if punch_remaining < 0 else "time left to reach today's target" }}
+      ({{ target|hm }}{% if break_excess %}, includes {{ break_excess|hm }} break-allowance extension{% endif %})
+    </span>
+    <form method="post" action="/punch/out" class="inline">
+      <button>Punch Out</button>
+    </form>
+  </div>
+  <script>
+  (function () {
+    // Same epoch-based approach as the break timer just below — see its
+    // comment for why .isoformat()+"Z" is correct regardless of server/
+    // browser timezone. remainingAtLoad is computed server-side (already
+    // includes any break-excess extension applied so far) and the client
+    // only ticks it down in real time; a fresh page load (e.g. right after
+    // ending a break) is what picks up a newly-extended target.
+    const startEpoch = new Date("{{ active_punch.punched_in_at.isoformat() }}Z").getTime();
+    const remainingAtLoad = {{ punch_remaining }} * 60;
+    const el = document.getElementById('punchtimer');
+    const label = document.getElementById('punchlabel');
+    const banner = document.getElementById('overtimeBanner');
+    const targetText = "({{ target|hm }}{% if break_excess %}, includes {{ break_excess|hm }} break-allowance extension{% endif %})";
+    let overtimeShown = {{ 'true' if punch_remaining < 0 else 'false' }};
+    function tick() {
+      const elapsedSec = Math.max(0, Math.floor((Date.now() - startEpoch) / 1000));
+      const remain = remainingAtLoad - elapsedSec;
+      const over = remain < 0;
+      const abs = Math.abs(remain);
+      const h = Math.floor(abs / 3600), mi = Math.floor((abs % 3600) / 60), s = abs % 60;
+      el.textContent = (over ? '+' : '') + h + ':' + String(mi).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+      el.style.color = over ? 'var(--bad)' : 'var(--ok)';
+      label.textContent = (over ? "overtime — past today's target " : "time left to reach today's target ") + targetText;
+      // banner shows once, the moment overtime starts — not re-hidden if
+      // they somehow dip back under (can't happen with a monotonic clock,
+      // but stays a one-way flag rather than toggling every tick regardless)
+      if (over && !overtimeShown) {
+        overtimeShown = true;
+        banner.style.display = '';
+      }
+    }
+    tick();
+    setInterval(tick, 1000);
+  })();
+  </script>
+  {% else %}
+  <div class="totalbar">
+    <span class="muted">
+      {% if completed_punches %}
+        Punched {{ completed_punch_minutes|hm }} of {{ target|hm }} target so far today
+        {% if punch_overtime %}<span style="color:var(--warn)">— {{ punch_overtime|hm }} overtime</span>{% endif %}
+      {% else %}Not punched in yet — today's target is {{ target|hm }}{% endif %}
+    </span>
+    <form method="post" action="/punch/in" class="inline">
+      <button class="secondary">Punch In</button>
+    </form>
+  </div>
+  {% endif %}
+  <p class="small muted" style="margin:6px 0 0">A personal timer only — it doesn't log your work.
+  Add rows below for each task as usual; that's what your hours and compliance status come from.</p>
+</div>
+
+<div class="card">
   {% if active_break %}
   <div class="totalbar">
     <span class="big" id="breaktimer">00:00</span>

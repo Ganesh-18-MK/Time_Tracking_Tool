@@ -4,7 +4,9 @@
 {% block content %}
 <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
   <h1 style="margin-bottom:0">Leave entry</h1>
+  {% if user.is_super_admin %}
   <a class="btn secondary small" href="/admin/leave/bulk-upload">Bulk assign leaves</a>
+  {% endif %}
 </div>
 <div class="card">
   <form method="post" action="/admin/leave/add" class="formrow">
@@ -111,9 +113,9 @@
 
 <div class="card">
   <h2 style="margin-top:0">Leave balances</h2>
-  <p class="small muted" style="margin:-4px 0 10px">Annual entitlement per employee — set via
-  <a href="/admin/leave/bulk-upload">Bulk assign leaves</a>. Display only: nothing here blocks
-  recording or approving leave past these numbers.</p>
+  <p class="small muted" style="margin:-4px 0 10px">Annual entitlement per employee
+  {% if user.is_super_admin %}— set via <a href="/admin/leave/bulk-upload">Bulk assign leaves</a>{% endif %}.
+  Display only: nothing here blocks recording or approving leave past these numbers.</p>
   <div class="searchbar">
     <input type="search" data-filter-table="leave-balances-table" placeholder="Search employees…">
   </div>

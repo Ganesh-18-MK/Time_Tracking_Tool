@@ -16,6 +16,7 @@ from app.util import (
     fmt_hm_signed,
     fmt_hours,
     fmt_time,
+    mask_tail,
     month_label,
 )
 
@@ -26,6 +27,7 @@ templates.env.filters["hm"] = fmt_hm
 templates.env.filters["hm_signed"] = fmt_hm_signed
 templates.env.filters["hours"] = fmt_hours
 templates.env.filters["clock"] = fmt_time
+templates.env.filters["mask"] = mask_tail
 
 
 def tojson_filter(value) -> Markup:
@@ -67,11 +69,30 @@ _first_param = next(iter(inspect.signature(templates.TemplateResponse).parameter
 _REQUEST_FIRST = _first_param == "request"
 
 
-def _admin_nav_badges(db) -> dict:
+def _admin_nav_badges(db, user) -> dict:
     """Small live counts shown next to Leave/Support in the admin nav.
     Computed once here (rather than in every admin route) so every admin
     screen shows the same up-to-date pending count without each route
-    needing to remember to add it."""
+    needing to remember to add it.
+
+    A department-scoped admin (is_admin=True, is_super_admin=False — see
+    Employee.is_super_admin docstring) only ever sees Leave Requests for
+    their own department, so their badge is scoped to match — otherwise
+    it would count pending leave they have no way to act on. Support
+    Inbox is super-admin-only and isn't even in their nav, so its count
+    is skipped for them entirely."""
+    if getattr(user, "is_admin", False) and not getattr(user, "is_super_admin", False):
+        dept = user.department or "—"
+        pending_leave = db.execute(
+            select(func.count())
+            .select_from(m.LeaveRecord)
+            .join(m.Employee, m.Employee.id == m.LeaveRecord.employee_id)
+            .where(
+                m.LeaveRecord.status == m.LEAVE_REQUESTED,
+                func.coalesce(func.nullif(m.Employee.department, ""), "—") == dept,
+            )
+        ).scalar() or 0
+        return {"pending_leave": pending_leave, "open_support": 0}
     pending_leave = db.execute(
         select(func.count()).select_from(m.LeaveRecord).where(
             m.LeaveRecord.status == m.LEAVE_REQUESTED
@@ -94,7 +115,7 @@ def render(request, name: str, ctx: dict, db=None, status_code: int = 200):
     # admin) skip this entirely.
     user = ctx.get("user")
     if db is not None and user is not None and getattr(user, "is_admin", False):
-        ctx["nav_badges"] = _admin_nav_badges(db)
+        ctx["nav_badges"] = _admin_nav_badges(db, user)
     if _REQUEST_FIRST:
         return templates.TemplateResponse(request, name, ctx, status_code=status_code)
     return templates.TemplateResponse(name, ctx, status_code=status_code)

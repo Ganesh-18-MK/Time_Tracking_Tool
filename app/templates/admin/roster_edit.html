@@ -37,7 +37,15 @@
     <div style="margin-top:12px">
       <label style="margin-right:14px"><input type="checkbox" name="active" value="1" {{ 'checked' if emp.active }}> Active</label>
       <label style="margin-right:14px" title="Included in compliance runs"><input type="checkbox" name="tracked" value="1" {{ 'checked' if emp.tracked }}> Tracked in compliance</label>
-      <label><input type="checkbox" name="is_admin" value="1" {{ 'checked' if emp.is_admin }}> Admin role</label>
+    </div>
+    <div style="margin-top:10px">
+      <label class="f">Role</label>
+      {% set current_role = 'super_admin' if emp.is_super_admin else ('admin' if emp.is_admin else 'employee') %}
+      <select name="role">
+        <option value="employee" {{ 'selected' if current_role == 'employee' }}>Employee</option>
+        <option value="admin" {{ 'selected' if current_role == 'admin' }}>Admin — sees only their own department's Dashboard, Leave Requests and Reports</option>
+        <option value="super_admin" {{ 'selected' if current_role == 'super_admin' }}>Super Admin — sees every department and every admin screen</option>
+      </select>
     </div>
     <div style="margin-top:14px">
       <button>Save</button>

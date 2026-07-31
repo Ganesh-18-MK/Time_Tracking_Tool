@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% set active_nav = 'profile' %}
+{% block title %}Personal Details · MK Timekeeping{% endblock %}
+{% block content %}
+<p class="muted small"><a href="/profile">← Back to profile</a></p>
+<h1>Personal Details</h1>
+
+<div class="card" style="max-width:760px">
+  <form method="post" action="/profile/personal-details">
+    <h3 style="margin-top:0">Personal information</h3>
+    <div class="formrow">
+      <div><label>Date of birth</label>
+        <input type="date" name="date_of_birth" value="{{ user.date_of_birth.isoformat() if user.date_of_birth }}"></div>
+      <div><label>Blood type</label>
+        <input name="blood_type" value="{{ pd.blood_type or '' }}" placeholder="O+" style="width:80px"></div>
+      <div><label>Gender</label>
+        <select name="gender">
+          <option value="">— not set —</option>
+          {% for g in ['Male', 'Female', 'Other', 'Prefer not to say'] %}
+          <option {{ 'selected' if pd and pd.gender == g }}>{{ g }}</option>
+          {% endfor %}
+        </select></div>
+      <div><label>Marital status</label>
+        <select name="marital_status">
+          <option value="">— not set —</option>
+          {% for s in ['Single', 'Married', 'Other'] %}
+          <option {{ 'selected' if pd and pd.marital_status == s }}>{{ s }}</option>
+          {% endfor %}
+        </select></div>
+      <div><label>Family members</label>
+        <input name="family_members" value="{{ pd.family_members if pd and pd.family_members is not none else '' }}" style="width:80px"></div>
+      <div><label>Nationality</label>
+        <input name="nationality" value="{{ pd.nationality or '' }}"></div>
+    </div>
+    <div class="formrow" style="margin-top:8px">
+      <div style="flex:1"><label>Interests / hobbies</label>
+        <input name="hobbies" value="{{ pd.hobbies or '' }}" style="width:100%" placeholder="Video games, playing cricket, ..."></div>
+    </div>
+    <div class="formrow" style="margin-top:8px">
+      <div style="flex:1"><label>Professional skills</label>
+        <input name="professional_skills" value="{{ pd.professional_skills or '' }}" style="width:100%"></div>
+    </div>
+    <div class="formrow" style="margin-top:8px">
+      <div style="flex:1"><label>Special skills</label>
+        <input name="special_skills" value="{{ pd.special_skills or '' }}" style="width:100%"></div>
+    </div>
+    <div class="formrow" style="margin-top:8px">
+      <div style="flex:1"><label>Known languages</label>
+        <input name="known_languages" value="{{ pd.known_languages or '' }}" style="width:100%" placeholder="Telugu, English"></div>
+    </div>
+
+    <hr>
+    <h3>Contact details</h3>
+    <div class="formrow">
+      <div><label>Country code</label>
+        <input name="country_code" value="{{ user.country_code or '' }}" placeholder="+91" style="width:70px"></div>
+      <div><label>Contact number</label>
+        <input name="phone" value="{{ user.phone or '' }}"></div>
+      <div><label>Company contact</label>
+        <input name="company_contact" value="{{ pd.company_contact or '' }}"></div>
+      <div><label>Alternate</label>
+        <input name="alternate_phone" value="{{ pd.alternate_phone or '' }}"></div>
+      <div><label>Emergency</label>
+        <input name="emergency_phone" value="{{ pd.emergency_phone or '' }}"></div>
+      <div><label>WhatsApp</label>
+        <input name="whatsapp_number" value="{{ pd.whatsapp_number or '' }}"></div>
+    </div>
+    <div class="formrow" style="margin-top:8px">
+      <div><label>Company email</label>
+        <input value="{{ user.email or '' }}" disabled style="width:230px;background:var(--bg)"></div>
+      <div><label>Personal email</label>
+        <input type="email" name="personal_email" value="{{ pd.personal_email or '' }}" style="width:230px"></div>
+    </div>
+    <p class="small muted" style="margin:2px 0 8px">Company email is set by an admin (it's what you sign in with) —
+    contact HR to change it.</p>
+    <div class="formrow" style="margin-top:8px">
+      <div style="flex:1"><label>Current address</label>
+        <textarea name="current_address" rows="2" style="width:100%">{{ pd.current_address or '' }}</textarea></div>
+    </div>
+    <div class="formrow" style="margin-top:8px">
+      <div style="flex:1"><label>Permanent address</label>
+        <textarea name="permanent_address" rows="2" style="width:100%">{{ pd.permanent_address or '' }}</textarea></div>
+    </div>
+
+    <div style="margin-top:14px">
+      <button>Save</button>
+      <a class="btn secondary" href="/profile">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

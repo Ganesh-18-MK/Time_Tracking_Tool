@@ -29,7 +29,7 @@ from openpyxl.styles import Font
 from sqlalchemy import select
 
 from app import models as m
-from app.util import format_employee_code, highest_employee_code_number
+from app.util import flags_to_role, format_employee_code, highest_employee_code_number, role_to_flags
 
 MAX_ROWS = 500
 _PENDING = -1  # sentinel: "claimed by a new-employee row earlier in this same upload"
@@ -133,17 +133,22 @@ def parse_workdays(raw) -> Optional[str]:
     return ",".join(str(d) for d in sorted(days))
 
 
-def parse_role(raw) -> Optional[bool]:
+def parse_role(raw) -> Optional[Tuple[bool, bool]]:
     """Blank -> None (new rows default this to Employee; update rows leave
-    the existing role alone — see parse_row). Returns is_admin otherwise."""
+    the existing role alone — see parse_row). Returns (is_admin,
+    is_super_admin) otherwise — 'Admin' is the department-scoped tier
+    (Dashboard/Leave Requests/Reports for their own department only),
+    'Super Admin' is org-wide (see Employee.is_super_admin docstring)."""
     if raw is None or str(raw).strip() == "":
         return None
     text = str(raw).strip().lower()
     if text == "employee":
-        return False
+        return role_to_flags("employee")
     if text == "admin":
-        return True
-    raise ValueError("Role must be 'Employee' or 'Admin'")
+        return role_to_flags("admin")
+    if text in ("super admin", "super_admin", "superadmin"):
+        return role_to_flags("super_admin")
+    raise ValueError("Role must be 'Employee', 'Admin', or 'Super Admin'")
 
 
 def parse_action(raw) -> Optional[bool]:
@@ -259,15 +264,15 @@ def parse_row(raw: dict, code_to_id: Dict[str, int]) -> dict:
     if phone:
         fields["phone"] = phone
 
-    is_admin = None
+    role_flags = None
     try:
-        is_admin = parse_role(raw.get("Role"))
+        role_flags = parse_role(raw.get("Role"))
     except ValueError as e:
         errors.append(str(e))
-    if is_admin is not None:
-        fields["is_admin"] = is_admin
+    if role_flags is not None:
+        fields["is_admin"], fields["is_super_admin"] = role_flags
     elif not is_update:
-        fields["is_admin"] = False  # default for new rows only
+        fields["is_admin"], fields["is_super_admin"] = False, False  # default for new rows only
 
     deactivate = None
     try:
@@ -446,7 +451,7 @@ def build_sample_workbook() -> Workbook:
         ("Email", "No, but needed before the employee can sign in", "name@company.com"),
         ("Country Code", "No", "e.g. +91, +1 — kept separate from Phone so it always round-trips cleanly"),
         ("Phone", "No", "Just the number, without the country code, e.g. 9876543210"),
-        ("Role", "No — defaults to Employee", "Employee or Admin"),
+        ("Role", "No — defaults to Employee", "Employee, Admin (own department only), or Super Admin (all departments)"),
         ("Action", "No — only valid on an update row (Employee ID filled in)",
          "Blank, or 'Deactivate' to offboard — keeps all their history, same as Roster -> Edit -> untick Active"),
         ("", "", ""),
@@ -486,7 +491,10 @@ def build_existing_employees_workbook(db) -> Workbook:
             e.start_date.isoformat() if e.start_date else "",
             e.date_of_birth.isoformat() if e.date_of_birth else "",
             e.email or "", e.country_code or "", e.phone or "",
-            "Admin" if e.is_admin else "Employee", "",
+            {"employee": "Employee", "admin": "Admin", "super_admin": "Super Admin"}[
+                flags_to_role(e.is_admin, e.is_super_admin)
+            ],
+            "",
         ])
     for col, width in zip(COL_LETTERS, COL_WIDTHS):
         ws.column_dimensions[col].width = width

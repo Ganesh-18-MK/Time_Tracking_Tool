@@ -10,7 +10,7 @@
     <div>
       <label>Department</label>
       <select name="dept" onchange="document.getElementById('emp-select').value='0'; this.form.submit()">
-        <option value="" {{ 'selected' if not dept }}>All Departments</option>
+        {% if user.is_super_admin %}<option value="" {{ 'selected' if not dept }}>All Departments</option>{% endif %}
         {% for d in departments %}
         <option value="{{ d }}" {{ 'selected' if dept == d }}>{{ d }}</option>
         {% endfor %}

@@ -15,7 +15,7 @@ from openpyxl.styles import Font
 from sqlalchemy.orm import Session
 
 from app import models as m, reports
-from app.auth import require_admin
+from app.auth import admin_department_scope, require_admin
 from app.db import get_db
 from app.templating import render
 from app.util import xlsx_response
@@ -36,13 +36,26 @@ def _parse_date(value: str) -> Optional[dt.date]:
         return None
 
 
-def _filter_ctx(db: Session, dept: str, emp: int, rng: str, start: str, end: str) -> dict:
-    dept = dept or ""
+def _scoped_dept(admin: m.Employee, dept: str) -> str:
+    """Force the department filter for a department-scoped admin (team
+    lead) — Reports is one of their three allowed screens (see
+    Employee.is_super_admin docstring), but only for their own team.
+    Ignores/overrides any ?dept= they might pass (including the "All
+    Departments" empty string). A no-op for a super admin."""
+    scope = admin_department_scope(admin)
+    return scope if scope is not None else (dept or "")
+
+
+def _filter_ctx(db: Session, admin: m.Employee, dept: str, emp: int, rng: str, start: str, end: str) -> dict:
+    dept = _scoped_dept(admin, dept)
     start_date, end_date = reports.resolve_date_range(rng, _parse_date(start), _parse_date(end))
+    departments = reports.departments_list(db)
+    if admin_department_scope(admin) is not None:
+        departments = [d for d in departments if d == dept]
     return {
         "dept": dept, "emp": emp, "range": rng, "start": start or "", "end": end or "",
         "resolved_start": start_date, "resolved_end": end_date,
-        "departments": reports.departments_list(db),
+        "departments": departments,
         "employees": reports.employees_list(db, dept or None),
         "range_presets": reports.RANGE_PRESETS,
     }
@@ -69,9 +82,9 @@ def reports_attendance(
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    ctx = _filter_ctx(db, dept, emp, rng, start, end)
+    ctx = _filter_ctx(db, admin, dept, emp, rng, start, end)
     result = reports.attendance_report(
-        db, ctx["resolved_start"], ctx["resolved_end"], department=dept or None, employee_id=emp or None
+        db, ctx["resolved_start"], ctx["resolved_end"], department=ctx["dept"] or None, employee_id=emp or None
     )
     return render(request, "admin/reports_attendance.html", {"user": admin, "result": result, **ctx}, db=db)
 
@@ -86,23 +99,25 @@ def reports_attendance_xlsx(
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    dept = _scoped_dept(admin, dept)
     start_date, end_date = reports.resolve_date_range(rng, _parse_date(start), _parse_date(end))
     result = reports.attendance_report(db, start_date, end_date, department=dept or None, employee_id=emp or None)
     wb = Workbook()
     ws = wb.active
     if result["mode"] == "daily":
         ws.title = "Daily detail"
-        _header(ws, ["Date", "Status"])
+        _header(ws, ["Date", "Status", "Overtime (min)"])
         for r in result["rows"]:
-            ws.append([r["date"].isoformat(), reports.STATUS_LABELS.get(r["status"], r["status"])])
+            ws.append([r["date"].isoformat(), reports.STATUS_LABELS.get(r["status"], r["status"]), r["overtime"]])
     else:
         ws.title = "Summary"
-        _header(ws, ["Name", "Department"] + [reports.STATUS_LABELS[s] for s in reports.STATUS_ORDER] + ["Attendance %"])
+        _header(ws, ["Name", "Department"] + [reports.STATUS_LABELS[s] for s in reports.STATUS_ORDER]
+                + ["Attendance %", "Overtime (min)"])
         for r in result["rows"]:
             ws.append(
                 [r["employee"].name, r["department"]]
                 + [r["counts"][s] for s in reports.STATUS_ORDER]
-                + [r["attendance_pct"] if r["attendance_pct"] is not None else ""]
+                + [r["attendance_pct"] if r["attendance_pct"] is not None else "", r["overtime_minutes"]]
             )
     return xlsx_response(wb, f"attendance_{start_date}_{end_date}.xlsx")
 
@@ -119,9 +134,9 @@ def reports_strikes(
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    ctx = _filter_ctx(db, dept, emp, rng, start, end)
+    ctx = _filter_ctx(db, admin, dept, emp, rng, start, end)
     result = reports.strikes_report(
-        db, ctx["resolved_start"], ctx["resolved_end"], department=dept or None, employee_id=emp or None
+        db, ctx["resolved_start"], ctx["resolved_end"], department=ctx["dept"] or None, employee_id=emp or None
     )
     return render(request, "admin/reports_strikes.html", {"user": admin, "result": result, **ctx}, db=db)
 
@@ -136,6 +151,7 @@ def reports_strikes_xlsx(
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    dept = _scoped_dept(admin, dept)
     start_date, end_date = reports.resolve_date_range(rng, _parse_date(start), _parse_date(end))
     result = reports.strikes_report(db, start_date, end_date, department=dept or None, employee_id=emp or None)
     wb = Workbook()

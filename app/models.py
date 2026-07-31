@@ -71,6 +71,18 @@ class Employee(Base):
     employee_code: Mapped[Optional[str]] = mapped_column(String(20), unique=True, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Two-tier admin (Ganesh, 2026-07-31): is_admin alone now means
+    # "department-scoped admin / team lead" — sees Dashboard, Leave
+    # Requests, and Reports, filtered to their own Employee.department
+    # only. is_super_admin=True is the org-wide tier that sees every
+    # department and every other admin screen (Roster, Settings, Audit
+    # Log, Support Inbox, Projects & Tasks, bulk uploads, person-detail
+    # overrides/unlocks/compensation links) — see app/auth.py
+    # require_super_admin and app/util.py ensure_super_admin_backfill
+    # (existing admins are auto-promoted to super_admin on upgrade so
+    # nobody who could see everything before this column existed loses
+    # access silently).
+    is_super_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     # tracked=False => excluded from compliance runs (e.g. admin accounts)
     tracked: Mapped[bool] = mapped_column(Boolean, default=True)
     notes: Mapped[str] = mapped_column(Text, default="")
@@ -89,10 +101,95 @@ class Employee(Base):
     vacation_leave_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     entries = relationship("TaskEntry", back_populates="employee")
+    # uselist=False: one row per employee, not a list — see
+    # EmployeePersonalDetails/EmployeeBankDetails below. Both are optional
+    # (None until the employee fills the form in on Profile) and separate
+    # from Employee itself so this already-wide table doesn't grow another
+    # ~20 mostly-blank columns, and so the two are independently gated on
+    # the Employee.email-is-the-signup-key concern (see profile routes).
+    personal_details = relationship(
+        "EmployeePersonalDetails", back_populates="employee", uselist=False,
+        cascade="all, delete-orphan",
+    )
+    bank_details = relationship(
+        "EmployeeBankDetails", back_populates="employee", uselist=False,
+        cascade="all, delete-orphan",
+    )
 
     @property
     def work_day_set(self):
         return {int(x) for x in self.work_days.split(",") if x.strip() != ""}
+
+
+class EmployeePersonalDetails(Base):
+    """Self-service 'Personal Details' card on Profile — personal info and
+    contact info combined into one record (Ganesh: "personal and contact
+    details should be in one box"). Employee.date_of_birth/phone/
+    country_code/email already exist and are NOT duplicated here — this
+    table only holds what's genuinely new. Display-only reference data for
+    HR; nothing in app/engine.py reads it.
+    """
+    __tablename__ = "employee_personal_details"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), unique=True, index=True)
+
+    blood_type: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
+    gender: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    marital_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    family_members: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    nationality: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    hobbies: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    professional_skills: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    special_skills: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    known_languages: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # "Contact" itself is Employee.country_code + Employee.phone (not
+    # duplicated); these are the additional numbers/addresses from the
+    # requested screens.
+    company_contact: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    alternate_phone: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    emergency_phone: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    whatsapp_number: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    personal_email: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    current_address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    permanent_address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    updated_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    updated_by: Mapped[str] = mapped_column(String(120), default="")
+
+    employee = relationship("Employee", back_populates="personal_details")
+
+
+class EmployeeBankDetails(Base):
+    """Self-service 'Employment Details' card on Profile — bank account plus
+    the statutory IDs Indian payroll needs (PAN/Aadhaar/UAN/ESI). Every
+    field here is sensitive and is masked to everyone, including admins,
+    everywhere it's displayed (see app/util.py mask_tail + the 'mask' Jinja
+    filter) — the full value is only ever sent to the browser once, at the
+    moment the employee types it in; re-submitting blank always means
+    "leave this one alone", same convention as the bulk-upload sheets.
+    """
+    __tablename__ = "employee_bank_details"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), unique=True, index=True)
+
+    account_holder_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    account_number: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    ifsc_code: Mapped[Optional[str]] = mapped_column(String(15), nullable=True)
+    bank_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    branch_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    account_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    pan_number: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    aadhaar_number: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    uan_number: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    esi_number: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+
+    updated_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    updated_by: Mapped[str] = mapped_column(String(120), default="")
+
+    employee = relationship("Employee", back_populates="bank_details")
 
 
 class Project(Base):
@@ -165,6 +262,39 @@ class BreakEntry(Base):
     @property
     def duration_minutes(self) -> Optional[int]:
         return None if self.end_minute is None else self.end_minute - self.start_minute
+
+
+class PunchSession(Base):
+    """Punch In / Punch Out — a personal, live countdown-to-target widget on
+    Today (Ganesh, 2026-07-30). Deliberately NOT read by app/engine.py or
+    anything compliance-related: actual_minutes/strikes/variance still come
+    only from logged TaskEntry rows, exactly as before. This table exists
+    purely so the live timer survives a page refresh; the countdown math
+    itself reuses the existing break-excess-extends-target rule (see
+    app/routes/employee.py's _day_context) rather than inventing a second
+    one, so what the employee watches tick down always matches what
+    Submit Day would actually compute.
+
+    Same open/closed pattern as BreakEntry: punched_out_at is None while a
+    session is running. Employees can punch in/out more than once a day
+    (e.g. stepping away outside a logged break) — completed sessions are
+    just summed."""
+
+    __tablename__ = "punch_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True)
+    date: Mapped[dt.date] = mapped_column(Date, index=True)
+    punched_in_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    punched_out_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+
+    employee = relationship("Employee")
+
+    @property
+    def duration_minutes(self) -> Optional[int]:
+        if self.punched_out_at is None:
+            return None
+        return int((self.punched_out_at - self.punched_in_at).total_seconds() // 60)
 
 
 class DaySubmission(Base):

@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% set active_nav = 'profile' %}
+{% block title %}Employment Details · MK Timekeeping{% endblock %}
+{% block content %}
+<p class="muted small"><a href="/profile">← Back to profile</a></p>
+<h1>Employment Details</h1>
+
+<div class="card" style="max-width:640px">
+  <p class="small muted">Bank account and statutory IDs, for payroll. The sensitive numbers below are
+  masked as soon as they're saved — even you won't see the full value again here, only the last 4
+  characters. Leave a masked field blank to keep what's already saved; type a new value to replace it.</p>
+
+  <form method="post" action="/profile/employment-details">
+    <h3 style="margin-top:0">Bank account</h3>
+    <div class="formrow">
+      <div><label>Account holder name</label>
+        <input name="account_holder_name" value="{{ bd.account_holder_name or '' }}"></div>
+      <div><label>Account type</label>
+        <select name="account_type">
+          <option value="">— not set —</option>
+          {% for t in ['Savings', 'Current'] %}
+          <option {{ 'selected' if bd and bd.account_type == t }}>{{ t }}</option>
+          {% endfor %}
+        </select></div>
+    </div>
+    <div class="formrow" style="margin-top:8px">
+      <div>
+        <label>Account number{% if bd and bd.account_number %} — currently: {{ bd.account_number|mask }}{% endif %}</label>
+        <input name="account_number" placeholder="{{ 'Leave blank to keep unchanged' if bd and bd.account_number else 'Not set yet' }}" style="width:220px">
+      </div>
+      <div><label>IFSC code</label>
+        <input name="ifsc_code" value="{{ bd.ifsc_code or '' }}" style="width:140px;text-transform:uppercase"></div>
+      <div><label>Bank name</label>
+        <input name="bank_name" value="{{ bd.bank_name or '' }}"></div>
+      <div><label>Branch</label>
+        <input name="branch_name" value="{{ bd.branch_name or '' }}"></div>
+    </div>
+
+    <hr>
+    <h3>Statutory IDs</h3>
+    <div class="formrow">
+      <div>
+        <label>PAN number{% if bd and bd.pan_number %} — currently: {{ bd.pan_number|mask }}{% endif %}</label>
+        <input name="pan_number" placeholder="{{ 'Leave blank to keep unchanged' if bd and bd.pan_number else 'Not set yet' }}" style="width:160px;text-transform:uppercase">
+      </div>
+      <div>
+        <label>Aadhaar number{% if bd and bd.aadhaar_number %} — currently: {{ bd.aadhaar_number|mask }}{% endif %}</label>
+        <input name="aadhaar_number" placeholder="{{ 'Leave blank to keep unchanged' if bd and bd.aadhaar_number else 'Not set yet' }}" style="width:180px">
+      </div>
+    </div>
+    <div class="formrow" style="margin-top:8px">
+      <div>
+        <label>UAN (PF) number{% if bd and bd.uan_number %} — currently: {{ bd.uan_number|mask }}{% endif %}</label>
+        <input name="uan_number" placeholder="{{ 'Leave blank to keep unchanged' if bd and bd.uan_number else 'Not set yet' }}" style="width:180px">
+      </div>
+      <div>
+        <label>ESI number{% if bd and bd.esi_number %} — currently: {{ bd.esi_number|mask }}{% endif %}</label>
+        <input name="esi_number" placeholder="{{ 'Leave blank to keep unchanged' if bd and bd.esi_number else 'Not set yet' }}" style="width:180px">
+      </div>
+    </div>
+
+    <div style="margin-top:14px">
+      <button>Save</button>
+      <a class="btn secondary" href="/profile">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

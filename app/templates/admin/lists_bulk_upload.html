@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% set active_nav = 'lists' %}
+{% block title %}Bulk upload · Projects & Tasks · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Bulk upload — Projects &amp; Tasks</h1>
+<p class="muted small"><a href="/admin/lists">← Back to Projects &amp; Tasks</a></p>
+<p class="small muted">Each sheet is a single column, one name per row — add-only. A name already
+on the list is skipped, not duplicated; nothing here renames or deactivates a value.</p>
+
+<div class="cols">
+  <div class="card">
+    <h2 style="margin-top:0">Projects / Employers</h2>
+    <p class="small muted">Column header: <strong>Project / Employer Name</strong>.</p>
+    <p>
+      <a class="btn secondary small" href="/admin/lists/bulk-upload/sample.xlsx?kind=project">Download blank template</a>
+      <a class="btn secondary small" href="/admin/lists/bulk-upload/existing.xlsx?kind=project">Download current list</a>
+    </p>
+    <form method="post" action="/admin/lists/bulk-upload" enctype="multipart/form-data" class="formrow">
+      <input type="hidden" name="kind" value="project">
+      <div><input type="file" name="file" accept=".xlsx" required></div>
+      <div><button>Upload</button></div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">Tasks</h2>
+    <p class="small muted">Column header: <strong>Task Name</strong>.</p>
+    <p>
+      <a class="btn secondary small" href="/admin/lists/bulk-upload/sample.xlsx?kind=task">Download blank template</a>
+      <a class="btn secondary small" href="/admin/lists/bulk-upload/existing.xlsx?kind=task">Download current list</a>
+    </p>
+    <form method="post" action="/admin/lists/bulk-upload" enctype="multipart/form-data" class="formrow">
+      <input type="hidden" name="kind" value="task">
+      <div><input type="file" name="file" accept=".xlsx" required></div>
+      <div><button>Upload</button></div>
+    </form>
+  </div>
+</div>
+
+{% if result %}
+<div class="card" style="max-width:760px">
+  <h2 style="margin-top:0">Result — {{ 'Projects' if result_kind == 'project' else 'Tasks' }}</h2>
+  <p>{{ result.added }} added.</p>
+  {% if result.skipped %}
+  <table>
+    <thead><tr><th>Row</th><th>Name</th><th>Reason skipped</th></tr></thead>
+    <tbody>
+      {% for s in result.skipped %}
+      <tr><td>{{ s.row }}</td><td>{{ s.name }}</td><td class="small">{{ s.reason }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

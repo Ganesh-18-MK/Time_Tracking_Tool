@@ -30,6 +30,14 @@
     <div class="n">{{ balance|hm_signed }}</div>
     <div class="l">net hours balance this month</div>
   </div>
+  <div class="kpi {{ 'okk' if comp.balance >= 0 else 'badk' }}" title="From Punch In/Out, automatic — separate from the manual Compensation links below. Overtime beyond what's owed banks as credit for the rest of the month.">
+    <div class="n">{{ comp.balance|hm_signed }}</div>
+    <div class="l">
+      {% if comp.balance > 0 %}compensation credit (Punch Clock, auto)
+      {% elif comp.balance < 0 %}compensation owed (Punch Clock, auto)
+      {% else %}compensation (Punch Clock, auto) — none{% endif %}
+    </div>
+  </div>
 </div>
 
 <div class="cols">
@@ -78,6 +86,28 @@
   </div>
 
   <div style="flex:1 1 420px">
+    {% if comp.days %}
+    <div class="card">
+      <h2 style="margin-top:0">Punch Clock compensation (automatic)</h2>
+      <p class="small muted" style="margin:-4px 0 10px">Separate from the manual Compensation links below —
+      this comes from Punch In/Out shortfall vs. overtime and updates on its own, no admin action needed.</p>
+      <table>
+        <thead><tr><th>Date</th><th>Target</th><th>Punched</th><th>Shortfall</th><th>Overtime</th></tr></thead>
+        <tbody>
+          {% for d in comp.days|reverse %}
+          <tr>
+            <td class="nowrap">{{ d.date.strftime('%a %d') }}</td>
+            <td>{{ d.target|hm }}</td>
+            <td>{{ d.punched|hm }}</td>
+            <td>{{ d.shortfall|hm if d.shortfall else '—' }}</td>
+            <td>{{ d.overtime|hm if d.overtime else '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
     <div class="card">
       <h2>Compensation links</h2>
       {% if links %}
@@ -207,5 +237,65 @@
   {% else %}
   <p class="muted">No task entries this month{% if statuses %} (statuses above may be legacy-imported){% endif %}.</p>
   {% endfor %}
+</div>
+
+<div class="cols">
+  <div class="card">
+    <h2>Personal details</h2>
+    {% if emp.personal_details %}
+    {% set pd = emp.personal_details %}
+    <table>
+      <tbody>
+        <tr><td class="muted small">Date of birth</td><td>{{ emp.date_of_birth.isoformat() if emp.date_of_birth else '—' }}</td></tr>
+        <tr><td class="muted small">Blood type</td><td>{{ pd.blood_type or '—' }}</td></tr>
+        <tr><td class="muted small">Gender</td><td>{{ pd.gender or '—' }}</td></tr>
+        <tr><td class="muted small">Marital status</td><td>{{ pd.marital_status or '—' }}</td></tr>
+        <tr><td class="muted small">Family members</td><td>{{ pd.family_members if pd.family_members is not none else '—' }}</td></tr>
+        <tr><td class="muted small">Nationality</td><td>{{ pd.nationality or '—' }}</td></tr>
+        <tr><td class="muted small">Hobbies</td><td>{{ pd.hobbies or '—' }}</td></tr>
+        <tr><td class="muted small">Professional skills</td><td>{{ pd.professional_skills or '—' }}</td></tr>
+        <tr><td class="muted small">Special skills</td><td>{{ pd.special_skills or '—' }}</td></tr>
+        <tr><td class="muted small">Known languages</td><td>{{ pd.known_languages or '—' }}</td></tr>
+        <tr><td class="muted small">Contact</td><td>{{ (emp.country_code or '') ~ ' ' ~ (emp.phone or '') if emp.phone else '—' }}</td></tr>
+        <tr><td class="muted small">Company contact</td><td>{{ pd.company_contact or '—' }}</td></tr>
+        <tr><td class="muted small">Alternate</td><td>{{ pd.alternate_phone or '—' }}</td></tr>
+        <tr><td class="muted small">Emergency</td><td>{{ pd.emergency_phone or '—' }}</td></tr>
+        <tr><td class="muted small">WhatsApp</td><td>{{ pd.whatsapp_number or '—' }}</td></tr>
+        <tr><td class="muted small">Personal email</td><td>{{ pd.personal_email or '—' }}</td></tr>
+        <tr><td class="muted small">Current address</td><td class="small">{{ pd.current_address or '—' }}</td></tr>
+        <tr><td class="muted small">Permanent address</td><td class="small">{{ pd.permanent_address or '—' }}</td></tr>
+      </tbody>
+    </table>
+    <p class="small muted" style="margin:8px 0 0">Last updated {{ pd.updated_at.strftime('%d %b %Y') if pd.updated_at else '—' }} by {{ pd.updated_by or '—' }}.</p>
+    {% else %}
+    <p class="muted small" style="margin:0">Not added yet — the employee fills this in via Profile → Personal Details.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Bank &amp; statutory details</h2>
+    <p class="small muted" style="margin:-4px 0 10px">Sensitive numbers are masked — the full value is
+    never shown here, even to admins, once the employee has saved it.</p>
+    {% if emp.bank_details %}
+    {% set bd = emp.bank_details %}
+    <table>
+      <tbody>
+        <tr><td class="muted small">Account holder</td><td>{{ bd.account_holder_name or '—' }}</td></tr>
+        <tr><td class="muted small">Account number</td><td>{{ bd.account_number|mask }}</td></tr>
+        <tr><td class="muted small">IFSC code</td><td>{{ bd.ifsc_code or '—' }}</td></tr>
+        <tr><td class="muted small">Bank name</td><td>{{ bd.bank_name or '—' }}</td></tr>
+        <tr><td class="muted small">Branch</td><td>{{ bd.branch_name or '—' }}</td></tr>
+        <tr><td class="muted small">Account type</td><td>{{ bd.account_type or '—' }}</td></tr>
+        <tr><td class="muted small">PAN number</td><td>{{ bd.pan_number|mask }}</td></tr>
+        <tr><td class="muted small">Aadhaar number</td><td>{{ bd.aadhaar_number|mask }}</td></tr>
+        <tr><td class="muted small">UAN (PF) number</td><td>{{ bd.uan_number|mask }}</td></tr>
+        <tr><td class="muted small">ESI number</td><td>{{ bd.esi_number|mask }}</td></tr>
+      </tbody>
+    </table>
+    <p class="small muted" style="margin:8px 0 0">Last updated {{ bd.updated_at.strftime('%d %b %Y') if bd.updated_at else '—' }} by {{ bd.updated_by or '—' }}.</p>
+    {% else %}
+    <p class="muted small" style="margin:0">Not added yet — the employee fills this in via Profile → Employment Details.</p>
+    {% endif %}
+  </div>
 </div>
 {% endblock %}

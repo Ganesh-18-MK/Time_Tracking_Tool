@@ -17,6 +17,14 @@
     <div class="n">{{ balance|hm_signed }}</div>
     <div class="l">running hours balance (extra/short)</div>
   </div>
+  <div class="kpi {{ 'okk' if comp.balance >= 0 else 'badk' }}" title="From Punch In/Out, not your logged task rows — separate from the balance above. Overtime beyond what's owed banks as credit for the rest of the month.">
+    <div class="n">{{ comp.balance|hm_signed }}</div>
+    <div class="l">
+      {% if comp.balance > 0 %}compensation credit this month (ahead of target)
+      {% elif comp.balance < 0 %}compensation owed this month
+      {% else %}compensation — all caught up{% endif %}
+    </div>
+  </div>
   {% for t, days in leave_totals.items() %}
   <div class="kpi"><div class="n">{{ '%.1f'|format(days) }}</div><div class="l">{{ t }} leave days</div></div>
   {% endfor %}
@@ -58,6 +66,29 @@
   </table>
   <p class="small muted">⚑ = admin override (reason on hover) · ↺ = compensated shortfall · hours show actual / target.</p>
 </div>
+
+{% if comp.days %}
+<div class="card">
+  <h2 style="margin-top:0">Compensation (from Punch In/Out)</h2>
+  <p class="small muted" style="margin:-4px 0 10px">Days you punched in/out short of target add to what you owe;
+  days you punched past target automatically pay it back down — no admin action needed.
+  This is separate from the ledger below, which is based on your logged task rows, not the punch clock.</p>
+  <table>
+    <thead><tr><th>Date</th><th>Target</th><th>Punched</th><th>Shortfall</th><th>Overtime</th></tr></thead>
+    <tbody>
+      {% for d in comp.days|reverse %}
+      <tr>
+        <td>{{ d.date.strftime('%a %d %b') }}</td>
+        <td>{{ d.target|hm }}</td>
+        <td>{{ d.punched|hm }}</td>
+        <td>{{ d.shortfall|hm if d.shortfall else '—' }}</td>
+        <td>{{ d.overtime|hm if d.overtime else '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
 
 <div class="card">
   <h2>Hours ledger (variance &amp; running balance)</h2>

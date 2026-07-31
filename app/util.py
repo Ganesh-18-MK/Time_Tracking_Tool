@@ -141,6 +141,58 @@ def ensure_employee_codes(db: Session) -> None:
     db.commit()
 
 
+# Three-tier role, shared by Roster -> Add/Edit person and the bulk-upload
+# Role column (app/bulk_upload.py parse_role) so both places agree on the
+# exact same strings and (is_admin, is_super_admin) mapping. See
+# Employee.is_super_admin's docstring for what each tier can see.
+ROLE_EMPLOYEE = "employee"
+ROLE_ADMIN = "admin"
+ROLE_SUPER_ADMIN = "super_admin"
+ROLE_CHOICES = (ROLE_EMPLOYEE, ROLE_ADMIN, ROLE_SUPER_ADMIN)
+
+
+def role_to_flags(role: str):
+    """'employee'/'admin'/'super_admin' -> (is_admin, is_super_admin)."""
+    if role == ROLE_SUPER_ADMIN:
+        return True, True
+    if role == ROLE_ADMIN:
+        return True, False
+    return False, False
+
+
+def flags_to_role(is_admin: bool, is_super_admin: bool) -> str:
+    if is_admin and is_super_admin:
+        return ROLE_SUPER_ADMIN
+    if is_admin:
+        return ROLE_ADMIN
+    return ROLE_EMPLOYEE
+
+
+def ensure_super_admin_backfill(db: Session) -> None:
+    """Backfill for the is_super_admin column added 2026-07-31 (department-
+    scoped admin / super admin split). SQLite's ADD COLUMN gives every
+    existing row NULL, not the ORM-level default — without this, every
+    admin who could already see all departments would silently be demoted
+    to department-scoped on upgrade. Anyone who was already is_admin=True
+    becomes is_super_admin=True; only NEW admins created after this point
+    default to department-scoped (see Employee.is_super_admin docstring).
+    A no-op once every admin already has the flag set — safe on every
+    startup, same pattern as ensure_employee_codes."""
+    rows = list(
+        db.execute(
+            select(m.Employee).where(
+                m.Employee.is_admin.is_(True),
+                m.Employee.is_super_admin.isnot(True),
+            )
+        ).scalars()
+    )
+    if not rows:
+        return
+    for emp in rows:
+        emp.is_super_admin = True
+    db.commit()
+
+
 def xlsx_response(wb: Workbook, filename: str) -> StreamingResponse:
     """Shared by every route that streams an openpyxl Workbook back as a
     download (exports.py, bulk_upload's templates, reports.py) so the
@@ -153,6 +205,50 @@ def xlsx_response(wb: Workbook, filename: str) -> StreamingResponse:
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def mask_tail(value: Optional[str], keep: int = 4) -> str:
+    """'1234567890123' -> '•••••••••0123'. Used for bank account numbers and
+    statutory IDs (PAN/Aadhaar/UAN/ESI) on the Employment Details card —
+    these are never shown in full again once saved, to the employee or to
+    an admin viewing Roster -> person detail (see app/models.py
+    EmployeeBankDetails). Blank/None -> "Not added yet" so the UI reads as
+    an empty state, not a broken mask."""
+    text = (value or "").strip()
+    if not text:
+        return "Not added yet"
+    if len(text) <= keep:
+        return "•" * len(text)
+    return "•" * (len(text) - keep) + text[-keep:]
+
+
+def punch_remaining_minutes(target_minutes: int, completed_punch_minutes: int) -> int:
+    """Countdown-to-target remaining minutes for the Punch In/Out widget on
+    Today, computed fresh server-side on every page load; the browser just
+    ticks the *currently open* session down in real time from there (see
+    today.html), the same way the existing break timer already works —
+    every break-excess-extends-target adjustment happens by reloading with
+    a new `target`, not by the client recomputing the rule itself.
+
+    Deliberately NOT clamped at 0 — a negative result is overtime, not an
+    error, and must stay visible as such (formatted "+H:MM over" by the
+    template via hm_signed) rather than silently reading as "done"."""
+    return target_minutes - completed_punch_minutes
+
+
+def overtime_minutes(punched_minutes: int, target_minutes: Optional[int]) -> int:
+    """How much of a day's completed Punch In/Out time was beyond that day's
+    target — the number shown live on Today (once the countdown goes past
+    zero) and aggregated into the Attendance Report's Overtime column (see
+    app/reports.py). `target_minutes` should be the day's already-computed,
+    already-adjusted target (DayStatus.target_minutes — includes leave and
+    break-allowance extension), not a raw daily_target_minutes; passing None
+    (e.g. a legacy-imported day with no computed target) reads as "can't
+    say", not "zero target", so it returns 0 rather than counting the whole
+    punched duration as overtime."""
+    if target_minutes is None:
+        return 0
+    return max(0, punched_minutes - target_minutes)
 
 
 def fmt_hours(minutes: Optional[int]) -> str:

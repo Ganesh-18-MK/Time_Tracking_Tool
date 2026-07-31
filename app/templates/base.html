@@ -42,18 +42,20 @@
           <a href="/admin/reports/strikes">Strike Reports</a>
         </div>
       </details>
+      {% if user.is_super_admin %}
       <a href="/admin/roster" class="{{ 'on' if active_nav == 'roster' }}">Employees</a>
       <a href="/admin/lists" class="{{ 'on' if active_nav == 'lists' }}">Projects &amp; Tasks</a>
       <a href="/admin/config" class="{{ 'on' if active_nav == 'config' }}">Settings</a>
       <a href="/admin/audit" class="{{ 'on' if active_nav == 'audit' }}">Audit Logs</a>
       <a href="/admin/support" class="{{ 'on' if active_nav == 'admin_support' }}">Support Inbox{% if nav_badges and nav_badges.open_support %}<span class="navbadge">{{ nav_badges.open_support }}</span>{% endif %}</a>
+      {% endif %}
       <a href="/today">Employee login</a>
     {% endif %}
   </nav>
   <div class="userchip">
     <span>
       {% if user.photo_path %}<img src="/static/uploads/avatars/{{ user.photo_path }}" class="avatar-sm" alt="">{% endif %}
-      {{ user.name }}{% if user.is_admin %} · admin{% endif %}
+      {{ user.name }}{% if user.designation %} · {{ user.designation }}{% endif %}{% if user.is_super_admin %} · super admin{% elif user.is_admin %} · admin ({{ user.department or '—' }}){% endif %}
     </span>
     <form method="post" action="/logout"><button class="linklike">Sign out</button></form>
   </div>

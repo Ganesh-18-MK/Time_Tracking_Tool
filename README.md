@@ -4,12 +4,12 @@
 
 - ✅ Feature-complete against [PRD Draft v1](docs/PRD.md)
 - ✅ Acceptance test passing (**168/168** historical strike counts reproduced)
-- ✅ 145 unit tests green
-- Updated 29 Jul 2026
+- ✅ 233 unit tests green
+- Updated 31 Jul 2026
 
 One web app that replaces the three manual spreadsheets used to run offshore time tracking — the per-person **Task Summary** files, the 57-tab **Leave Tracker**, and the monthly **Compliance sheet**. The employee logs time once; leave, hours variance, and compliance status all derive from that single entry automatically. Interim tool until the third-party HR pilot concludes: **designed for export, not permanence.**
 
-Beyond the original PRD build, the app now also has: real employee/admin login with self-signup passwords and lockout after repeated failures, break tracking with a live timer, employee-submitted leave requests and support questions (with an admin approval/reply queue for each), profile photos, bulk employee onboarding/updating/offboarding via an Excel upload, a redesigned live compliance dashboard, and two cascading-filter Reports pages (Attendance, Strikes) with XLSX export. See **[MK_Timekeeping_Documentation.pdf](MK_Timekeeping_Documentation.pdf)** for a plain-English, page-by-page walkthrough with a flow diagram — handy to hand to a non-technical stakeholder.
+Beyond the original PRD build, the app now also has: real employee/admin login with self-signup passwords and lockout after repeated failures, break tracking with a live timer, a Punch In/Out countdown with automatic overtime tracking, an automatic Punch-Clock compensation balance, a three-tier admin role (Employee / department-scoped Admin / Super Admin), employee-submitted leave requests and support questions (with an admin approval/reply queue for each), profile photos, Personal Details and Employment Details self-service profile cards, bulk employee onboarding/updating/offboarding via an Excel upload, a redesigned live compliance dashboard, and two cascading-filter Reports pages (Attendance, Strikes) with XLSX export. See **[MK_Timekeeping_Documentation.pdf](MK_Timekeeping_Documentation.pdf)** for a plain-English, page-by-page walkthrough with a flow diagram — handy to hand to a non-technical stakeholder.
 
 New to this codebase? Start with **[HANDOFF.md](HANDOFF.md)**. The original requirements are in **[docs/PRD.md](docs/PRD.md)**.
 
@@ -72,7 +72,7 @@ Rebuild after a fresh import with `.venv/bin/python -m demo.make_demo_db`. The r
 ## Verify the build
 
 ```bash
-.venv/bin/python -m pytest tests/ -q       # engine, validation, util, bulk_upload, reports  → 145 passed
+.venv/bin/python -m pytest tests/ -q       # engine, validation, util, bulk_upload, reports, auth, compensation, lists_bulk_upload  → 233 passed
 .venv/bin/python -m legacy.verify_strikes  # PRD §12.3 acceptance       → 168/168 person-months match
 ```
 
@@ -90,32 +90,43 @@ Every page in the system and which zone it belongs to — everyone signs in once
 
 Everyone signs in through one login page (`/login`), then lands in one of two zones based on `Employee.is_admin`. An admin who is also an employee can switch into the Employee zone at any time via the "Employee login" nav link, and back again via "Admin Dashboard" — both zones' nav items are always reachable, never gated on `tracked`.
 
+**Three admin tiers** (`Employee.is_admin` + `Employee.is_super_admin`, set via Roster → Add/Edit person's Role dropdown, or the bulk-upload Role column):
+
+| Role | `is_admin` | `is_super_admin` | Sees |
+|---|---|---|---|
+| Employee | ✗ | ✗ | Employee zone only |
+| Admin (department-scoped / team lead) | ✓ | ✗ | Only Dashboard, Leave Requests, and Reports — filtered to their own `Employee.department` |
+| Super Admin | ✓ | ✓ | Every admin screen, every department — the pre-existing full admin experience |
+
+A department-scoped admin can approve/reject leave and view attendance/strike detail only for people in their own department (enforced server-side on every route, not just hidden in the UI); Roster, Projects & Tasks, Settings, Audit Logs, Support Inbox, and both bulk-upload screens stay Super-Admin-only. Existing admins are automatically promoted to Super Admin the first time the app starts after this upgrade (`app/util.py ensure_super_admin_backfill`), so nobody who could already see everything loses access.
+
 **Employee zone**
 
 | Screen | URL | What it does |
 |---|---|---|
-| Today | `/today` | Log task rows (searchable project/task combo, details, start/end). Duration and daily total are computed, never typed. Overlaps blocked; >15 min gaps flagged (not blocked); 4 h row cap; back-dating limited to N working days. Start/end a Personal or Lunch/Dinner break with a live timer — time beyond the configured allowance automatically extends that day's target. **Submit Day** locks the day. |
-| My Month | `/my-month` | Own status calendar, hours vs target per day, running variance balance, leave by category, live strike count (deliberate: today people find out after the fact). |
+| Today | `/today` | Log task rows (searchable project/task combo, details, start/end). Duration and daily total are computed, never typed. Overlaps blocked; >15 min gaps flagged (not blocked); 4 h row cap; back-dating limited to N working days. Start/end a Personal or Lunch/Dinner break with a live timer — time beyond the configured allowance automatically extends that day's target. **Punch In/Out** shows a live personal countdown to today's target (reuses the same break-allowance rule); once the target's reached, a banner marks the switch to overtime and the same number counts up from zero. Display only, it doesn't log work; task rows below are still what compliance is computed from — but completed overtime does roll up into Reports → Attendance. **Submit Day** locks the day. |
+| My Month | `/my-month` | Own status calendar, hours vs target per day, running variance balance, leave by category, live strike count (deliberate: today people find out after the fact). Also shows a **compensation balance** — automatic, derived from Punch In/Out: a day punched short of target adds to what's owed, a day punched over target pays it back down, and overtime beyond what's owed banks as a credit (signed — e.g. short 1h Monday + over 3h Tuesday shows **+2:00**, not 0:00). Resets every calendar month; doesn't carry into the next one. Separate from the variance balance above (which comes from logged task rows, not the punch clock) and from the manual Compensation links admins create. |
 | Leave | `/leave` | Request time off (full day or partial hours, with type + note); withdraw a still-pending request; see every past request's status and any admin review note. |
 | Support | `/support` | Ask an admin a question and see their reply once resolved. |
-| Profile | `/profile` | Upload/replace a profile photo (JPEG/PNG/WebP, ≤2 MB). |
+| Profile | `/profile` | Upload/replace a profile photo (JPEG/PNG/WebP, ≤2 MB). Two more cards: **Personal Details** (`/profile/personal-details` — DOB, blood type, gender, marital status, family, nationality, hobbies/skills/languages, plus every contact number and address in the same form) and **Employment Details** (`/profile/employment-details` — bank account + PAN/Aadhaar/UAN/ESI; sensitive numbers are masked to last-4 everywhere, including to admins, the instant they're saved). Both are self-service and optional. |
 
 **Admin zone**
 
 | Screen | URL | What it does |
 |---|---|---|
-| Compliance dashboard | `/admin` | The monthly sheet rebuilt live: live today's-attendance KPI cards (logged/on leave/not yet logged), department drill-down cards, a monthly grid (rows = employees, columns = days, cells = auto-derived status), strikes per row, violation flag at threshold, a "needs attention" panel (pending leave/support/violations) and recent audit activity. Filters: month, department, exceptions-only. Nothing here is typed. |
-| Person detail | `/admin/person/{id}` | Full log, ledger with running balance, leave history, breaks, day-status overrides (mandatory reason, audited, ⚑-flagged), submission unlocks (audited), compensation links, XLSX export. |
-| Roster | `/admin/roster` | Add/edit/deactivate people; department, designation, per-person daily target, per-person work-day schedule, start date, phone, DOB, admin/tracked flags. Each person gets an auto-generated `employee_code` (`LOMK001`, `LOMK002`, …). Deactivation keeps history, drops the person from compliance runs. Table has a live name search box. |
-| Roster → Bulk upload | `/admin/roster/bulk-upload` | One Excel upload handles three things at once, told apart per row by whether **Employee ID** is filled: blank → onboard a new hire (Full Name/Department/Designation/Target-day/Workdays required); filled → update only the columns provided (blank cells are left untouched, not cleared); filled **+ Action=Deactivate** → bulk-offboard that person (soft deactivate, history kept, never a hard delete). Download a blank template or an export of all current employees to edit and re-upload. See `app/bulk_upload.py`. |
-| Reports → Attendance / Strikes | `/admin/reports/attendance`, `/admin/reports/strikes` | Two report pages sharing one cascading filter bar: Department → Employee → Date range (Last 7 days / Last month / Last 3 months / custom). Pick "All Employees" for a summary table (attendance % or strike count per person); pick one person for their day-by-day detail instead. Both export to XLSX. See `app/reports.py`. |
-| Lists | `/admin/lists` | Manage Project/Employer and Task dropdowns. Deactivating hides a value from new entries without breaking old rows. |
-| Leave requests | `/admin/leave` | Approve/reject pending employee leave requests (with a note), or record already-approved leave directly on someone's behalf. Recomputes affected days immediately. Below that: a leave-balances table (annual Casual/Sick/Vacation entitlement per employee, display only — see §10.6) and the full history split into Approved / Rejected sections. |
-| Bulk assign leaves | `/admin/leave/bulk-upload` | Set (or bulk-correct) each employee's annual Casual/Sick/Vacation entitlement via a small Employee-ID-keyed Excel sheet — same overwrite-on-reupload pattern as the roster bulk upload, but never creates employees. |
-| Config | `/admin/config` | Every PRD §10 open question as a dial (including the daily break allowance), plus the company holiday table. |
-| Audit | `/admin/audit` | Last 300 audited actions (unlocks, overrides, config changes, imports, comp links, bulk uploads…). Read-only — nothing here can be edited or deleted from the UI. |
-| Support inbox | `/admin/support` | See and reply to open employee support questions; mark resolved. |
-| Exports | `/export/…` | `dashboard.xlsx` (legacy sheet layout — the pilot-handoff bridge), `person/{id}.xlsx` (Ledger/Entries/Leave), `entries.csv?start=&end=`. |
+| Compliance dashboard | `/admin` | The monthly sheet rebuilt live: live today's-attendance KPI cards (logged/on leave/not yet logged), department drill-down cards, a monthly grid (rows = employees, columns = days, cells = auto-derived status), strikes per row, violation flag at threshold, a "needs attention" panel (pending leave/violations) and recent audit activity. Filters: month, department, exceptions-only. Nothing here is typed. **Department-scoped admins** only ever see their own department's card, grid, and needs-attention items — the "All departments" card, Support previews, and audit-activity feed are Super-Admin-only. |
+| Person detail | `/admin/person/{id}` | Full log, ledger with running balance, leave history, breaks, day-status overrides (mandatory reason, audited, ⚑-flagged; Super-Admin-only), submission unlocks (Super-Admin-only), manual compensation links (Super-Admin-only), automatic Punch Clock compensation breakdown (read-only, any admin who can view this person), XLSX export. Read-only Personal Details and Bank & Statutory Details cards (sensitive numbers masked, same as the employee's own view) once the employee has filled them in via Profile. A department-scoped admin can only open this page for someone in their own department. |
+| Roster | `/admin/roster` | **Super-Admin-only.** Add/edit/deactivate people; department, designation, per-person daily target, per-person work-day schedule, start date, phone, DOB, Role (Employee / Admin / Super Admin), tracked flag. Each person gets an auto-generated `employee_code` (`LOMK001`, `LOMK002`, …). Deactivation keeps history, drops the person from compliance runs. Table has a live name search box. |
+| Roster → Bulk upload | `/admin/roster/bulk-upload` | **Super-Admin-only.** One Excel upload handles three things at once, told apart per row by whether **Employee ID** is filled: blank → onboard a new hire (Full Name/Department/Designation/Target-day/Workdays required); filled → update only the columns provided (blank cells are left untouched, not cleared); filled **+ Action=Deactivate** → bulk-offboard that person (soft deactivate, history kept, never a hard delete). Role column now accepts Employee/Admin/Super Admin. Download a blank template or an export of all current employees to edit and re-upload. See `app/bulk_upload.py`. |
+| Reports → Attendance / Strikes | `/admin/reports/attendance`, `/admin/reports/strikes` | Two report pages sharing one cascading filter bar: Department → Employee → Date range (Last 7 days / Last month / Last 3 months / custom). Pick "All Employees" for a summary table (attendance % or strike count per person); pick one person for their day-by-day detail instead. Both export to XLSX. Attendance Reports also show **Overtime** — completed Punch In/Out time beyond each day's target, derived the same "computed, never typed" way as everything else; doesn't affect strikes. **Department-scoped admins** have the Department filter locked to their own department (the "All Departments" option is hidden). See `app/reports.py`. |
+| Lists | `/admin/lists` | **Super-Admin-only.** Manage Project/Employer and Task dropdowns. Deactivating hides a value from new entries without breaking old rows. Convention for unexpected downtime (power cuts, system outages): add a Project called "Not Related to Project" and a Task Type called "Power Cut / System Issue" so employees have something to log the gap against once the system's back — no separate feature, just two entries here. |
+| Lists → Bulk upload | `/admin/lists/bulk-upload` | **Super-Admin-only.** Two independent single-column sheets — one for Projects/Employers, one for Tasks — for adding many dropdown values at once. Add-only: a name already on the list is skipped, not duplicated; renaming/deactivating still happens on the Lists page itself, not via this sheet. Each side has its own blank template and a download of the current list. See `app/lists_bulk_upload.py`. |
+| Leave requests | `/admin/leave` | Approve/reject pending employee leave requests (with a note), or record already-approved leave directly on someone's behalf. Recomputes affected days immediately. Below that: Approved leaves, Pending leaves (read-only mirror of the pending queue above, searchable), and a leave-balances table (annual Casual/Sick/Vacation entitlement per employee, display only — see §10.6). **Department-scoped admins** see and can act on only their own department's requests/records; "Bulk assign leaves" is Super-Admin-only. |
+| Bulk assign leaves | `/admin/leave/bulk-upload` | **Super-Admin-only.** Set (or bulk-correct) each employee's annual Casual/Sick/Vacation entitlement via a small Employee-ID-keyed Excel sheet — same overwrite-on-reupload pattern as the roster bulk upload, but never creates employees. |
+| Config | `/admin/config` | **Super-Admin-only.** Every PRD §10 open question as a dial (including the daily break allowance), plus the company holiday table. |
+| Audit | `/admin/audit` | **Super-Admin-only.** Last 300 audited actions (unlocks, overrides, config changes, imports, comp links, bulk uploads…). Read-only — nothing here can be edited or deleted from the UI. |
+| Support inbox | `/admin/support` | **Super-Admin-only.** See and reply to open employee support questions; mark resolved. |
+| Exports | `/export/…` | `dashboard.xlsx` and `person/{id}.xlsx` follow the same department scoping as Dashboard/Person detail. `entries.csv?start=&end=` (org-wide raw dump, not linked from any screen) is **Super-Admin-only**. |
 | Health check | `/healthz` | Runs a real `SELECT 1` — an uptime monitor target for whatever host runs this (checks DB connectivity, not just process-alive). |
 
 A full plain-English walkthrough of every page and feature, with a flow diagram, is in **[MK_Timekeeping_Documentation.pdf](MK_Timekeeping_Documentation.pdf)**.
@@ -241,11 +252,13 @@ MK_Timekeeping_Documentation.pdf
 | `app/models.py` | All entities (PRD §8) + `CONFIG_DEFAULTS` — minutes everywhere |
 | `app/engine.py` | Status/variance/strike computation, recompute, ledger, `today_attendance()` |
 | `app/validation.py` | PRD §4 entry rules, back-dating window, gap flags |
-| `app/auth.py` | `AUTH_MODE` (`dev` / `password` / `entra`) — the Entra ID swap point |
+| `app/compensation.py` | Automatic Punch Clock compensation balance (`monthly_summary()`) — independent of `engine.py`/`DayStatus`/strikes, see its module docstring |
+| `app/auth.py` | `AUTH_MODE` (`dev` / `password` / `entra`) — the Entra ID swap point. Also `require_super_admin` and `admin_department_scope()` — the department-scoping gate used by Dashboard/Leave Requests/Reports |
 | `app/security.py` | Stdlib password hashing (`AUTH_MODE=password`) |
 | `app/rate_limit.py` | In-memory login/signup lockout after repeated failures |
 | `app/bulk_upload.py` | Roster Excel parsing: onboard / update / bulk-deactivate |
 | `app/leave_bulk_upload.py` | Leave-allocation Excel parsing: bulk-set Casual/Sick/Vacation entitlement by Employee ID |
+| `app/lists_bulk_upload.py` | Single-column, add-only Excel parsing for Project/Employer and Task Type dropdown values |
 | `app/reports.py` | Attendance/Strike report aggregation, cascading filters |
 | `app/util.py` | Formatting filters, `FormError`, `audit()`, employee-code generation, `xlsx_response()` |
 | `app/templating.py` | Jinja env, filters (`hm`, `hm_signed`, `clock`, `tojson`), flash helpers, nav badges |
@@ -254,7 +267,7 @@ MK_Timekeeping_Documentation.pdf
 | `app/static/` | `app.css`, `tablefilter.js` (table search), `combo.js` (searchable select) |
 | `legacy/` | Streaming ODS reader, task extractor, importer, acceptance verifier — see [The legacy import](#the-legacy-import) |
 | `demo/` | `make_demo_db.py` (builds anonymized `tms_demo.db` + seeds fixed test logins), `run_demo.py` (runs on port 8128), `seed_test_logins.py` |
-| `tests/` | 173 tests: engine, validation, util, bulk_upload, leave_bulk_upload, reports |
+| `tests/` | 233 tests: engine, validation, util, bulk_upload, leave_bulk_upload, lists_bulk_upload, reports, auth, compensation |
 | `docs/PRD.md` | The requirements this was built against |
 | `HANDOFF.md` | Read this first if you're picking the project up |
 | `MK_Timekeeping_Documentation.pdf` | Plain-English page/feature guide + flow diagram, for non-technical stakeholders |
@@ -269,21 +282,33 @@ No JS framework, no build step; the only runtime deps are FastAPI, SQLAlchemy, J
 
 - `test_engine.py` — status mapping incl. exact tolerance boundaries, leave-reduced targets, weekend surplus, part-time targets, strike counting, compensation on/off, override precedence, pre-policy exemption.
 - `test_validation.py` — overlaps, touching rows, midnight/duration/details rules, locked days, deactivated dropdown values, back-dating across weekends and holidays, gap flags.
-- `test_util.py` — formatting/parsing helpers.
+- `test_util.py` — formatting/parsing helpers, including `role_to_flags`/`flags_to_role` (the three-tier admin role mapping).
 - `test_bulk_upload.py` — header matching, required-vs-optional fields by mode (new hire vs update), partial-update semantics, bulk-deactivate via the Action column, sample/export workbook round-trips.
 - `test_leave_bulk_upload.py` — Employee-ID resolution, blank-vs-provided leave-count semantics (blank = unchanged, 0 = provided), whole-number validation, sample/export workbook round-trips.
+- `test_lists_bulk_upload.py` — single-column header matching (case-insensitive), blank-row skipping, add-only dedupe (already-on-the-list vs. duplicate-within-file), project vs. task kind routing to the right model, sample/existing workbook contents.
 - `test_reports.py` — date-range resolution (presets, custom, fallback), department/employee scoping, summary vs. daily-drill-down output, strike-exempt exclusion.
+- `test_auth.py` — `admin_department_scope()`: super admin unrestricted, department-scoped admin locked to their own department (including the blank-department "—" fallback).
+- `test_compensation.py` — automatic Punch Clock compensation balance: shortfall accumulation, overtime paying it down, overtime beyond what's owed banking as a signed credit (no floor either direction), leave/holiday/weekend days excluded, still-open punch sessions not counted, month isolation, day-breakdown sorting.
 
 Schema changes: there's deliberately no migration tool in the POC — `rm tms.db`, re-run the importer (~40 s total). New nullable columns are picked up automatically at next startup via `app/db.py`'s additive-migration guard; anything more involved than adding a nullable column still means `rm tms.db` + re-import.
 
 ## Path to production
 
-The PRD's §9 targets, updated for the actual rollout plan (self-signup auth + Render hosting):
+The PRD's §9 targets, updated for the actual rollout plan (self-signup auth + Azure App Service hosting):
 
-1. **Postgres** — set `DATABASE_URL=postgresql+psycopg://…` (`psycopg[binary]` is already in `requirements.txt`). No code changes; SQLAlchemy handles the dialect. Do this before multi-user rollout (~45 people submitting at end of day).
-2. **Real auth — done for password mode.** `AUTH_MODE=password` gives every employee their own email/password (self-signup against a roster row an admin already created), with rate-limited lockout after repeated failures. A real `SECRET_KEY` env var is required outside `dev` mode — the app refuses to boot without one. `AUTH_MODE=entra` (MSAL OAuth mapping the tenant email → `Employee.email`) remains the longer-term target in [app/routes/auth.py](app/routes/auth.py) if/when the org standardizes on Entra ID; nothing else in the app changes when that swap happens.
-3. **Hosting (Render)** — `uvicorn app.main:app` behind Render's HTTPS front end; DB = a managed Postgres instance; `/healthz` is already wired up as the uptime-monitor target. Run the importer once against the final copies of the three legacy files, then freeze the spreadsheets read-only. Note: profile-photo uploads (`app/static/uploads/`) land on local disk, which is ephemeral on Render's default filesystem — move to a persistent disk or S3-compatible storage before relying on photos long-term.
-4. **Cutover checklist** — verify 168/168 on the production import; fix the two roster items flagged in the import report (part-timer targets); replace any remaining test employee data with the real team; announce; spreadsheets become read-only archives.
+1. **Postgres** — set `DATABASE_URL=postgresql+psycopg://…` (`psycopg[binary]` is already in `requirements.txt`). No code changes; SQLAlchemy handles the dialect. Do this before multi-user rollout (~45 people submitting at end of day). **Azure Database for PostgreSQL – Flexible Server** is the managed option: create it in the same resource group as the App Service, then set `DATABASE_URL` to `postgresql+psycopg://<user>:<password>@<server-name>.postgres.database.azure.com:5432/<db-name>?sslmode=require` (Azure Postgres requires TLS — `sslmode=require` is not optional).
+2. **Real auth — done for password mode.** `AUTH_MODE=password` gives every employee their own email/password (self-signup against a roster row an admin already created), with rate-limited lockout after repeated failures. A real `SECRET_KEY` env var is required outside `dev` mode — the app refuses to boot without one. `AUTH_MODE=entra` (MSAL OAuth mapping the tenant email → `Employee.email`) remains the longer-term target in [app/routes/auth.py](app/routes/auth.py) if/when the org standardizes on Entra ID — since hosting is already on Azure, that's a same-tenant swap later, nothing else in the app changes when it happens.
+3. **Hosting (Azure App Service, Linux, Python)** —
+   - Create the Web App (Linux, Python 3.9 runtime — matches this project's hard rule against `X | Y` union syntax) in the Azure Portal or via `az webapp up`.
+   - Set the **Startup Command** (Portal: Configuration → General settings → Startup Command, or `az webapp config set --resource-group <rg> --name <app> --startup-file "gunicorn -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 app.main:app"`) — `gunicorn` is already in `requirements.txt` for this. Python 3.9 needs an explicit startup command; App Service only auto-detects FastAPI without one on Python 3.14+.
+   - App Settings (Configuration → Application settings): `SECRET_KEY` (long random value), `AUTH_MODE=password`, `DATABASE_URL` (above), `AVATAR_UPLOAD_DIR=/home/data/avatars`.
+   - **Profile photos**: `/home` is the one part of an App Service Linux instance that persists across restarts *and* redeploys (everything else, including the deployed code tree itself, gets replaced on every deploy) — see `app/routes/employee.py`'s `AVATAR_DIR`/`AVATAR_UPLOAD_DIR`. Setting `AVATAR_UPLOAD_DIR=/home/data/avatars` (any path under `/home`) is enough; the app creates the directory itself at startup and serves it at the same `/static/uploads/avatars/…` URL as before via a dedicated mount in `app/main.py` — no template changes, no separate volume/storage account to provision. Leaving the env var unset falls back to the original in-repo path (fine for local dev, not for App Service).
+   - `/healthz` is already wired up — point App Service's Health check (Portal → Monitoring → Health check) at it.
+   - Custom domain: add it under Custom domains, then add the CNAME/TXT records at the DNS provider; bind a free App Service Managed Certificate once the domain's verified (usually well under an hour).
+   - Run the importer once against the final copies of the three legacy files, then freeze the spreadsheets read-only.
+4. **Cutover checklist** — verify 168/168 on the production import; fix the two roster items flagged in the import report (part-timer targets); replace any remaining test employee data with the real team; assign roles (Super Admin for whoever needs org-wide visibility, department-scoped Admin for team leads — Roster → Edit → Role, or the bulk-upload Role column); announce; spreadsheets become read-only archives.
+
+<sub>The repo's [Procfile](Procfile) is left in place from an earlier Railway-hosting plan — harmless (Azure App Service doesn't read it), and still useful if a Procfile-respecting host is ever used instead. The Startup Command above is what Azure actually uses.</sub>
 
 ## Troubleshooting
 

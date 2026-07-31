@@ -2,7 +2,10 @@
 {% set active_nav = 'lists' %}
 {% block title %}Lists · MK Timekeeping{% endblock %}
 {% block content %}
-<h1>Dropdown lists</h1>
+<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
+  <h1 style="margin-bottom:0">Dropdown lists</h1>
+  <a class="btn secondary small" href="/admin/lists/bulk-upload">Bulk upload</a>
+</div>
 <p class="muted small">Free text is not allowed on entries — these lists are the only values.
 Deactivating hides a value from new entries without breaking old rows.</p>
 <div class="cols">

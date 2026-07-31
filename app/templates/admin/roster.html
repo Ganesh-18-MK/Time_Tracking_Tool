@@ -39,7 +39,8 @@
           {% for d in e.work_day_set|sort %}{{ names[d] }}{% if not loop.last %} {% endif %}{% endfor %}</td>
         <td>{{ e.start_date.isoformat() if e.start_date else '—' }}</td>
         <td class="small">
-          {% if e.is_admin %}<span class="badge b-leave">admin</span>{% endif %}
+          {% if e.is_super_admin %}<span class="badge b-leave">super admin</span>
+          {% elif e.is_admin %}<span class="badge b-leave">admin (dept)</span>{% endif %}
           {% if not e.tracked %}<span class="badge b-holiday">untracked</span>{% endif %}
           {% if not e.active %}<span class="badge b-missing">gone</span>{% endif %}
           {% if e.active and not e.password_hash %}<span class="badge b-missing" title="hasn't run /signup yet">no login</span>{% endif %}
@@ -63,6 +64,14 @@
     <div><label>Target hours/day</label><input name="target_hours" value="8" style="width:70px"></div>
     <div><label>Start date</label><input type="date" name="start_date"></div>
     <div><label>Date of birth</label><input type="date" name="dob"></div>
+    <div>
+      <label>Role</label>
+      <select name="role">
+        <option value="employee" selected>Employee</option>
+        <option value="admin">Admin (own department)</option>
+        <option value="super_admin">Super Admin (all departments)</option>
+      </select>
+    </div>
     <div>
       <label>Work days</label>
       <div class="small">
