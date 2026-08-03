@@ -9,6 +9,7 @@ from markupsafe import Markup
 from sqlalchemy import func, select
 
 from app import models as m
+from app.auth import led_by
 from app.util import (
     STATUS_LABELS,
     STATUS_NAMES,
@@ -88,6 +89,20 @@ def _admin_nav_badges(db, user) -> dict:
     it would count pending leave they have no way to act on. Support
     Inbox is super-admin-only and isn't even in their nav, so its count
     is skipped for them entirely."""
+    def _pending_overtime_count(employee_ids=None) -> int:
+        # employee_ids=None -> org-wide (super admin, unscoped like
+        # app/auth.py led_by() itself); otherwise only requests from that
+        # admin's direct reports (Team Lead scoping is per-person via
+        # reports_to_id, not by department — see led_by()'s docstring).
+        q = select(func.count()).select_from(m.OvertimeApproval).where(
+            m.OvertimeApproval.status == m.OT_REQUESTED
+        )
+        if employee_ids is not None:
+            if not employee_ids:
+                return 0
+            q = q.where(m.OvertimeApproval.employee_id.in_(employee_ids))
+        return db.execute(q).scalar() or 0
+
     def _pending_suggestions_count(dept=None) -> int:
         # dept=None -> org-wide (super admin); otherwise scoped to whichever
         # department the SUBMITTER (not the suggestion itself, which has no
@@ -122,6 +137,7 @@ def _admin_nav_badges(db, user) -> dict:
         return {
             "pending_leave": pending_leave, "open_support": 0,
             "pending_suggestions": _pending_suggestions_count(dept),
+            "pending_overtime": _pending_overtime_count(led_by(user, db)),
         }
     pending_leave = db.execute(
         select(func.count()).select_from(m.LeaveRecord).where(
@@ -136,6 +152,7 @@ def _admin_nav_badges(db, user) -> dict:
     return {
         "pending_leave": pending_leave, "open_support": open_support,
         "pending_suggestions": _pending_suggestions_count(None),
+        "pending_overtime": _pending_overtime_count(None),
     }
 
 

@@ -498,6 +498,67 @@ class SupportQuery(Base):
     employee = relationship("Employee")
 
 
+OT_REQUESTED = "requested"
+OT_APPROVED = "approved"
+OT_REJECTED = "rejected"
+
+
+class OvertimeApproval(Base):
+    """Pre-approval for working overtime on a specific date range (Ganesh's
+    manager, 2026-08-03) — same submit -> lead/admin queue -> lead/admin acts
+    shape as LeaveRecord and SupportQuery above, deliberately, so it needs no
+    new patterns anywhere else in the app.
+
+    Three ways a row here ends up 'approved':
+      1. Employee requests a range themselves (status starts 'requested',
+         awaits review) — app/routes/employee.py's /overtime routes.
+      2. A Lead/Admin grants a range proactively, before it's worked (e.g. a
+         known busy season) — created already 'approved', no employee
+         request needed.
+      3. A Lead/Admin grants a range retroactively, after it's worked (e.g.
+         reviewing at month-end who should get paid overtime) — same as #2,
+         start/end are just in the past. Nothing here cares which direction
+         time runs; a date range is a date range.
+    In cases #2/#3 reviewed_by/reviewed_at are set immediately, same as
+    LeaveRecord's admin-direct-entry (leave_add) does.
+
+    Deliberately does NOT block or gate anything: employees can log time and
+    use Punch In/Out regardless of approval status (Ganesh: "I still want to
+    use overtime, even unapproved, to compensate for missed time" — approval
+    here is a payroll-visibility label, not a permission system baked into
+    engine.py/validation.py). See app/reports.py's attendance_report() for
+    where 'approved overtime' is surfaced next to raw overtime.
+
+    Who can act on a given employee's requests: whoever that employee's
+    Employee.reports_to is, IF that person is_admin (see app/auth.py
+    led_by()) — same per-person "Team Lead" concept reports_to_id already
+    carries, now with actual teeth for this one purpose. An employee with no
+    admin reports_to (nobody assigned, or their reports_to isn't an admin)
+    simply doesn't show up in any Lead's led_by() scope, so only Super
+    Admins (unscoped, see everything) can act on it — the "unassigned
+    employees route to Super Admin" fallback the manager asked for falls out
+    of the existing scoping pattern for free, no special-casing needed."""
+
+    __tablename__ = "overtime_approvals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True)
+    start_date: Mapped[dt.date] = mapped_column(Date, index=True)
+    end_date: Mapped[dt.date] = mapped_column(Date)  # inclusive; == start_date for one day
+    note: Mapped[str] = mapped_column(Text, default="")  # employee's reason, or lead's note
+    requested_by: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    status: Mapped[str] = mapped_column(String(20), default=OT_REQUESTED)
+    reviewed_by: Mapped[str] = mapped_column(String(120), default="")
+    reviewed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    review_note: Mapped[str] = mapped_column(Text, default="")
+
+    employee = relationship("Employee")
+
+    def covers(self, d: dt.date) -> bool:
+        return self.start_date <= d <= self.end_date
+
+
 class Holiday(Base):
     __tablename__ = "holidays"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

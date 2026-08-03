@@ -68,6 +68,34 @@ def admin_department_scope(admin: m.Employee) -> Optional[str]:
     return None if admin.is_super_admin else (admin.department or "—")
 
 
+def led_by(admin: m.Employee, db: Session) -> Optional[set]:
+    """Same None-means-unscoped convention as admin_department_scope, but
+    for Overtime Requests — scoped per-person via Employee.reports_to_id
+    (Ganesh's manager, 2026-08-03: a Team Lead approves for specific people,
+    not a whole department) instead of by department string.
+
+    None => no restriction (Super Admin sees/can act on every request,
+    including ones from employees with no admin reports_to assigned —
+    that's the "unassigned employees route to Super Admin" fallback the
+    manager asked for: it isn't special-cased anywhere, it just falls out
+    of Super Admin already being unscoped here exactly like it is for
+    admin_department_scope).
+
+    Otherwise, the set of employee_ids who report directly to this admin —
+    a department-scoped admin who happens to be someone's Team Lead only
+    sees/acts on that specific person's requests, not their whole
+    department (Team Lead and "department admin" are independent axes:
+    being a dept-scoped admin doesn't make you every department member's
+    lead, only an explicit reports_to assignment does)."""
+    if admin.is_super_admin:
+        return None
+    return {
+        e.id for e in db.execute(
+            select(m.Employee).where(m.Employee.reports_to_id == admin.id)
+        ).scalars()
+    }
+
+
 def login_choices(db: Session):
     emps = list(
         db.execute(

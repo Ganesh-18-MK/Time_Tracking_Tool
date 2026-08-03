@@ -116,6 +116,35 @@ def _punch_minutes_by_day(db: Session, start: dt.date, end: dt.date, employee_id
     return out
 
 
+def _approved_overtime_ranges(db: Session, start: dt.date, end: dt.date,
+                               employee_ids: List[int]) -> Dict[int, list]:
+    """employee_id -> list of (start_date, end_date) OT_APPROVED ranges that
+    overlap [start, end] at all (a range doesn't need to be fully inside the
+    report window — a day-by-day check below only cares whether each
+    specific day falls in one of these). Feeds the Attendance Report's
+    "Approved overtime" figure (Ganesh's manager, 2026-08-03) — purely a
+    payroll-visibility label, doesn't change the raw Overtime figure above,
+    strikes, or compensation links, which all keep working off actual
+    logged/punched hours regardless of approval status."""
+    if not employee_ids:
+        return {}
+    out: Dict[int, list] = {}
+    for row in db.execute(
+        select(m.OvertimeApproval).where(
+            m.OvertimeApproval.employee_id.in_(employee_ids),
+            m.OvertimeApproval.status == m.OT_APPROVED,
+            m.OvertimeApproval.start_date <= end,
+            m.OvertimeApproval.end_date >= start,
+        )
+    ).scalars():
+        out.setdefault(row.employee_id, []).append((row.start_date, row.end_date))
+    return out
+
+
+def _date_is_approved(ranges: list, d: dt.date) -> bool:
+    return any(s <= d <= e for s, e in ranges)
+
+
 def _scope_employees(db: Session, department: Optional[str], employee_id: Optional[int]) -> List[m.Employee]:
     emps = employees_list(db, department)
     if employee_id:
@@ -133,7 +162,15 @@ def attendance_report(db: Session, start: dt.date, end: dt.date,
     sessions vs. each day's already-computed target (DayStatus.target_minutes,
     which already includes leave and break-allowance adjustments) — see
     app/util.py overtime_minutes. Purely additive to the report; doesn't
-    change status/strike counting at all."""
+    change status/strike counting at all.
+
+    "approved_overtime" / "approved_overtime_minutes" is the same overtime
+    figure, but only counting days that fall inside one of that employee's
+    OT_APPROVED OvertimeApproval date ranges (Ganesh's manager, 2026-08-03)
+    — a whole day's overtime counts as approved or it doesn't; approval is
+    date-range granularity, not minute granularity. This is shown alongside
+    the raw overtime figure, never in place of it — unapproved overtime
+    still shows up in "overtime", it's just not counted as payable here."""
     _ensure_fresh(db, start, end)
     cfg = engine.get_config(db)
     comp_erases = cfg.get("comp_erases_strike") == "1"
@@ -141,15 +178,21 @@ def attendance_report(db: Session, start: dt.date, end: dt.date,
     emp_ids = [e.id for e in emps]
     by_emp = _rows_by_employee(db, start, end, emp_ids)
     punch_by_day = _punch_minutes_by_day(db, start, end, emp_ids)
+    approved_ranges = _approved_overtime_ranges(db, start, end, emp_ids)
 
     if employee_id and len(emps) == 1:
         emp = emps[0]
         rows = sorted(by_emp.get(emp.id, []), key=lambda r: r.date)
+        emp_ranges = approved_ranges.get(emp.id, [])
         daily = [
             {
                 "date": r.date,
                 "status": r.effective_status(comp_erases),
                 "overtime": overtime_minutes(punch_by_day.get((emp.id, r.date), 0), r.target_minutes),
+                "approved_overtime": (
+                    overtime_minutes(punch_by_day.get((emp.id, r.date), 0), r.target_minutes)
+                    if _date_is_approved(emp_ranges, r.date) else 0
+                ),
             }
             for r in rows
         ]
@@ -158,17 +201,22 @@ def attendance_report(db: Session, start: dt.date, end: dt.date,
     summary = []
     for e in emps:
         counts = _empty_counts()
-        emp_overtime = 0
+        emp_overtime = emp_approved_overtime = 0
+        emp_ranges = approved_ranges.get(e.id, [])
         for r in by_emp.get(e.id, []):
             eff = r.effective_status(comp_erases)
             if eff in counts:
                 counts[eff] += 1
-            emp_overtime += overtime_minutes(punch_by_day.get((e.id, r.date), 0), r.target_minutes)
+            day_overtime = overtime_minutes(punch_by_day.get((e.id, r.date), 0), r.target_minutes)
+            emp_overtime += day_overtime
+            if _date_is_approved(emp_ranges, r.date):
+                emp_approved_overtime += day_overtime
         expected = counts[COMPLETE] + counts[PARTIAL] + counts[MISSING]
         pct = round(100 * counts[COMPLETE] / expected, 1) if expected else None
         summary.append({
             "employee": e, "department": e.department or "—", "counts": counts,
             "attendance_pct": pct, "overtime_minutes": emp_overtime,
+            "approved_overtime_minutes": emp_approved_overtime,
         })
     return {"mode": "summary", "rows": summary}
 

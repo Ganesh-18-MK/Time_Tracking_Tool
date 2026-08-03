@@ -49,16 +49,17 @@
 <div class="card">
   <h2 style="margin-top:0">{{ result.employee.name }} — daily attendance</h2>
   <table>
-    <thead><tr><th>Date</th><th>Status</th><th>Overtime</th></tr></thead>
+    <thead><tr><th>Date</th><th>Status</th><th>Overtime</th><th>Approved</th></tr></thead>
     <tbody>
       {% for r in result.rows %}
       <tr>
         <td>{{ r.date|mdy }}</td>
         <td>{{ STATUS_NAMES.get(r.status, r.status) }}</td>
         <td>{{ r.overtime|hm if r.overtime else '—' }}</td>
+        <td>{{ r.approved_overtime|hm if r.approved_overtime else '—' }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="3" class="muted">No days in range.</td></tr>
+      <tr><td colspan="4" class="muted">No days in range.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -71,7 +72,7 @@
   <table id="att-summary-table">
     <thead>
       <tr><th>Name</th><th>Department</th><th>Complete</th><th>Partial</th><th>Missing</th>
-        <th>Leave</th><th>Holiday</th><th>Weekend</th><th>Attendance %</th><th>Overtime</th></tr>
+        <th>Leave</th><th>Holiday</th><th>Weekend</th><th>Attendance %</th><th>Overtime</th><th>Approved</th></tr>
     </thead>
     <tbody>
       {% for r in result.rows %}
@@ -86,9 +87,10 @@
         <td>{{ r.counts.weekend }}</td>
         <td>{{ r.attendance_pct ~ '%' if r.attendance_pct is not none else '—' }}</td>
         <td>{{ r.overtime_minutes|hm if r.overtime_minutes else '—' }}</td>
+        <td>{{ r.approved_overtime_minutes|hm if r.approved_overtime_minutes else '—' }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="10" class="muted">No tracked employees match this filter.</td></tr>
+      <tr><td colspan="11" class="muted">No tracked employees match this filter.</td></tr>
       {% endfor %}
     </tbody>
   </table>

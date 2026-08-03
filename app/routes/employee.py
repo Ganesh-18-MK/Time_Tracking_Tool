@@ -752,6 +752,81 @@ def cancel_leave_request(
 
 
 # --------------------------------------------------------------------------
+# Overtime: self-service pre-approval request (Ganesh's manager, 2026-08-03
+# — exact same submit -> lead/admin queue -> lead/admin acts shape as Leave
+# above; see app/routes/admin.py for the approval queue and app/auth.py's
+# led_by() for who it's routed to).
+# --------------------------------------------------------------------------
+@router.get("/overtime")
+def my_overtime(
+    request: Request,
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    records = list(
+        db.execute(
+            select(m.OvertimeApproval)
+            .where(m.OvertimeApproval.employee_id == user.id)
+            .order_by(m.OvertimeApproval.start_date.desc())
+        ).scalars()
+    )
+    return render(request, "overtime.html", {"user": user, "records": records})
+
+
+@router.post("/overtime/request")
+def request_overtime(
+    request: Request,
+    start_date: str = Form(...),
+    end_date: str = Form(""),
+    note: str = Form(""),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        start = parse_date_field(start_date, "Start date")
+        end = parse_date_field(end_date, "End date") if end_date else start
+    except FormError as e:
+        flash(request, e.message, "err")
+        return RedirectResponse("/overtime", status_code=303)
+    if end < start:
+        flash(request, "End date is before start date.", "err")
+        return RedirectResponse("/overtime", status_code=303)
+    ot = m.OvertimeApproval(
+        employee_id=user.id, start_date=start, end_date=end,
+        note=note.strip(), requested_by=user.name,
+        status=m.OT_REQUESTED,  # awaits lead/admin review — doesn't block
+        # logging time or Punch In/Out either way, see model docstring
+    )
+    db.add(ot)
+    db.commit()
+    audit(db, user.name, "overtime_requested", "OvertimeApproval", ot.id,
+          {"range": f"{start}..{end}"})
+    flash(request, "Overtime request submitted — your lead will review it.", "ok")
+    return RedirectResponse("/overtime", status_code=303)
+
+
+@router.post("/overtime/{ot_id}/cancel")
+def cancel_overtime_request(
+    ot_id: int,
+    request: Request,
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Employees may withdraw their own still-pending request. Anything
+    already approved/rejected needs a lead/admin (it's already been acted
+    on) — same rule as Leave's cancel_leave_request above."""
+    ot = db.get(m.OvertimeApproval, ot_id)
+    if ot is None or ot.employee_id != user.id or ot.status != m.OT_REQUESTED:
+        flash(request, "That request can no longer be withdrawn.", "err")
+        return RedirectResponse("/overtime", status_code=303)
+    db.delete(ot)
+    db.commit()
+    audit(db, user.name, "overtime_request_withdrawn", "OvertimeApproval", ot_id, {})
+    flash(request, "Request withdrawn.", "ok")
+    return RedirectResponse("/overtime", status_code=303)
+
+
+# --------------------------------------------------------------------------
 # Support: employee submits a question, admin sees it in /admin/support
 # (same submit -> admin-queue -> admin-acts shape as leave requests above).
 # --------------------------------------------------------------------------

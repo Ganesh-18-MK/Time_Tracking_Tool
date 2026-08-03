@@ -106,18 +106,20 @@ def reports_attendance_xlsx(
     ws = wb.active
     if result["mode"] == "daily":
         ws.title = "Daily detail"
-        _header(ws, ["Date", "Status", "Overtime (min)"])
+        _header(ws, ["Date", "Status", "Overtime (min)", "Approved overtime (min)"])
         for r in result["rows"]:
-            ws.append([fmt_date(r["date"]), reports.STATUS_LABELS.get(r["status"], r["status"]), r["overtime"]])
+            ws.append([fmt_date(r["date"]), reports.STATUS_LABELS.get(r["status"], r["status"]),
+                       r["overtime"], r["approved_overtime"]])
     else:
         ws.title = "Summary"
         _header(ws, ["Name", "Department"] + [reports.STATUS_LABELS[s] for s in reports.STATUS_ORDER]
-                + ["Attendance %", "Overtime (min)"])
+                + ["Attendance %", "Overtime (min)", "Approved overtime (min)"])
         for r in result["rows"]:
             ws.append(
                 [r["employee"].name, r["department"]]
                 + [r["counts"][s] for s in reports.STATUS_ORDER]
-                + [r["attendance_pct"] if r["attendance_pct"] is not None else "", r["overtime_minutes"]]
+                + [r["attendance_pct"] if r["attendance_pct"] is not None else "",
+                   r["overtime_minutes"], r["approved_overtime_minutes"]]
             )
     return xlsx_response(wb, f"attendance_{start_date}_{end_date}.xlsx")
 

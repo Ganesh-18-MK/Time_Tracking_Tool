@@ -12,7 +12,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app import bulk_upload, compensation, engine, leave_bulk_upload, lists_bulk_upload, models as m
-from app.auth import Forbidden, admin_department_scope, require_admin, require_super_admin
+from app.auth import Forbidden, admin_department_scope, led_by, require_admin, require_super_admin
 from app.db import get_db
 from app.templating import flash, render
 from app.util import (
@@ -536,8 +536,12 @@ def roster(
         dept_counts[key] = dept_counts.get(key, 0) + 1
     all_depts = sorted(dept_counts)
     # dropdown always offers active people to report to, regardless of the
-    # active/all toggle above (which only controls the table listing)
-    lead_choices = [e for e in emps if e.active]
+    # active/all toggle above (which only controls the table listing).
+    # is_admin-only (Ganesh's manager, 2026-08-03): a "Reports to" pick is
+    # now also that employee's Team Lead for Overtime Requests (see
+    # app/auth.py led_by()) — someone with no admin access couldn't act on
+    # a request routed to them anyway, so they're not offered as a choice.
+    lead_choices = [e for e in emps if e.active and e.is_admin]
 
     return render(
         request, "admin/roster.html",
@@ -587,10 +591,18 @@ def _emp_from_form(
     emp.tracked = bool(tracked)
     emp.is_admin, emp.is_super_admin = role_to_flags(role)
     # blank/"0" -> no reporting lead set; never allow someone to report to
-    # themselves (silently ignored rather than a hard error — a stray
-    # self-selection shouldn't block saving the rest of the form).
+    # themselves, or to someone who isn't an admin (silently ignored rather
+    # than a hard error — a stray/crafted selection shouldn't block saving
+    # the rest of the form). The is_admin check guards the same invariant
+    # the roster/roster_edit dropdowns already enforce by only listing
+    # admins as choices (Ganesh's manager, 2026-08-03: "Reports to" is now
+    # also Team Lead authority for Overtime Requests, see app/auth.py
+    # led_by() — a non-admin could never act on anything routed to them).
     rid = int(reports_to_id) if str(reports_to_id).strip().isdigit() else None
-    emp.reports_to_id = rid if rid and rid != emp.id else None
+    if rid and rid != emp.id:
+        lead = db.get(m.Employee, rid)
+        rid = rid if lead is not None and lead.is_admin else None
+    emp.reports_to_id = rid or None
 
 
 @router.post("/roster/add")
@@ -660,10 +672,11 @@ def roster_edit_page(
     emp = db.get(m.Employee, emp_id)
     if emp is None:
         return RedirectResponse("/admin/roster", status_code=303)
+    # is_admin-only — see the matching comment in roster_page's lead_choices.
     lead_choices = list(
         db.execute(
             select(m.Employee)
-            .where(m.Employee.active.is_(True), m.Employee.id != emp_id)
+            .where(m.Employee.active.is_(True), m.Employee.is_admin.is_(True), m.Employee.id != emp_id)
             .order_by(m.Employee.name)
         ).scalars()
     )
@@ -1375,6 +1388,177 @@ def leave_delete(
         if emp is not None:
             engine.recompute_employee(db, emp, lv.start_date, min(lv.end_date, dt.date.today()))
     return RedirectResponse("/admin/leave", status_code=303)
+
+
+# --------------------------------------------------------------------------
+# Overtime Requests (Ganesh's manager, 2026-08-03) — same submit -> queue ->
+# act shape as Leave Requests just above, but scoped per-person via
+# app.auth.led_by() (Team Lead = whoever an employee's reports_to is, IF
+# that person is_admin) instead of by department. Approving/rejecting
+# doesn't touch engine.py/DayStatus/strikes at all — see OvertimeApproval's
+# model docstring — so nothing here needs an engine.recompute_employee call
+# the way Leave's approve/reject/add/delete do above.
+# --------------------------------------------------------------------------
+@router.get("/overtime")
+def overtime_page(
+    request: Request,
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    scope = led_by(admin, db)  # None => Super Admin, sees/can act on everyone
+    emps = list(
+        db.execute(
+            select(m.Employee).where(m.Employee.active.is_(True)).order_by(m.Employee.name)
+        ).scalars()
+    )
+    if scope is not None:
+        emps = [e for e in emps if e.id in scope]
+
+    pending = list(
+        db.execute(
+            select(m.OvertimeApproval)
+            .where(m.OvertimeApproval.status == m.OT_REQUESTED)
+            .order_by(m.OvertimeApproval.created_at)
+        ).scalars()
+    )
+    approved_q = (
+        select(m.OvertimeApproval)
+        .where(m.OvertimeApproval.status == m.OT_APPROVED)
+        .order_by(m.OvertimeApproval.created_at.desc())
+    )
+    if scope is None:
+        approved_q = approved_q.limit(100)
+    approved = list(db.execute(approved_q).scalars())
+    if scope is not None:
+        # filter *before* trimming to 100 — same reasoning as Leave's
+        # leave_page above: a small team's older approvals could otherwise
+        # get pushed out by other leads' more recent rows first.
+        pending = [ot for ot in pending if ot.employee_id in scope]
+        approved = [ot for ot in approved if ot.employee_id in scope][:100]
+
+    return render(
+        request, "admin/overtime.html",
+        {"user": admin, "emps": emps, "pending": pending, "approved": approved},
+        db=db,
+    )
+
+
+def _ot_forbidden_unless_scoped(admin: m.Employee, ot: m.OvertimeApproval, db: Session) -> None:
+    scope = led_by(admin, db)
+    if scope is not None and ot.employee_id not in scope:
+        # Not just a UI filter — block a Lead from approving/rejecting
+        # overtime for someone who isn't their direct report even if they
+        # craft the POST directly, same defense-in-depth as Leave's checks.
+        raise Forbidden()
+
+
+@router.post("/overtime/{ot_id}/approve")
+def overtime_approve(
+    ot_id: int,
+    request: Request,
+    review_note: str = Form(""),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    ot = db.get(m.OvertimeApproval, ot_id)
+    if ot is None:
+        return RedirectResponse("/admin/overtime", status_code=303)
+    _ot_forbidden_unless_scoped(admin, ot, db)
+    emp = db.get(m.Employee, ot.employee_id)
+    ot.status = m.OT_APPROVED
+    ot.reviewed_by = admin.name
+    ot.reviewed_at = dt.datetime.utcnow()
+    ot.review_note = review_note.strip()
+    db.commit()
+    audit(db, admin.name, "overtime_approve", "OvertimeApproval", ot.id,
+          {"employee": emp.name if emp else ot.employee_id, "range": f"{ot.start_date}..{ot.end_date}"})
+    flash(request, f"Approved overtime for {emp.name if emp else ot.employee_id}.", "ok")
+    return RedirectResponse("/admin/overtime", status_code=303)
+
+
+@router.post("/overtime/{ot_id}/reject")
+def overtime_reject(
+    ot_id: int,
+    request: Request,
+    review_note: str = Form(""),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    ot = db.get(m.OvertimeApproval, ot_id)
+    if ot is None:
+        return RedirectResponse("/admin/overtime", status_code=303)
+    _ot_forbidden_unless_scoped(admin, ot, db)
+    emp = db.get(m.Employee, ot.employee_id)
+    ot.status = m.OT_REJECTED
+    ot.reviewed_by = admin.name
+    ot.reviewed_at = dt.datetime.utcnow()
+    ot.review_note = review_note.strip()
+    db.commit()
+    audit(db, admin.name, "overtime_reject", "OvertimeApproval", ot.id,
+          {"employee": emp.name if emp else ot.employee_id, "reason": review_note.strip()})
+    flash(request, f"Rejected overtime request for {emp.name if emp else ot.employee_id}.", "ok")
+    return RedirectResponse("/admin/overtime", status_code=303)
+
+
+@router.post("/overtime/grant")
+def overtime_grant(
+    request: Request,
+    employee_id: int = Form(...),
+    start_date: str = Form(...),
+    end_date: str = Form(""),
+    note: str = Form(""),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """A Lead/Admin approving overtime *without* a preceding employee
+    request — covers both granting it proactively ahead of a known busy
+    period, and reviewing after the fact (start/end can be in the past;
+    nothing here cares which direction time runs, see model docstring)."""
+    emp = db.get(m.Employee, employee_id)
+    if emp is None:
+        return RedirectResponse("/admin/overtime", status_code=303)
+    scope = led_by(admin, db)
+    if scope is not None and employee_id not in scope:
+        raise Forbidden()
+    try:
+        start = parse_date_field(start_date, "Start date")
+        end = parse_date_field(end_date, "End date") if end_date else start
+    except FormError as e:
+        flash(request, e.message, "err")
+        return RedirectResponse("/admin/overtime", status_code=303)
+    if end < start:
+        flash(request, "End date is before start date.", "err")
+        return RedirectResponse("/admin/overtime", status_code=303)
+    ot = m.OvertimeApproval(
+        employee_id=employee_id, start_date=start, end_date=end, note=note.strip(),
+        requested_by=admin.name,
+        status=m.OT_APPROVED,  # lead/admin direct-entry is already-approved by definition
+        reviewed_by=admin.name, reviewed_at=dt.datetime.utcnow(),
+    )
+    db.add(ot)
+    db.commit()
+    audit(db, admin.name, "overtime_grant", "OvertimeApproval", ot.id,
+          {"employee": emp.name, "range": f"{start}..{end}"})
+    flash(request, f"Overtime approved for {emp.name}.", "ok")
+    return RedirectResponse("/admin/overtime", status_code=303)
+
+
+@router.post("/overtime/{ot_id}/delete")
+def overtime_delete(
+    ot_id: int,
+    request: Request,
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    ot = db.get(m.OvertimeApproval, ot_id)
+    if ot is not None:
+        _ot_forbidden_unless_scoped(admin, ot, db)
+        emp = db.get(m.Employee, ot.employee_id)
+        db.delete(ot)
+        db.commit()
+        audit(db, admin.name, "overtime_delete", "OvertimeApproval", ot_id,
+              {"employee": emp.name if emp else ot.employee_id})
+    return RedirectResponse("/admin/overtime", status_code=303)
 
 
 # --------------------------------------------------------------------------

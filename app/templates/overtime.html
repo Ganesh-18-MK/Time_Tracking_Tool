@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% set active_nav = 'overtime' %}
+{% block title %}Overtime · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Overtime</h1>
+
+<div class="card">
+  <h2>Request pre-approval</h2>
+  <form method="post" action="/overtime/request" class="formrow">
+    <div><label>From</label><input type="date" name="start_date" required></div>
+    <div><label>To (blank = one day)</label><input type="date" name="end_date"></div>
+    <div style="flex:1"><label>Note (why you'll need the extra hours)</label><input name="note" style="width:100%"></div>
+    <div><button>Submit request</button></div>
+  </form>
+  <p class="small muted">Your Team Lead reviews every request (or a Super Admin, if you don't have a lead assigned yet).
+    You can still log time and use Punch In/Out either way — this just tells payroll which extra hours were approved ahead of time.</p>
+</div>
+
+<div class="card">
+  <h2>Your requests</h2>
+  <table>
+    <thead><tr><th>Dates</th><th>Note</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+      {% for ot in records %}
+      <tr>
+        <td class="nowrap">{{ ot.start_date|mdy }}{% if ot.end_date != ot.start_date %} → {{ ot.end_date|mdy }}{% endif %}</td>
+        <td class="small">{{ ot.note }}
+          {% if ot.status != 'requested' and ot.review_note %}<div class="muted">Lead: {{ ot.review_note }}</div>{% endif %}
+        </td>
+        <td>
+          {% if ot.status == 'approved' %}<span class="badge b-complete">approved</span>
+          {% elif ot.status == 'rejected' %}<span class="badge b-missing">rejected</span>
+          {% else %}<span class="badge b-partial">pending</span>{% endif %}
+        </td>
+        <td>
+          {% if ot.status == 'requested' %}
+          <form method="post" action="/overtime/{{ ot.id }}/cancel" class="inline"
+                onsubmit="return confirm('Withdraw this request?')">
+            <button class="small secondary">Withdraw</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">No overtime requests yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

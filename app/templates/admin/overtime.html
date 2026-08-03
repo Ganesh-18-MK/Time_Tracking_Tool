@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% set active_nav = 'admin_overtime' %}
+{% block title %}Overtime Requests · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Overtime Requests</h1>
+<p class="small muted" style="margin-top:-6px">Approving doesn't block anything — employees can log time and use
+  Punch In/Out either way. This is purely a payroll label: Reports → Attendance shows both the total overtime
+  worked and how much of it was pre-approved.</p>
+
+<div class="card">
+  <h2>Grant overtime directly</h2>
+  <p class="small muted" style="margin:-4px 0 10px">For approving ahead of a known busy period, or reviewing after
+    the fact — no employee request needed either way. Start/end can be in the past.</p>
+  <form method="post" action="/admin/overtime/grant" class="formrow">
+    <div>
+      <label>Employee</label>
+      <select name="employee_id" required>
+        <option value="">— choose —</option>
+        {% for e in emps %}<option value="{{ e.id }}">{{ e.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>From</label><input type="date" name="start_date" required></div>
+    <div><label>To (blank = one day)</label><input type="date" name="end_date"></div>
+    <div style="flex:1"><label>Note</label><input name="note" style="width:100%"></div>
+    <div><button>Approve overtime</button></div>
+  </form>
+  {% if not emps %}<p class="muted small" style="margin:8px 0 0">No one currently reports to you — ask a Super Admin to set you as someone's Team Lead via Roster.</p>{% endif %}
+</div>
+
+{% if pending %}
+<div class="card">
+  <h2>Pending requests ({{ pending|length }})</h2>
+  <table>
+    <thead><tr><th>Employee</th><th>Dates</th><th>Note</th><th>Decision</th></tr></thead>
+    <tbody>
+      {% for ot in pending %}
+      <tr>
+        <td><a href="/admin/person/{{ ot.employee_id }}">{{ ot.employee.name }}</a></td>
+        <td class="nowrap">{{ ot.start_date|mdy }}{% if ot.end_date != ot.start_date %} → {{ ot.end_date|mdy }}{% endif %}</td>
+        <td class="small">{{ ot.note }}</td>
+        <td class="nowrap">
+          <form method="post" action="/admin/overtime/{{ ot.id }}/approve" class="inline">
+            <button class="small">Approve</button>
+          </form>
+          <form method="post" action="/admin/overtime/{{ ot.id }}/reject" class="inline">
+            <input type="hidden" name="review_note" value="">
+            <button type="button" class="small secondary"
+              onclick="const n=prompt('Reason for rejecting (optional):'); if(n!==null){this.previousElementSibling.value=n; this.form.submit();}">Reject</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Approved overtime</h2>
+  <div class="searchbar">
+    <input type="search" data-filter-table="overtime-approved-table" placeholder="Search approved overtime…">
+  </div>
+  <table id="overtime-approved-table">
+    <thead><tr><th>Employee</th><th>Dates</th><th>Note</th><th>By</th><th></th></tr></thead>
+    <tbody>
+      {% for ot in approved %}
+      <tr>
+        <td><a href="/admin/person/{{ ot.employee_id }}">{{ ot.employee.name }}</a></td>
+        <td class="nowrap">{{ ot.start_date|mdy }}{% if ot.end_date != ot.start_date %} → {{ ot.end_date|mdy }}{% endif %}</td>
+        <td class="small">{{ ot.note }}{% if ot.requested_by and ot.requested_by != ot.reviewed_by %} <span class="muted">(employee-requested)</span>{% endif %}</td>
+        <td class="small muted">{{ ot.reviewed_by }}</td>
+        <td><form method="post" action="/admin/overtime/{{ ot.id }}/delete" class="inline"
+          onsubmit="return confirm('Delete this overtime approval?')"><button class="small secondary">✕</button></form></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if not approved %}<p class="muted small" style="margin:8px 0 0">No approved overtime yet.</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Pending requests</h2>
+  <p class="small muted" style="margin:-4px 0 10px">Requests not yet approved or rejected — same list as
+  "Pending requests" above, searchable here. Use the Approve/Reject buttons above to act on one.</p>
+  <div class="searchbar">
+    <input type="search" data-filter-table="overtime-pending-table" placeholder="Search pending overtime…">
+  </div>
+  <table id="overtime-pending-table">
+    <thead><tr><th>Employee</th><th>Dates</th><th>Note</th></tr></thead>
+    <tbody>
+      {% for ot in pending %}
+      <tr>
+        <td><a href="/admin/person/{{ ot.employee_id }}">{{ ot.employee.name }}</a></td>
+        <td class="nowrap">{{ ot.start_date|mdy }}{% if ot.end_date != ot.start_date %} → {{ ot.end_date|mdy }}{% endif %}</td>
+        <td class="small">{{ ot.note }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if not pending %}<p class="muted small" style="margin:8px 0 0">No pending overtime requests.</p>{% endif %}
+</div>
+{% endblock %}
