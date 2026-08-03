@@ -38,7 +38,7 @@
         <td>{{ e.daily_target_minutes|hm }}</td>
         <td class="small">{% set names = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}
           {% for d in e.work_day_set|sort %}{{ names[d] }}{% if not loop.last %} {% endif %}{% endfor %}</td>
-        <td>{{ e.start_date.isoformat() if e.start_date else '—' }}</td>
+        <td>{{ e.start_date|mdy }}</td>
         <td class="small">
           {% if e.is_super_admin %}<span class="badge b-leave">super admin</span>
           {% elif e.is_admin %}<span class="badge b-leave">admin (dept)</span>{% endif %}

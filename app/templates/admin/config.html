@@ -43,7 +43,7 @@ use “Recompute month” on the dashboard to apply retroactively.</p>
     <table>
       {% for h in holidays %}
       <tr>
-        <td>{{ h.date.isoformat() }}</td><td>{{ h.name }}</td>
+        <td>{{ h.date|mdy }}</td><td>{{ h.name }}</td>
         <td class="right"><form method="post" action="/admin/holidays/{{ h.id }}/delete" class="inline">
           <button class="small secondary">✕</button></form></td>
       </tr>

@@ -28,7 +28,7 @@
     <tbody>
       {% for lv in records %}
       <tr>
-        <td class="nowrap">{{ lv.start_date.isoformat() }}{% if lv.end_date != lv.start_date %} → {{ lv.end_date.isoformat() }}{% endif %}</td>
+        <td class="nowrap">{{ lv.start_date|mdy }}{% if lv.end_date != lv.start_date %} → {{ lv.end_date|mdy }}{% endif %}</td>
         <td>{{ lv.type }}</td>
         <td>{{ 'full day' if lv.minutes_per_day is none else lv.minutes_per_day|hm }}</td>
         <td class="small">{{ lv.note }}

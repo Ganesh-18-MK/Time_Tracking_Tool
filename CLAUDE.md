@@ -17,6 +17,7 @@ rm tms.db && .venv/bin/python -m legacy.import_legacy    # rebuild DB from the 3
 - **The project directory name ends with a trailing space** — always quote absolute paths.
 - Python 3.9 (system). No `X | Y` unions in runtime annotations; use `Optional[...]`.
 - All durations/targets/variances are **integer minutes**; times-of-day are minutes since midnight. No floats, no timezones. Format via Jinja filters `hm`/`hm_signed`/`clock`.
+- Every human-read date/timestamp is **MM/DD/YYYY** (manager request, 2026-08-03) via the `mdy`/`mdy_dt` Jinja filters or `app/util.py`'s `fmt_date`/`fmt_datetime` — never a raw `.isoformat()`/`.strftime()` in a template or export. Exception: `<input type="date">` values, hidden form fields, and option/checkbox submit values stay ISO (`YYYY-MM-DD`) — that's the HTML date-input spec and what `parse_date_field`/`dt.date.fromisoformat` expect back, not something a human reads.
 - `DayStatus.source='imported'` rows are **frozen legacy fact** — never recompute, migrate, or "fix" them (raw sheet cell is in `imported_token`). Admins change history via overrides only.
 - `strike_exempt=True` rows (pre-policy days before 2026-04-15) must never count as strikes — the legacy sheets' own formulas excluded them. Changing this breaks `verify_strikes`.
 - Status precedence: override → compensation (`comp_erases_strike` config) → base. Implemented in `DayStatus.effective_status()` and `engine.strikes_in()` — change both or neither.

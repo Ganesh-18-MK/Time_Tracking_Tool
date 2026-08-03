@@ -22,7 +22,7 @@
       <tr>
         <td><a href="/admin/person/{{ r.employee_id }}">{{ r.employee.name }}</a></td>
         <td>{{ r.message }}</td>
-        <td class="small muted nowrap">{{ r.created_at.strftime('%d %b %H:%M') }}</td>
+        <td class="small muted nowrap">{{ r.created_at|mdy_dt }}</td>
         <td><span class="badge {{ 'b-missing' if r.status == 'open' else 'b-complete' }}">{{ r.status }}</span></td>
         <td>
           {% if r.status == 'open' %}

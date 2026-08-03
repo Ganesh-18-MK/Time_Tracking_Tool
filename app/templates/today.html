@@ -2,7 +2,7 @@
 {% set active_nav = 'today' %}
 {% block title %}Today · MK Timekeeping{% endblock %}
 {% block content %}
-<h1>Task log — {{ day.strftime('%A, %d %B %Y') }}{% if day == today %} (today){% endif %}</h1>
+<h1>Task log — {{ day.strftime('%A') }}, {{ day|mdy }}{% if day == today %} (today){% endif %}</h1>
 
 <div class="card">
   <form method="get" action="/today" class="formrow">
@@ -11,7 +11,7 @@
       <select name="date" onchange="this.form.submit()">
         {% for d in allowed_dates|reverse %}
         <option value="{{ d.isoformat() }}" {{ 'selected' if d == day }}>
-          {{ d.strftime('%a %d %b') }}{% if d == today %} — today{% endif %}
+          {{ d.strftime('%a') }} {{ d|mdy }}{% if d == today %} — today{% endif %}
         </option>
         {% endfor %}
       </select>
@@ -21,7 +21,7 @@
 </div>
 
 {% if sub and sub.locked %}
-<div class="lockbanner">✔ Day submitted {{ sub.submitted_at.strftime('%d %b %H:%M') }} UTC —
+<div class="lockbanner">✔ Day submitted {{ sub.submitted_at|mdy_dt }} UTC —
   total {{ sub.total_minutes|hm }}. Locked: ask an admin to unlock for changes.</div>
 {% elif sub and not sub.locked %}
 <div class="lockbanner" style="background:var(--warn-bg);color:var(--warn)">⚠ Day was unlocked by an admin —

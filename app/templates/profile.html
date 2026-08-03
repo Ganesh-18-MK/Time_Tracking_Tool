@@ -32,7 +32,7 @@
     skills/hobbies, and every contact number/address — all in one form.</p>
     {% if pd %}
     <span class="badge b-complete">Added</span>
-    <span class="small muted" style="margin-left:6px">last updated {{ pd.updated_at.strftime('%d %b %Y') if pd.updated_at else '—' }}</span>
+    <span class="small muted" style="margin-left:6px">last updated {{ pd.updated_at|mdy if pd.updated_at else '—' }}</span>
     {% else %}
     <span class="badge b-pending">Not added yet</span>
     {% endif %}
@@ -43,7 +43,7 @@
     Sensitive numbers are masked everywhere once saved.</p>
     {% if bd %}
     <span class="badge b-complete">Added</span>
-    <span class="small muted" style="margin-left:6px">last updated {{ bd.updated_at.strftime('%d %b %Y') if bd.updated_at else '—' }}</span>
+    <span class="small muted" style="margin-left:6px">last updated {{ bd.updated_at|mdy if bd.updated_at else '—' }}</span>
     {% else %}
     <span class="badge b-pending">Not added yet</span>
     {% endif %}

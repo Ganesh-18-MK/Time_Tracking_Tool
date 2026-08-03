@@ -78,7 +78,7 @@
     <tbody>
       {% for d in comp.days|reverse %}
       <tr>
-        <td>{{ d.date.strftime('%a %d %b') }}</td>
+        <td>{{ d.date.strftime('%a') }} {{ d.date|mdy }}</td>
         <td>{{ d.target|hm }}</td>
         <td>{{ d.punched|hm }}</td>
         <td>{{ d.shortfall|hm if d.shortfall else '—' }}</td>
@@ -98,7 +98,7 @@
       {% for item in ledger|reverse %}
       {% set r = item.row %}
       <tr>
-        <td>{{ r.date.strftime('%a %d %b') }}</td>
+        <td>{{ r.date.strftime('%a') }} {{ r.date|mdy }}</td>
         <td><span class="badge b-{{ r.effective_status(comp_erases) }}">{{ STATUS_NAMES.get(r.effective_status(comp_erases)) }}</span></td>
         <td>{{ r.actual_minutes|hm }}</td>
         <td>{{ r.target_minutes|hm }}</td>

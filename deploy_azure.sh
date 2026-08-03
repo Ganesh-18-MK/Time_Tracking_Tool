@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Azure deployment script for MK Timekeeping.
 # Edit the variables below, then run:
-#   cd "/Users/Ganesh/Projects/mk-timekeeping-poc-main "
+#   cd /Users/Ganesh/Projects/mk-timekeeping-poc-main
 #   bash deploy_azure.sh
 set -euo pipefail
 
@@ -55,7 +55,9 @@ az webapp config appsettings set -g "$RG" -n "$APP" --settings \
   SCM_DO_BUILD_DURING_DEPLOYMENT=true
 
 echo "== Packaging code =="
-cd "/Users/Ganesh/Projects/mk-timekeeping-poc-main "
+# No internal cd — relies on already being run from the project root (see
+# the instructions above); a hardcoded path previously guessed a trailing
+# space in the folder name that isn't actually there.
 rm -f ../mk-timekeeping-deploy.zip
 zip -r ../mk-timekeeping-deploy.zip . \
   -x ".venv/*" -x ".git/*" -x "tms.db" -x "tms_demo.db*" -x "__pycache__/*" -x "*/__pycache__/*"

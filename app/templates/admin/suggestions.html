@@ -18,7 +18,7 @@
         <td>{{ p.name }}</td>
         <td>{{ p.created_by.name if p.created_by else '—' }}</td>
         <td>{{ (p.created_by.department or '—') if p.created_by else '—' }}</td>
-        <td class="small nowrap">{{ p.created_at.strftime('%d %b %H:%M') }} UTC</td>
+        <td class="small nowrap">{{ p.created_at|mdy_dt }} UTC</td>
         <td class="nowrap">
           <form method="post" action="/admin/suggestions/project/{{ p.id }}/approve" class="inline">
             <button class="small">Approve</button>
@@ -46,7 +46,7 @@
         <td>{{ t.name }}</td>
         <td>{{ t.created_by.name if t.created_by else '—' }}</td>
         <td>{{ (t.created_by.department or '—') if t.created_by else '—' }}</td>
-        <td class="small nowrap">{{ t.created_at.strftime('%d %b %H:%M') }} UTC</td>
+        <td class="small nowrap">{{ t.created_at|mdy_dt }} UTC</td>
         <td class="nowrap">
           <form method="post" action="/admin/suggestions/task/{{ t.id }}/approve" class="inline">
             <button class="small">Approve</button>

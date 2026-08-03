@@ -41,6 +41,30 @@ def fmt_time(minute: Optional[int]) -> str:
     return f"{display_h}:{mi:02d} {suffix}"
 
 
+def fmt_date(value: Optional[dt.date]) -> str:
+    """date(2026, 8, 3) -> '08/03/2026' (manager-requested normalization,
+    2026-08-03 — every human-readable date on screen and in xlsx exports
+    uses this one format now, regardless of what used to be shown: '3 Aug',
+    '03 August 2026', etc). None -> em dash, same convention as fmt_hm.
+    Deliberately NOT used for <input type="date"> values or any form
+    field/URL param that gets parsed back (those stay ISO/YYYY-MM-DD —
+    that's the HTML spec for date inputs and what parse_date_field expects,
+    not a "display" format a user reads)."""
+    if value is None:
+        return "—"
+    return value.strftime("%m/%d/%Y")
+
+
+def fmt_datetime(value: Optional[dt.datetime], seconds: bool = False) -> str:
+    """datetime(...) -> '08/03/2026 14:32' (or '...:07' with seconds=True).
+    Same MM/DD/YYYY date portion as fmt_date, just with the time appended —
+    used for timestamp columns (Audit Log, Support Inbox, suggestions,
+    submitted-at banners) that used to show '03 Aug 14:32'."""
+    if value is None:
+        return "—"
+    return value.strftime("%m/%d/%Y %H:%M:%S" if seconds else "%m/%d/%Y %H:%M")
+
+
 def parse_hhmm(value: str) -> int:
     """'09:30' (from <input type=time>) -> minutes since midnight."""
     parts = value.strip().split(":")
@@ -328,7 +352,10 @@ def fmt_hours(minutes: Optional[int]) -> str:
 
 
 def month_label(year: int, month: int) -> str:
-    return dt.date(year, month, 1).strftime("%B %Y")
+    # '08/2026', not 'August 2026' — matches the MM/DD/YYYY normalization
+    # (2026-08-03); a month picker has no day component so MM/YYYY is the
+    # closest numeric equivalent.
+    return dt.date(year, month, 1).strftime("%m/%Y")
 
 
 def prev_next_month(year: int, month: int):

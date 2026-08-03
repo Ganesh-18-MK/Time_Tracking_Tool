@@ -93,7 +93,11 @@
       <tr>
         <th style="text-align:left">Name</th>
         {% for d in days %}
-        <th title="{{ d.strftime('%A %d %b') }}" {% if d.weekday() >= 5 %}class="wkend"{% endif %}>
+        <th title="{{ d.strftime('%A') }} {{ d|mdy }}" {% if d.weekday() >= 5 %}class="wkend"{% endif %}>
+          {# Intentionally kept as a bare day number + weekday initial, not
+             MM/DD/YYYY (2026-08-03) — this is a 30+ column calendar-grid
+             header; the full date is one hover away in the title=
+             tooltip above, which does use MM/DD/YYYY. #}
           {{ d.day }}<br><span class="muted">{{ d.strftime('%a')[0] }}</span>
         </th>
         {% endfor %}
@@ -115,7 +119,7 @@
           {% if r %}
             {% set eff = r.effective_status(comp_erases) %}
             <span class="cell c-{{ eff }}" {% if r.strike_exempt %}style="opacity:.45"{% endif %}
-              title="{{ d.isoformat() }} · {{ STATUS_NAMES.get(eff) }}{% if r.strike_exempt %} · pre-policy, not counted as strike{% endif %}{% if r.actual_minutes is not none %} · {{ r.actual_minutes|hm }}/{{ r.target_minutes|hm }}{% endif %}{% if r.imported_token %} · legacy: {{ r.imported_token }}{% endif %}{% if r.override_status %} · OVERRIDE by {{ r.override_by }}: {{ r.override_reason }}{% endif %}">
+              title="{{ d|mdy }} · {{ STATUS_NAMES.get(eff) }}{% if r.strike_exempt %} · pre-policy, not counted as strike{% endif %}{% if r.actual_minutes is not none %} · {{ r.actual_minutes|hm }}/{{ r.target_minutes|hm }}{% endif %}{% if r.imported_token %} · legacy: {{ r.imported_token }}{% endif %}{% if r.override_status %} · OVERRIDE by {{ r.override_by }}: {{ r.override_reason }}{% endif %}">
               {%- if eff in ('weekend', 'holiday') and (r.actual_minutes or 0) > 0 -%}
                 {{ r.actual_minutes|hm }}
               {%- else -%}
@@ -125,7 +129,7 @@
               {%- if r.compensated %}<span class="mark">↺</span>{% endif -%}
             </span>
           {% elif d <= today and d.weekday() < 5 %}
-            <span class="cell c-pending" title="{{ d.isoformat() }} · no data">·</span>
+            <span class="cell c-pending" title="{{ d|mdy }} · no data">·</span>
           {% endif %}
         </td>
         {% endfor %}
@@ -152,7 +156,7 @@
       {% for lv in pending_leave_rows %}
       <li style="margin-bottom:6px"><span class="badge b-leave">leave</span>
         <a href="/admin/leave">{{ lv.employee.name if lv.employee else lv.employee_id }}</a>
-        requested {{ lv.type }} ({{ lv.start_date.strftime('%d %b') }}{% if lv.end_date != lv.start_date %}–{{ lv.end_date.strftime('%d %b') }}{% endif %})</li>
+        requested {{ lv.type }} ({{ lv.start_date|mdy }}{% if lv.end_date != lv.start_date %}–{{ lv.end_date|mdy }}{% endif %})</li>
       {% endfor %}
       {% for q in open_support_rows %}
       <li style="margin-bottom:6px"><span class="badge b-pending">support</span>
@@ -181,7 +185,7 @@
       <tbody>
         {% for a in recent_audit %}
         <tr>
-          <td class="small muted nowrap">{{ a.at.strftime('%d %b %H:%M') }}</td>
+          <td class="small muted nowrap">{{ a.at|mdy_dt }}</td>
           <td class="small">{{ a.actor }}</td>
           <td class="small">{{ a.action.replace('_', ' ') }}{% if a.entity %} · {{ a.entity }}{% endif %}</td>
         </tr>

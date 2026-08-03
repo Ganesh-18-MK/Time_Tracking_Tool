@@ -12,6 +12,8 @@ from app import models as m
 from app.util import (
     STATUS_LABELS,
     STATUS_NAMES,
+    fmt_date,
+    fmt_datetime,
     fmt_hm,
     fmt_hm_signed,
     fmt_hours,
@@ -28,6 +30,11 @@ templates.env.filters["hm_signed"] = fmt_hm_signed
 templates.env.filters["hours"] = fmt_hours
 templates.env.filters["clock"] = fmt_time
 templates.env.filters["mask"] = mask_tail
+# MM/DD/YYYY normalization (manager request, 2026-08-03) — every
+# human-readable date/timestamp on screen goes through one of these two
+# filters now instead of ad-hoc strftime() calls scattered across templates.
+templates.env.filters["mdy"] = fmt_date
+templates.env.filters["mdy_dt"] = fmt_datetime
 
 
 def tojson_filter(value) -> Markup:

@@ -18,7 +18,7 @@ from app import models as m, reports
 from app.auth import admin_department_scope, require_admin
 from app.db import get_db
 from app.templating import render
-from app.util import xlsx_response
+from app.util import fmt_date, xlsx_response
 
 router = APIRouter(prefix="/admin/reports")
 
@@ -108,7 +108,7 @@ def reports_attendance_xlsx(
         ws.title = "Daily detail"
         _header(ws, ["Date", "Status", "Overtime (min)"])
         for r in result["rows"]:
-            ws.append([r["date"].isoformat(), reports.STATUS_LABELS.get(r["status"], r["status"]), r["overtime"]])
+            ws.append([fmt_date(r["date"]), reports.STATUS_LABELS.get(r["status"], r["status"]), r["overtime"]])
     else:
         ws.title = "Summary"
         _header(ws, ["Name", "Department"] + [reports.STATUS_LABELS[s] for s in reports.STATUS_ORDER]
@@ -160,7 +160,7 @@ def reports_strikes_xlsx(
         ws.title = "Strike days"
         _header(ws, ["Date", "Status"])
         for r in result["rows"]:
-            ws.append([r["date"].isoformat(), reports.STATUS_LABELS.get(r["status"], r["status"])])
+            ws.append([fmt_date(r["date"]), reports.STATUS_LABELS.get(r["status"], r["status"])])
     else:
         ws.title = "Summary"
         _header(ws, ["Name", "Department", "Strikes"])

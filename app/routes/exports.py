@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app import engine, models as m
 from app.auth import Forbidden, admin_department_scope, require_admin, require_super_admin
 from app.db import get_db
-from app.util import STATUS_LABELS, fmt_hm, parse_ym
+from app.util import STATUS_LABELS, fmt_date, fmt_hm, parse_ym
 
 router = APIRouter(prefix="/export")
 
@@ -135,7 +135,7 @@ def person_xlsx(
     for item in engine.running_ledger(db, emp, first, min(last, dt.date.today())):
         r = item["row"]
         ws.append([
-            r.date.isoformat(), r.effective_status(), fmt_hm(r.actual_minutes),
+            fmt_date(r.date), r.effective_status(), fmt_hm(r.actual_minutes),
             fmt_hm(r.target_minutes),
             fmt_hm(r.variance_minutes) if r.variance_minutes is not None else "unknown",
             fmt_hm(item["balance"]),
@@ -155,7 +155,7 @@ def person_xlsx(
 
     for e in entries:
         ws2.append([
-            e.date.isoformat(), e.project.name, e.task_type.name, e.details,
+            fmt_date(e.date), e.project.name, e.task_type.name, e.details,
             fmt_time(e.start_minute), fmt_time(e.end_minute), fmt_hm(e.duration_minutes),
         ])
 
@@ -168,7 +168,7 @@ def person_xlsx(
         .order_by(m.LeaveRecord.start_date)
     ).scalars():
         ws3.append([
-            lv.start_date.isoformat(), lv.end_date.isoformat(), lv.type,
+            fmt_date(lv.start_date), fmt_date(lv.end_date), lv.type,
             "full day" if lv.minutes_per_day is None else fmt_hm(lv.minutes_per_day),
             lv.note, lv.entered_by,
         ])
@@ -199,7 +199,7 @@ def entries_csv(
 
     for t in rows:
         w.writerow([
-            t.employee.name, t.employee.department, t.date.isoformat(), t.project.name,
+            t.employee.name, t.employee.department, fmt_date(t.date), t.project.name,
             t.task_type.name, t.details, fmt_time(t.start_minute), fmt_time(t.end_minute),
             t.duration_minutes, "1" if t.imported else "",
         ])

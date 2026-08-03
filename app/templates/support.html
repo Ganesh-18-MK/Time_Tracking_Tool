@@ -25,7 +25,7 @@
     <tbody>
       {% for r in records %}
       <tr>
-        <td class="small muted nowrap">{{ r.created_at.strftime('%d %b %H:%M') }}</td>
+        <td class="small muted nowrap">{{ r.created_at|mdy_dt }}</td>
         <td>{{ r.message }}</td>
         <td><span class="badge {{ 'b-missing' if r.status == 'open' else 'b-complete' }}">{{ r.status }}</span></td>
         <td>{{ r.admin_reply or '—' }}</td>

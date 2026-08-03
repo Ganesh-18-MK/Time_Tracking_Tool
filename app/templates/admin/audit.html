@@ -12,7 +12,7 @@
     <tbody>
       {% for r in rows %}
       <tr>
-        <td class="nowrap">{{ r.at.strftime('%d %b %H:%M:%S') }}</td>
+        <td class="nowrap">{{ r.at|mdy_dt(seconds=True) }}</td>
         <td>{{ r.actor }}</td>
         <td><span class="badge b-leave">{{ r.action }}</span></td>
         <td class="small">{{ r.entity }} {{ r.entity_id }}</td>

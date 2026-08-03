@@ -90,6 +90,8 @@ Every page in the system and which zone it belongs to — everyone signs in once
 
 Everyone signs in through one login page (`/login`), then lands in one of two zones based on `Employee.is_admin`. An admin who is also an employee can switch into the Employee zone at any time via the "Employee login" nav link, and back again via "Admin Dashboard" — both zones' nav items are always reachable, never gated on `tracked`.
 
+Every date and timestamp shown on screen or in an XLSX export is **MM/DD/YYYY** (manager request, 2026-08-03) — e.g. `08/03/2026`, or `08/03/2026 14:32` for a timestamp. Date pickers (Leave, Date of Birth, etc.) still show whatever format the visitor's own browser/OS uses — that's outside the app's control, see `app/util.py`'s `fmt_date`/`fmt_datetime`.
+
 **Three admin tiers** (`Employee.is_admin` + `Employee.is_super_admin`, set via Roster → Add/Edit person's Role dropdown, or the bulk-upload Role column):
 
 | Role | `is_admin` | `is_super_admin` | Sees |
@@ -263,7 +265,7 @@ MK_Timekeeping_Documentation.pdf
 | `app/lists_bulk_upload.py` | Single-column, add-only Excel parsing for Project/Employer and Task Type dropdown values |
 | `app/reports.py` | Attendance/Strike report aggregation, cascading filters |
 | `app/util.py` | Formatting filters, `FormError`, `audit()`, employee-code generation, `xlsx_response()` |
-| `app/templating.py` | Jinja env, filters (`hm`, `hm_signed`, `clock`, `tojson`), flash helpers, nav badges |
+| `app/templating.py` | Jinja env, filters (`hm`, `hm_signed`, `clock`, `mdy`, `mdy_dt`, `tojson`), flash helpers, nav badges |
 | `app/routes/` | `auth` (login/signup), `employee` (Today/My Month/Leave/Support/Profile), `admin` (dashboard/roster/lists/leave/config/audit/support), `reports`, `exports` |
 | `app/templates/` | Base layout + employee pages + `admin/` pages (server-rendered, small inline JS) |
 | `app/static/` | `app.css`, `tablefilter.js` (table search), `combo.js` (searchable select) |

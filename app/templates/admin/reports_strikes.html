@@ -40,7 +40,7 @@
     </div>
     <div><button type="submit">Apply</button></div>
   </form>
-  <p class="small muted" style="margin-top:8px">Showing {{ resolved_start.isoformat() }} to {{ resolved_end.isoformat() }}.
+  <p class="small muted" style="margin-top:8px">Showing {{ resolved_start|mdy }} to {{ resolved_end|mdy }}.
     <a href="/admin/reports/strikes.xlsx?dept={{ dept }}&emp={{ emp }}&range={{ range }}&start={{ start }}&end={{ end }}">Download Excel</a>
   </p>
 </div>
@@ -52,7 +52,7 @@
     <thead><tr><th>Date</th><th>Status</th></tr></thead>
     <tbody>
       {% for r in result.rows %}
-      <tr><td>{{ r.date.isoformat() }}</td><td>{{ STATUS_NAMES.get(r.status, r.status) }}</td></tr>
+      <tr><td>{{ r.date|mdy }}</td><td>{{ STATUS_NAMES.get(r.status, r.status) }}</td></tr>
       {% else %}
       <tr><td colspan="2" class="muted">No strikes in range.</td></tr>
       {% endfor %}
