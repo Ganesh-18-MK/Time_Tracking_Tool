@@ -115,11 +115,22 @@ def parse_target_minutes(raw) -> Optional[int]:
     return minutes
 
 
+WORKDAY_DEFAULT_TOKENS = {"default", "def"}
+
+
 def parse_workdays(raw) -> Optional[str]:
-    """Blank -> None (see parse_target_minutes)."""
+    """Blank -> None (see parse_target_minutes). 'Default' (or 'Def') is a
+    shortcut for the standard 5-day Monday-to-Friday week (Ganesh,
+    2026-08-01) — most employees use this, so a sheet can just say
+    "Default" instead of typing "M,T,W,Th,F" on every row; anyone on a
+    different schedule still lists their own days explicitly, exactly as
+    before."""
     if raw is None or str(raw).strip() == "":
         return None
-    tokens = [t.strip().lower() for t in str(raw).split(",") if t.strip() != ""]
+    text = str(raw).strip().lower()
+    if text in WORKDAY_DEFAULT_TOKENS:
+        return ",".join(str(d) for d in range(5))  # Mon-Fri: 0,1,2,3,4
+    tokens = [t.strip().lower() for t in text.split(",") if t.strip() != ""]
     days, bad = set(), []
     for t in tokens:
         if t in WORKDAY_TOKENS:
@@ -129,7 +140,7 @@ def parse_workdays(raw) -> Optional[str]:
     if bad:
         raise ValueError(
             f"Workdays has unrecognized value(s): {', '.join(bad)} "
-            "— use M,T,W,Th,F,S,Su"
+            "— use M,T,W,Th,F,S,Su, or 'Default' for Mon-Fri"
         )
     return ",".join(str(d) for d in sorted(days))
 
@@ -442,7 +453,7 @@ def build_sample_workbook() -> Workbook:
         c.font = Font(bold=True)
     ws.append([
         "", "Jane Doe", "Accounts", "Associate", 8,
-        "M,T,W,Th,F", "2026-08-03", "1990-05-14", "jane.doe@example.com",
+        "Default", "2026-08-03", "1990-05-14", "jane.doe@example.com",
         "+1", "555 0100", "Employee", "", "",
     ])
     for col, width in zip(COL_LETTERS, COL_WIDTHS):
@@ -458,7 +469,8 @@ def build_sample_workbook() -> Workbook:
         ("Department", "Yes, for new hires", "Any text, e.g. Accounts"),
         ("Designation", "Yes, for new hires", "Any text, e.g. Associate"),
         ("Target/day", "Yes, for new hires", "Hours as a number, e.g. 8 or 7.5, or H:MM like 8:00"),
-        ("Workdays", "Yes, for new hires", "Comma-separated: M=Mon, T=Tue, W=Wed, Th=Thu, F=Fri, S=Sat, Su=Sun"),
+        ("Workdays", "Yes, for new hires", "'Default' = Mon-Fri (most employees). For anything else, comma-separated: "
+         "M=Mon, T=Tue, W=Wed, Th=Thu, F=Fri, S=Sat, Su=Sun, e.g. M,T,W,Th,F,S"),
         ("Joining Date", "No", "YYYY-MM-DD, e.g. 2026-08-03"),
         ("DOB", "No", "YYYY-MM-DD"),
         ("Email", "No, but needed before the employee can sign in", "name@company.com"),

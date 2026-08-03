@@ -136,11 +136,22 @@ def dashboard(
         else:
             scoped_ids = {e.id for e in all_emps}
             pending_leave_rows = [lv for lv in pending_leave_rows if lv.employee_id in scoped_ids]
+        # Ganesh, 2026-08-01: also surface anyone sitting on an open (not
+        # yet compensation-linked) shortfall day, not just employees who've
+        # already crossed the strike threshold — so an admin can catch and
+        # fix a single Partial/Missing day via Person Detail's
+        # Compensation links before it ever becomes a violation.
+        # strikes_in() already only counts effective_status() days still in
+        # STRIKE_STATUSES (a compensated day reads Complete and drops out),
+        # so e_strikes doubles as "how many open shortfall days" — no
+        # separate query needed. is_violation flags the third tuple element
+        # so the template can badge threshold-crossers differently from a
+        # lone still-fixable shortfall.
         for e in all_emps:
             e_strikes = engine.strikes_in(by_emp.get(e.id, {}).values(), comp_erases)
-            if e_strikes >= threshold:
-                violations.append((e, e_strikes))
-        violations.sort(key=lambda pair: -pair[1])
+            if e_strikes > 0:
+                violations.append((e, e_strikes, e_strikes >= threshold))
+        violations.sort(key=lambda row: (not row[2], -row[1]))
         violations = violations[:8]
 
     groups = {}
@@ -428,7 +439,7 @@ def add_complink(
     emp_id: int,
     request: Request,
     shortfall_date: str = Form(...),
-    surplus_dates: str = Form(...),
+    surplus_dates: list = Form([]),  # checkboxes, same convention as assignments_save's project_ids
     note: str = Form(""),
     ym: str = Form(""),
     admin: m.Employee = Depends(require_super_admin),
@@ -437,10 +448,10 @@ def add_complink(
     try:
         shortfall = parse_date_field(shortfall_date, "Shortfall date")
         surplus = sorted({dt.date.fromisoformat(x.strip()).isoformat()
-                          for x in surplus_dates.replace(";", ",").split(",") if x.strip()})
+                          for x in surplus_dates if x.strip()})
     except (FormError, ValueError) as e:
         flash(request, e.message if isinstance(e, FormError)
-              else "Surplus dates must be ISO dates separated by commas.", "err")
+              else "Surplus dates must be valid ISO dates.", "err")
         return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
     if not surplus:
         flash(request, "Pick at least one surplus day.", "err")

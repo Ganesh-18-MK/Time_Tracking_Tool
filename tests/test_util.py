@@ -217,10 +217,15 @@ class TestEnsureListStatusBackfill:
         s.close()
 
     def test_backfills_null_status_to_approved(self, db):
-        # simulates a row created before the status column existed —
-        # inserting with status left unset, same as SQLite's ADD COLUMN
-        p = m.Project(name="Legacy Project", active=True)
-        t = m.TaskType(name="Legacy Task", active=True)
+        # simulates a row created before the status column existed. Leaving
+        # status unset would NOT reproduce this — the ORM applies the
+        # Python-side default('approved') to any new insert. An explicit
+        # status=None bypasses that default (only an *unset* attribute gets
+        # the default; an explicitly-assigned None is inserted as NULL),
+        # which is what SQLite's own ALTER TABLE ADD COLUMN does to every
+        # row that existed before the column did.
+        p = m.Project(name="Legacy Project", active=True, status=None)
+        t = m.TaskType(name="Legacy Task", active=True, status=None)
         db.add_all([p, t])
         db.commit()
         assert p.status is None and t.status is None  # sanity: nothing set it yet

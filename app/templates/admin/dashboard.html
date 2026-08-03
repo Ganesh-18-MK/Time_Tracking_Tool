@@ -159,10 +159,16 @@
         <a href="/admin/support">{{ q.employee.name if q.employee else q.employee_id }}</a>
         — {{ q.message[:60] }}{% if q.message|length > 60 %}…{% endif %}</li>
       {% endfor %}
-      {% for e, strikes in violations %}
+      {% for e, strikes, is_violation in violations %}
+      {% if is_violation %}
       <li style="margin-bottom:6px"><span class="badge b-missing">strikes</span>
         <a href="/admin/person/{{ e.id }}?ym={{ ym }}">{{ e.name }}</a>
         — {{ strikes }} this month (≥ {{ threshold }})</li>
+      {% else %}
+      <li style="margin-bottom:6px"><span class="badge b-partial">shortfall</span>
+        <a href="/admin/person/{{ e.id }}?ym={{ ym }}">{{ e.name }}</a>
+        — {{ strikes }} open day{{ 's' if strikes != 1 }}, can be compensated</li>
+      {% endif %}
       {% endfor %}
     </ul>
     {% endif %}

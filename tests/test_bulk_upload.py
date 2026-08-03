@@ -59,6 +59,39 @@ class TestParseWorkdays:
         assert parse_workdays("Th") == "3"
 
 
+class TestParseWorkdaysDefaultShortcut:
+    """'Default' (Ganesh, 2026-08-01) — most employees are Mon-Fri, so a
+    sheet can say "Default" once instead of typing "M,T,W,Th,F" on every
+    row; anyone on a different schedule still lists their own days."""
+
+    def test_default_means_mon_fri(self):
+        assert parse_workdays("Default") == "0,1,2,3,4"
+
+    def test_default_is_case_insensitive(self):
+        assert parse_workdays("default") == "0,1,2,3,4"
+        assert parse_workdays("DEFAULT") == "0,1,2,3,4"
+
+    def test_default_short_form(self):
+        assert parse_workdays("Def") == "0,1,2,3,4"
+
+    def test_default_with_surrounding_whitespace(self):
+        assert parse_workdays("  Default  ") == "0,1,2,3,4"
+
+    def test_default_matches_explicit_mon_fri_letters(self):
+        assert parse_workdays("Default") == parse_workdays("M,T,W,Th,F")
+
+    def test_explicit_schedule_still_works_and_is_not_shadowed(self):
+        # a custom schedule (e.g. someone who works Tue-Sat) must still
+        # parse normally, not get swallowed by the Default shortcut
+        assert parse_workdays("T,W,Th,F,S") == "1,2,3,4,5"
+
+    def test_default_is_not_a_valid_individual_day_token(self):
+        # sanity check the shortcut only fires on the whole-cell value,
+        # not as one comma-separated token among others
+        with pytest.raises(ValueError, match="default"):
+            parse_workdays("M,Default")
+
+
 class TestParseTargetMinutes:
     def test_blank_is_none_not_a_default(self):
         assert parse_target_minutes("") is None
@@ -162,6 +195,12 @@ class TestParseRowNewHire:
         f = result["fields"]
         assert f["name"] == "Jane Doe" and f["daily_target_minutes"] == 480
         assert f["work_days"] == "0,1,2,3,4" and f["is_admin"] is False
+
+    def test_workdays_default_shortcut_end_to_end(self):
+        row = dict(NEW_ROW, **{"Workdays": "Default"})
+        result = parse_row(row, {})
+        assert result["error"] is None
+        assert result["fields"]["work_days"] == "0,1,2,3,4"
 
     def test_missing_full_name_required(self):
         row = dict(NEW_ROW, **{"Full Name": ""})
