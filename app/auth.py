@@ -60,6 +60,19 @@ def require_super_admin(admin: m.Employee = Depends(require_admin)) -> m.Employe
     return admin
 
 
+def require_developer(user: m.Employee = Depends(current_user)) -> m.Employee:
+    """Gate for the one Ticketing System action that isn't open to every
+    logged-in user: changing a ticket's status (Ganesh, 2026-08-06: "only
+    developers can change the status"). Deliberately Depends(current_user)
+    rather than Depends(require_admin) — is_developer is a THIRD axis, fully
+    independent of is_admin/is_super_admin (see Employee.is_developer's
+    docstring) — a plain employee can be a developer, and an admin need not
+    be one."""
+    if not user.is_developer:
+        raise Forbidden()
+    return user
+
+
 def admin_department_scope(admin: m.Employee) -> Optional[str]:
     """None => no restriction (super admin sees every department).
     Otherwise the exact department string a department-scoped admin is

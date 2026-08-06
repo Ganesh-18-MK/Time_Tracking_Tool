@@ -56,6 +56,12 @@
         {% endfor %}
       </select>
     </div>
+    {% if TICKETING_ENABLED %}
+    <div style="margin-top:10px">
+      <label class="f">Ticketing</label>
+      <label><input type="checkbox" name="is_developer" value="1" {{ 'checked' if emp.is_developer }}> Developer — can work tickets raised in Support → Tickets</label>
+    </div>
+    {% endif %}
     <div style="margin-top:14px">
       <button>Save</button>
       <a class="btn secondary" href="/admin/roster">Cancel</a>

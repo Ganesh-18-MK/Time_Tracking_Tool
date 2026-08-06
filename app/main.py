@@ -17,7 +17,8 @@ from app.routes import auth as auth_routes
 from app.routes import employee as employee_routes
 from app.routes import exports as export_routes
 from app.routes import reports as report_routes
-from app.templating import render, templates  # noqa: F401 (templates import registers filters)
+from app.routes import tickets as ticket_routes
+from app.templating import TICKETING_ENABLED, render, templates  # noqa: F401 (templates import registers filters)
 from app.util import (
     ensure_bootstrap_admins,
     ensure_employee_codes,
@@ -66,6 +67,18 @@ static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 # template ever needs to know where the directory actually lives.
 os.makedirs(employee_routes.AVATAR_DIR, exist_ok=True)
 app.mount("/static/uploads/avatars", StaticFiles(directory=employee_routes.AVATAR_DIR), name="avatars")
+# Same reasoning as avatars above — ticket attachments (jpg/png/mp4) may
+# live outside app/static too (see app/routes/tickets.py TICKET_ATTACHMENT_DIR
+# — TICKET_ATTACHMENT_UPLOAD_DIR env var). Guarded by TICKETING_ENABLED (see
+# app/templating.py) — Ticketing is built and tested but not live yet
+# (Ganesh, 2026-08-06: shipping the Time by Project/Task report on its own
+# first). Flip the flag to True when it's ready; nothing else changes.
+if TICKETING_ENABLED:
+    os.makedirs(ticket_routes.TICKET_ATTACHMENT_DIR, exist_ok=True)
+    app.mount(
+        "/static/uploads/tickets", StaticFiles(directory=ticket_routes.TICKET_ATTACHMENT_DIR),
+        name="ticket_attachments",
+    )
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 app.include_router(auth_routes.router)
@@ -73,6 +86,8 @@ app.include_router(employee_routes.router)
 app.include_router(admin_routes.router)
 app.include_router(export_routes.router)
 app.include_router(report_routes.router)
+if TICKETING_ENABLED:
+    app.include_router(ticket_routes.router)
 
 
 @app.exception_handler(RequiresLogin)
@@ -143,3 +158,5 @@ def _startup() -> None:
     # dev; on hosts without a persistent /home equivalent, mount a volume
     # at whichever path this prints and point AVATAR_UPLOAD_DIR at it).
     logger.info("Avatar uploads directory: %s", employee_routes.AVATAR_DIR)
+    if TICKETING_ENABLED:
+        logger.info("Ticket attachments directory: %s", ticket_routes.TICKET_ATTACHMENT_DIR)

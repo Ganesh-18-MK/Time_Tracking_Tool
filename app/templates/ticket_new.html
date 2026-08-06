@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% set active_nav = 'support' %}
+{% block title %}Raise a Ticket · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Raise a ticket</h1>
+
+<div class="card">
+  <form method="post" action="/tickets/new" enctype="multipart/form-data" class="formrow" style="flex-direction:column">
+    <div style="width:100%">
+      <label>Subject</label>
+      <input name="subject" id="ticket-subject" required style="width:100%" autocomplete="off">
+      <div id="duplicate-warning" class="small" style="display:none; margin-top:4px; color: var(--warn)"></div>
+    </div>
+    <div style="width:100%">
+      <label>Description</label>
+      <textarea name="description" required minlength="5" rows="5" style="width:100%"></textarea>
+    </div>
+    <div class="formrow" style="width:100%">
+      <div>
+        <label>Type</label>
+        <select name="ticket_type" required>
+          {% for t in TICKET_TYPES %}<option value="{{ t }}">{{ TICKET_TYPE_LABELS[t] }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Priority</label>
+        <select name="priority" required>
+          {% for p in TICKET_PRIORITIES %}<option value="{{ p }}" {{ 'selected' if p == 'medium' }}>{{ TICKET_PRIORITY_LABELS[p] }}</option>{% endfor %}
+        </select>
+      </div>
+      <div style="flex:1">
+        <label>Attachment (optional — JPG, PNG, or MP4, up to 25 MB)</label>
+        <input type="file" name="attachment" accept=".jpg,.jpeg,.png,.mp4,image/jpeg,image/png,video/mp4">
+      </div>
+    </div>
+    <div><button>Submit ticket</button></div>
+  </form>
+</div>
+
+<script>
+(function () {
+  // Live "is this already reported" check as the user types a Subject —
+  // filters a pre-loaded flat list of every existing ticket subject
+  // client-side, same all-client-side-against-a-preloaded-list convention
+  // used elsewhere in this app (Project/Task combos, roster search).
+  // Deliberately NOT combo.js's initCombo: that widget selects one item
+  // into a hidden input for an existing record, but here the user is
+  // typing a brand-new subject, not picking an existing one — nothing
+  // should ever get auto-filled.
+  var existing = {{ existing_subjects|tojson }};
+  var input = document.getElementById('ticket-subject');
+  var warning = document.getElementById('duplicate-warning');
+  input.addEventListener('input', function () {
+    var typed = input.value.trim().toLowerCase();
+    if (typed.length < 3) {
+      warning.style.display = 'none';
+      return;
+    }
+    var matches = existing.filter(function (s) {
+      return s.toLowerCase().indexOf(typed) !== -1;
+    }).slice(0, 5);
+    if (matches.length) {
+      warning.textContent = 'Similar ticket(s) already raised: ' + matches.join(', ') + ' — check the list before submitting a duplicate.';
+      warning.style.display = 'block';
+    } else {
+      warning.style.display = 'none';
+    }
+  });
+})();
+</script>
+{% endblock %}

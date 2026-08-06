@@ -7,7 +7,7 @@ the layout convention in CLAUDE.md; all the actual aggregation lives in
 app/reports.py.
 """
 import datetime as dt
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 from openpyxl import Workbook
@@ -18,7 +18,7 @@ from app import models as m, reports
 from app.auth import admin_department_scope, require_admin
 from app.db import get_db
 from app.templating import render
-from app.util import fmt_date, xlsx_response
+from app.util import fmt_date, month_label, xlsx_response
 
 router = APIRouter(prefix="/admin/reports")
 
@@ -71,6 +71,68 @@ def reports_landing(
 
 
 # ---- Attendance Reports -----------------------------------------------------
+@router.get("/time")
+def reports_time(
+    request: Request,
+    dept: str = "",
+    emp: List[int] = Query([]),
+    project: List[int] = Query([]),
+    task: List[int] = Query([]),
+    rng: str = Query("90d", alias="range"),
+    start: str = "",
+    end: str = "",
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    ctx = _filter_ctx(db, admin, dept, 0, rng, start, end)
+    result = reports.time_by_activity_report(
+        db, ctx["resolved_start"], ctx["resolved_end"], department=ctx["dept"] or None,
+        employee_ids=emp or None, project_ids=project or None, task_type_ids=task or None,
+    )
+    ctx.pop("emp", None)
+    return render(
+        request, "admin/reports_time.html",
+        {
+            "user": admin, "result": result, "emp": emp, "project": project, "task": task,
+            "projects": reports.projects_list(db), "tasks": reports.task_types_list(db),
+            **ctx,
+        },
+        db=db,
+    )
+
+
+@router.get("/time.xlsx")
+def reports_time_xlsx(
+    dept: str = "",
+    emp: List[int] = Query([]),
+    project: List[int] = Query([]),
+    task: List[int] = Query([]),
+    rng: str = Query("90d", alias="range"),
+    start: str = "",
+    end: str = "",
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    dept = _scoped_dept(admin, dept)
+    start_date, end_date = reports.resolve_date_range(rng, _parse_date(start), _parse_date(end))
+    result = reports.time_by_activity_report(
+        db, start_date, end_date, department=dept or None,
+        employee_ids=emp or None, project_ids=project or None, task_type_ids=task or None,
+    )
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Time by employee"
+    month_cols = [month_label(y, mo) for y, mo in result["months"]]
+    _header(ws, ["Name", "Department"] + month_cols + ["Total"])
+    for r in result["rows"]:
+        ws.append(
+            [r["employee"].name, r["department"]]
+            + [round(r["by_month"][ym] / 60, 2) for ym in result["months"]]
+            + [round(r["total"] / 60, 2)]
+        )
+    return xlsx_response(wb, f"time_by_activity_{start_date}_{end_date}.xlsx")
+
+
 @router.get("/attendance")
 def reports_attendance(
     request: Request,

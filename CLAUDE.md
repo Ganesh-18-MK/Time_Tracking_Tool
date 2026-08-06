@@ -29,7 +29,7 @@ rm tms.db && .venv/bin/python -m legacy.import_legacy    # rebuild DB from the 3
 
 - `app/engine.py` — all business math (statuses, variance, strikes, recompute, ledger)
 - `app/validation.py` — PRD §4 entry rules (overlaps block, gaps flag, 4h cap, backdate window)
-- `app/routes/` — auth (dev login), employee (Today/My Month), admin (7 screens), exports (XLSX/CSV)
+- `app/routes/` — auth (dev login), employee (Today/My Month/Leave/Overtime/Support/Profile), admin (dashboard/roster/lists/leave/overtime/config/audit/support), tickets (Ticketing System — raise/list/detail/comment/status-change), exports (XLSX/CSV)
 - `app/auth.py` — the Entra ID swap point; session/role gating stays
 - `legacy/` — streaming ODS reader (survives the 700 MB file), extractor, importer, strike verifier
 - `legacy/cache/import_report.json` — every oddity the import tolerated

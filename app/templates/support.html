@@ -4,6 +4,17 @@
 {% block content %}
 <h1>Support</h1>
 
+{% if TICKETING_ENABLED %}
+<div class="card">
+  <h2 style="margin-top:0">Tickets</h2>
+  <p class="small muted" style="margin-top:-4px">Bugs, enhancements, or new-feature ideas for the dashboard itself.</p>
+  <div class="formrow">
+    <a class="btn small" href="/tickets/new">Raise a ticket</a>
+    <a class="btn small secondary" href="/tickets">View tickets</a>
+  </div>
+</div>
+{% endif %}
+
 <div class="card">
   <h2 style="margin-top:0">Ask a question</h2>
   <form method="post" action="/support/submit" class="formrow" style="flex-direction:column">

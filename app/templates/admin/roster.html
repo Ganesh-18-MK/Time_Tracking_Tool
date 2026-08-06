@@ -42,6 +42,7 @@
         <td class="small">
           {% if e.is_super_admin %}<span class="badge b-leave">super admin</span>
           {% elif e.is_admin %}<span class="badge b-leave">admin (dept)</span>{% endif %}
+          {% if e.is_developer %}<span class="badge b-complete">developer</span>{% endif %}
           {% if not e.tracked %}<span class="badge b-holiday">untracked</span>{% endif %}
           {% if not e.active %}<span class="badge b-missing">gone</span>{% endif %}
           {% if e.active and not e.password_hash %}<span class="badge b-missing" title="hasn't run /signup yet">no login</span>{% endif %}
@@ -90,6 +91,12 @@
         {% endfor %}
       </div>
     </div>
+    {% if TICKETING_ENABLED %}
+    <div>
+      <label>Ticketing</label>
+      <label class="small"><input type="checkbox" name="is_developer" value="1"> Developer (can work tickets)</label>
+    </div>
+    {% endif %}
     <div><button>Add</button></div>
   </form>
   <p class="small muted">Deactivated people keep all history (the tracker's GONE section) but drop out of compliance runs — use Edit → untick Active.</p>

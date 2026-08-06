@@ -45,6 +45,7 @@
         <div class="navdrop-menu">
           <a href="/admin/reports/attendance">Attendance Reports</a>
           <a href="/admin/reports/strikes">Strike Reports</a>
+          <a href="/admin/reports/time">Time by Project/Task</a>
         </div>
       </details>
       {% if user.is_super_admin %}
@@ -77,6 +78,7 @@
 {% block content %}{% endblock %}
 </main>
 <script src="/static/tablefilter.js?v={{ static_version }}"></script>
+<script src="/static/msfilter.js?v={{ static_version }}"></script>
 <script>
   // Close any open nav dropdown (e.g. Reports) when clicking outside it.
   document.addEventListener("click", function (e) {

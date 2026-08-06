@@ -32,6 +32,7 @@ RANGE_PRESETS = [
     ("7d", "Last 7 days", 7),
     ("30d", "Last month", 30),
     ("90d", "Last 3 months", 90),
+    ("180d", "Last 6 months", 180),  # Time by Project/Task's month-trend view needs a longer default option than the other two reports; harmless extra choice for those too.
 ]
 DEFAULT_RANGE = "7d"
 
@@ -150,6 +151,93 @@ def _scope_employees(db: Session, department: Optional[str], employee_id: Option
     if employee_id:
         emps = [e for e in emps if e.id == employee_id]
     return emps
+
+
+def projects_list(db: Session) -> List[m.Project]:
+    return list(
+        db.execute(select(m.Project).where(m.Project.active.is_(True)).order_by(m.Project.name)).scalars()
+    )
+
+
+def task_types_list(db: Session) -> List[m.TaskType]:
+    return list(
+        db.execute(select(m.TaskType).where(m.TaskType.active.is_(True)).order_by(m.TaskType.name)).scalars()
+    )
+
+
+def _months_between(start: dt.date, end: dt.date) -> List[tuple]:
+    """[(year, month), ...] for every calendar month touching [start, end],
+    inclusive of both ends — the columns of the trend table below."""
+    months = []
+    y, mo = start.year, start.month
+    while (y, mo) <= (end.year, end.month):
+        months.append((y, mo))
+        mo += 1
+        if mo > 12:
+            mo, y = 1, y + 1
+    return months
+
+
+def time_by_activity_report(
+    db: Session, start: dt.date, end: dt.date,
+    department: Optional[str] = None, employee_ids: Optional[List[int]] = None,
+    project_ids: Optional[List[int]] = None, task_type_ids: Optional[List[int]] = None,
+) -> dict:
+    """Total logged time per employee, broken down by calendar month — one
+    report answering both things Ganesh's manager asked for (2026-08-06):
+    "total time spent on a Project or set of projects for one or a set of
+    employees" (leave task_type_ids blank, pick project_ids) and "time spent
+    on an activity per employee... trend... July vs August" (leave
+    project_ids blank, pick task_type_ids — e.g. every member of a
+    department against one Task). Both filters are optional and independent;
+    picking both narrows to that exact project+task combination.
+
+    Reads straight from TaskEntry (the same "computed, never typed"
+    end_minute - start_minute duration everything else uses) — there's no
+    DayStatus/strike concept for "time on a project", so unlike
+    attendance_report/strikes_report there's no _ensure_fresh() recompute
+    step here; TaskEntry rows are just summed as logged.
+
+    {"months": [(year, month), ...], "rows": [{"employee", "department",
+    "by_month": {(year, month): minutes}, "total": minutes}, ...] sorted by
+    total descending (busiest first), "grand_total": minutes}. Employees
+    with zero matching minutes still appear (with all-zero months) — the
+    point of "for every member of Team A" is seeing who ISN'T logging time
+    against something too, not just who is."""
+    emps = employees_list(db, department)
+    if employee_ids:
+        wanted = set(employee_ids)
+        emps = [e for e in emps if e.id in wanted]
+    emp_ids = [e.id for e in emps]
+    months = _months_between(start, end)
+
+    by_emp_month: Dict[tuple, int] = {}
+    if emp_ids:
+        q = select(m.TaskEntry).where(
+            m.TaskEntry.employee_id.in_(emp_ids),
+            m.TaskEntry.date.between(start, end),
+        )
+        if project_ids:
+            q = q.where(m.TaskEntry.project_id.in_(project_ids))
+        if task_type_ids:
+            q = q.where(m.TaskEntry.task_type_id.in_(task_type_ids))
+        for row in db.execute(q).scalars():
+            key = (row.employee_id, row.date.year, row.date.month)
+            by_emp_month[key] = by_emp_month.get(key, 0) + row.duration_minutes
+
+    rows = []
+    grand_total = 0
+    for e in emps:
+        by_month = {}
+        total = 0
+        for ym in months:
+            minutes = by_emp_month.get((e.id, ym[0], ym[1]), 0)
+            by_month[ym] = minutes
+            total += minutes
+        rows.append({"employee": e, "department": e.department or "—", "by_month": by_month, "total": total})
+        grand_total += total
+    rows.sort(key=lambda r: -r["total"])
+    return {"months": months, "rows": rows, "grand_total": grand_total}
 
 
 def attendance_report(db: Session, start: dt.date, end: dt.date,

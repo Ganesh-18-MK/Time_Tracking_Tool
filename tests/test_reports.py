@@ -26,6 +26,7 @@ from app.reports import (
     employees_list,
     resolve_date_range,
     strikes_report,
+    time_by_activity_report,
 )
 
 FUTURE_YEAR = dt.date.today().year + 1
@@ -245,3 +246,130 @@ class TestStrikesReportDaily:
         result = strikes_report(db, BASE_DATE, BASE_DATE, employee_id=1)
         assert result["rows"] == []
         assert result["total"] == 0
+
+
+def _project(db, id, name, active=True):
+    db.add(m.Project(id=id, name=name, active=active, status=m.LIST_APPROVED))
+
+
+def _task(db, id, name, active=True):
+    db.add(m.TaskType(id=id, name=name, active=active, status=m.LIST_APPROVED))
+
+
+def _entry(db, emp_id, date, project_id, task_type_id, start_minute, end_minute):
+    db.add(m.TaskEntry(
+        employee_id=emp_id, date=date, project_id=project_id, task_type_id=task_type_id,
+        start_minute=start_minute, end_minute=end_minute,
+    ))
+
+
+class TestTimeByActivityReport:
+    """Ganesh's manager, 2026-08-06: "total time spent on a Project or set
+    of projects for one or a set of employees" and "time spent on an
+    activity per employee... trend... July vs August" — one report answers
+    both via independent optional project_ids/task_type_ids filters, with
+    per-employee totals broken into calendar-month buckets.
+
+    Reads TaskEntry directly (no DayStatus/recompute involved), so unlike
+    attendance_report/strikes_report these tests use dates in the past —
+    there's no _ensure_fresh() step here to worry about wiping anything."""
+
+    def test_sums_duration_per_employee_across_the_whole_range(self, db):
+        _emp(db, 1, "Asha")
+        _project(db, 1, "Website Revamp")
+        _task(db, 1, "Coding")
+        db.commit()
+        _entry(db, 1, dt.date(2026, 7, 5), 1, 1, 0, 120)   # 2h
+        _entry(db, 1, dt.date(2026, 8, 10), 1, 1, 0, 60)   # 1h
+        db.commit()
+        result = time_by_activity_report(db, dt.date(2026, 7, 1), dt.date(2026, 8, 31))
+        row = result["rows"][0]
+        assert row["employee"].name == "Asha"
+        assert row["total"] == 180
+        assert result["grand_total"] == 180
+
+    def test_buckets_by_calendar_month(self, db):
+        _emp(db, 1, "Asha")
+        _project(db, 1, "Website Revamp")
+        _task(db, 1, "Coding")
+        db.commit()
+        _entry(db, 1, dt.date(2026, 7, 5), 1, 1, 0, 120)
+        _entry(db, 1, dt.date(2026, 8, 10), 1, 1, 0, 60)
+        db.commit()
+        result = time_by_activity_report(db, dt.date(2026, 7, 1), dt.date(2026, 8, 31))
+        assert result["months"] == [(2026, 7), (2026, 8)]
+        row = result["rows"][0]
+        assert row["by_month"][(2026, 7)] == 120
+        assert row["by_month"][(2026, 8)] == 60
+
+    def test_project_filter_narrows_to_that_project_only(self, db):
+        _emp(db, 1, "Asha")
+        _project(db, 1, "Website Revamp")
+        _project(db, 2, "Time Compliance App")
+        _task(db, 1, "Coding")
+        db.commit()
+        _entry(db, 1, dt.date(2026, 7, 5), 1, 1, 0, 120)  # Website Revamp
+        _entry(db, 1, dt.date(2026, 7, 6), 2, 1, 0, 90)   # Time Compliance App
+        db.commit()
+        result = time_by_activity_report(db, dt.date(2026, 7, 1), dt.date(2026, 7, 31), project_ids=[2])
+        assert result["rows"][0]["total"] == 90
+
+    def test_task_filter_narrows_to_that_task_across_every_project(self, db):
+        # the "every member of Team A, how much time on Task1" case
+        _emp(db, 1, "Asha", department="Team A")
+        _emp(db, 2, "Priya", department="Team A")
+        _project(db, 1, "Website Revamp")
+        _project(db, 2, "Time Compliance App")
+        _task(db, 1, "Coding")
+        _task(db, 2, "Meeting")
+        db.commit()
+        _entry(db, 1, dt.date(2026, 7, 5), 1, 1, 0, 120)  # Asha, Coding, Project 1
+        _entry(db, 1, dt.date(2026, 7, 6), 2, 1, 0, 60)   # Asha, Coding, Project 2
+        _entry(db, 2, dt.date(2026, 7, 7), 1, 2, 0, 30)   # Priya, Meeting
+        db.commit()
+        result = time_by_activity_report(db, dt.date(2026, 7, 1), dt.date(2026, 7, 31),
+                                          department="Team A", task_type_ids=[1])
+        by_name = {r["employee"].name: r["total"] for r in result["rows"]}
+        assert by_name["Asha"] == 180  # both Coding entries, regardless of project
+        assert by_name["Priya"] == 0   # Meeting only, doesn't count
+
+    def test_employees_with_zero_matching_minutes_still_appear(self, db):
+        _emp(db, 1, "Asha", department="Team A")
+        _emp(db, 2, "Priya", department="Team A")
+        _project(db, 1, "Website Revamp")
+        _task(db, 1, "Coding")
+        db.commit()
+        _entry(db, 1, dt.date(2026, 7, 5), 1, 1, 0, 120)
+        db.commit()
+        result = time_by_activity_report(db, dt.date(2026, 7, 1), dt.date(2026, 7, 31), department="Team A")
+        names = {r["employee"].name for r in result["rows"]}
+        assert names == {"Asha", "Priya"}
+
+    def test_employee_ids_filter_narrows_the_scope(self, db):
+        _emp(db, 1, "Asha")
+        _emp(db, 2, "Priya")
+        _project(db, 1, "Website Revamp")
+        _task(db, 1, "Coding")
+        db.commit()
+        _entry(db, 1, dt.date(2026, 7, 5), 1, 1, 0, 120)
+        _entry(db, 2, dt.date(2026, 7, 5), 1, 1, 0, 60)
+        db.commit()
+        result = time_by_activity_report(db, dt.date(2026, 7, 1), dt.date(2026, 7, 31), employee_ids=[1])
+        assert [r["employee"].name for r in result["rows"]] == ["Asha"]
+
+    def test_rows_sorted_busiest_first(self, db):
+        _emp(db, 1, "Asha")
+        _emp(db, 2, "Priya")
+        _project(db, 1, "Website Revamp")
+        _task(db, 1, "Coding")
+        db.commit()
+        _entry(db, 1, dt.date(2026, 7, 5), 1, 1, 0, 60)    # 1h
+        _entry(db, 2, dt.date(2026, 7, 5), 1, 1, 0, 180)   # 3h
+        db.commit()
+        result = time_by_activity_report(db, dt.date(2026, 7, 1), dt.date(2026, 7, 31))
+        assert [r["employee"].name for r in result["rows"]] == ["Priya", "Asha"]
+
+    def test_no_employees_in_scope_returns_empty_rows_not_an_error(self, db):
+        result = time_by_activity_report(db, dt.date(2026, 7, 1), dt.date(2026, 7, 31), department="Nobody Here")
+        assert result["rows"] == []
+        assert result["grand_total"] == 0

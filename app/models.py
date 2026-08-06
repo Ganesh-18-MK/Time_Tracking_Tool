@@ -83,6 +83,16 @@ class Employee(Base):
     # nobody who could see everything before this column existed loses
     # access silently).
     is_super_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # A THIRD, independent axis from is_admin/is_super_admin (Ganesh,
+    # 2026-08-06) — who can work tickets in the new Ticketing System (see
+    # Ticket below). A plain Employee can be a Developer; an Admin need
+    # not be one. Set via Roster -> Edit only (Super-Admin-gated, same as
+    # the reports_to Team Lead picker). No startup backfill needed: unlike
+    # Project.status (needs an exact string match), every check on this
+    # column is plain truthiness (`if emp.is_developer`), and SQL NULL is
+    # falsy there exactly like Python False — see
+    # feedback_timekeeping_sqlite_add_column_gap memory note.
+    is_developer: Mapped[bool] = mapped_column(Boolean, default=False)
     # tracked=False => excluded from compliance runs (e.g. admin accounts)
     tracked: Mapped[bool] = mapped_column(Boolean, default=True)
     notes: Mapped[str] = mapped_column(Text, default="")
@@ -557,6 +567,93 @@ class OvertimeApproval(Base):
 
     def covers(self, d: dt.date) -> bool:
         return self.start_date <= d <= self.end_date
+
+
+# ---- Ticketing System (Ganesh, 2026-08-06) ----------------------------------
+# Internal bug/enhancement tracker, reached from the Support page (not a new
+# top-level nav item — two links added to support.html/admin/support.html).
+# Visibility, per Ganesh's answer to the clarifying question: everyone who
+# can log in (Employee/Admin/Super Admin alike) can raise a ticket, view the
+# full org-wide list, and comment. Only Developers (Employee.is_developer,
+# a role independent of is_admin — see above) can change a ticket's status.
+# That means every route below only needs `current_user`, except the one
+# status-change route, which needs `require_developer` (app/auth.py).
+TICKET_BUG = "bug"
+TICKET_ENHANCEMENT = "enhancement"
+TICKET_NEW_FEATURE = "new_feature"
+TICKET_TYPES = (TICKET_BUG, TICKET_ENHANCEMENT, TICKET_NEW_FEATURE)
+TICKET_TYPE_LABELS = {
+    TICKET_BUG: "Bug", TICKET_ENHANCEMENT: "Enhancement", TICKET_NEW_FEATURE: "New Feature",
+}
+
+TICKET_LOW = "low"
+TICKET_MEDIUM = "medium"
+TICKET_HIGH = "high"
+TICKET_URGENT = "urgent"
+TICKET_PRIORITIES = (TICKET_LOW, TICKET_MEDIUM, TICKET_HIGH, TICKET_URGENT)
+TICKET_PRIORITY_LABELS = {
+    TICKET_LOW: "Low", TICKET_MEDIUM: "Medium", TICKET_HIGH: "High", TICKET_URGENT: "Urgent",
+}
+# Sort key so ticket lists can show Urgent first without a raw string sort
+# putting "high" before "low" before "urgent" alphabetically.
+TICKET_PRIORITY_RANK = {TICKET_URGENT: 0, TICKET_HIGH: 1, TICKET_MEDIUM: 2, TICKET_LOW: 3}
+
+TICKET_OPEN = "open"
+TICKET_IN_PROGRESS = "in_progress"
+TICKET_RESOLVED = "resolved"
+TICKET_CLOSED = "closed"
+TICKET_STATUSES = (TICKET_OPEN, TICKET_IN_PROGRESS, TICKET_RESOLVED, TICKET_CLOSED)
+TICKET_STATUS_LABELS = {
+    TICKET_OPEN: "Open", TICKET_IN_PROGRESS: "In Progress",
+    TICKET_RESOLVED: "Resolved", TICKET_CLOSED: "Closed",
+}
+
+
+class Ticket(Base):
+    """A bug/enhancement/new-feature ticket raised from the Support page.
+    Deliberately separate from SupportQuery above — that's a free-text
+    question-and-reply to an admin; this is a structured, developer-worked
+    item with type/priority/status and a comment thread."""
+
+    __tablename__ = "tickets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True)
+    subject: Mapped[str] = mapped_column(String(200), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    ticket_type: Mapped[str] = mapped_column(String(20), default=TICKET_BUG)
+    priority: Mapped[str] = mapped_column(String(20), default=TICKET_MEDIUM)
+    status: Mapped[str] = mapped_column(String(20), default=TICKET_OPEN, index=True)
+    # filename only (e.g. "14.jpg"), not a full path — stored under
+    # TICKET_ATTACHMENT_DIR (app/routes/tickets.py), same env-overridable
+    # on-disk pattern as Employee.photo_path/AVATAR_DIR. One attachment per
+    # ticket; NULL if none was attached. Named after the ticket's own id
+    # (not the employee's, since one employee can raise several tickets),
+    # so the row must be flushed for its id before the file is written.
+    attachment_path: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    resolved_by: Mapped[str] = mapped_column(String(120), default="")
+    resolved_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+
+    employee = relationship("Employee", foreign_keys=[employee_id])
+    comments = relationship(
+        "TicketComment", back_populates="ticket", cascade="all, delete-orphan",
+        order_by="TicketComment.created_at",
+    )
+
+
+class TicketComment(Base):
+    __tablename__ = "ticket_comments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticket_id: Mapped[int] = mapped_column(ForeignKey("tickets.id"), index=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"))
+    message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    ticket = relationship("Ticket", back_populates="comments")
+    employee = relationship("Employee")
 
 
 class Holiday(Base):

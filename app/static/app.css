@@ -63,6 +63,14 @@ em.poc { font-style: normal; font-size: 10px; background: var(--accent-light); c
 .searchbar input { width: 100%; max-width: 280px; }
 .searchbar::before { content: "🔍"; font-size: 12px; opacity: .6; }
 
+/* Searchable multi-select checkbox picker (see msfilter.js) — Reports ->
+   Time by Project/Task's Employees/Projects/Tasks filters. */
+.ms-search { width: 100%; margin-bottom: 4px; }
+.ms-box { border: 1px solid var(--line); border-radius: 8px; max-height: 180px;
+  overflow-y: auto; padding: 4px 8px; background: #fff; min-width: 170px; }
+.ms-opt { display: block; padding: 3px 2px; font-size: 13px; white-space: nowrap; }
+.ms-opt input { margin-right: 5px; }
+
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); }

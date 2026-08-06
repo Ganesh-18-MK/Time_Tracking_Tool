@@ -23,6 +23,15 @@ from app.util import (
     month_label,
 )
 
+# Feature flag (Ganesh, 2026-08-06): Ticketing System code is finished and
+# tested, but he wants to deploy the Time by Project/Task report on its own
+# first and ship Ticketing separately later. Flip to True (and undo the two
+# router/mount guards in app/main.py) when it's ready to go live — nothing
+# else needs to change, the code itself was never touched. Reads from an env
+# var so it can also be flipped per-environment without a code change/redeploy
+# if that's ever useful (e.g. enabled in a staging deploy first).
+TICKETING_ENABLED = os.environ.get("TICKETING_ENABLED", "0") == "1"
+
 templates = Jinja2Templates(
     directory=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 )
@@ -58,6 +67,13 @@ templates.env.globals["month_label"] = month_label
 templates.env.globals["STATUS_LABELS"] = STATUS_LABELS
 templates.env.globals["STATUS_NAMES"] = STATUS_NAMES
 templates.env.globals["STATUSES"] = [m.COMPLETE, m.PARTIAL, m.MISSING, m.LEAVE, m.HOLIDAY, m.WEEKEND]
+templates.env.globals["TICKET_TYPE_LABELS"] = m.TICKET_TYPE_LABELS
+templates.env.globals["TICKET_PRIORITY_LABELS"] = m.TICKET_PRIORITY_LABELS
+templates.env.globals["TICKET_STATUS_LABELS"] = m.TICKET_STATUS_LABELS
+templates.env.globals["TICKET_TYPES"] = list(m.TICKET_TYPES)
+templates.env.globals["TICKET_PRIORITIES"] = list(m.TICKET_PRIORITIES)
+templates.env.globals["TICKET_STATUSES"] = list(m.TICKET_STATUSES)
+templates.env.globals["TICKETING_ENABLED"] = TICKETING_ENABLED
 
 
 def flash(request, message: str, kind: str = "ok") -> None:

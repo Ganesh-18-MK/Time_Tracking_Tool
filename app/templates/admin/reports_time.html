@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% set active_nav = 'reports' %}
+{% block title %}Time by Project/Task · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Time by Project/Task</h1>
+<p class="muted small"><a href="/admin/reports">← All reports</a></p>
+<p class="small muted" style="margin-top:-6px">Total logged time per employee, by month. Leave Tasks blank and pick
+  Project(s) for "time spent on a project"; leave Projects blank and pick Task(s) for "time spent on an activity"
+  (e.g. one Task across a whole team). Pick both to narrow to that exact combination.</p>
+
+<div class="card">
+  <form method="get" action="/admin/reports/time" class="formrow" id="filters">
+    <div>
+      <label>Department</label>
+      <select name="dept">
+        {% if user.is_super_admin %}<option value="" {{ 'selected' if not dept }}>All Departments</option>{% endif %}
+        {% for d in departments %}
+        <option value="{{ d }}" {{ 'selected' if dept == d }}>{{ d }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Employees <span class="small muted">(none = all)</span></label>
+      <input type="search" class="ms-search" data-filter-checkboxes="ms-emp" placeholder="Search employees…">
+      <div class="ms-box" id="ms-emp">
+        {% for e in employees %}
+        <label class="ms-opt"><input type="checkbox" name="emp" value="{{ e.id }}" {{ 'checked' if e.id in emp }}>{{ e.name }}</label>
+        {% endfor %}
+      </div>
+    </div>
+    <div>
+      <label>Projects <span class="small muted">(none = all)</span></label>
+      <input type="search" class="ms-search" data-filter-checkboxes="ms-project" placeholder="Search projects…">
+      <div class="ms-box" id="ms-project">
+        {% for p in projects %}
+        <label class="ms-opt"><input type="checkbox" name="project" value="{{ p.id }}" {{ 'checked' if p.id in project }}>{{ p.name }}</label>
+        {% endfor %}
+      </div>
+    </div>
+    <div>
+      <label>Tasks <span class="small muted">(none = all)</span></label>
+      <input type="search" class="ms-search" data-filter-checkboxes="ms-task" placeholder="Search tasks…">
+      <div class="ms-box" id="ms-task">
+        {% for t in tasks %}
+        <label class="ms-opt"><input type="checkbox" name="task" value="{{ t.id }}" {{ 'checked' if t.id in task }}>{{ t.name }}</label>
+        {% endfor %}
+      </div>
+    </div>
+    <div>
+      <label>Date range</label>
+      <select name="range" id="range-select" onchange="mkToggleCustomRange()">
+        {% for key, plabel, days in range_presets %}
+        <option value="{{ key }}" {{ 'selected' if range == key }}>{{ plabel }}</option>
+        {% endfor %}
+        <option value="custom" {{ 'selected' if range == 'custom' }}>Custom range…</option>
+      </select>
+    </div>
+    <div id="custom-dates" style="{{ '' if range == 'custom' else 'display:none' }}">
+      <label>From</label><input type="date" name="start" value="{{ start }}">
+      <label>To</label><input type="date" name="end" value="{{ end }}">
+    </div>
+    <div><button type="submit">Apply</button></div>
+  </form>
+  <p class="small muted" style="margin-top:8px">Showing {{ resolved_start|mdy }} to {{ resolved_end|mdy }}.
+    <a href="/admin/reports/time.xlsx?dept={{ dept }}&range={{ range }}&start={{ start }}&end={{ end }}{% for id in emp %}&emp={{ id }}{% endfor %}{% for id in project %}&project={{ id }}{% endfor %}{% for id in task %}&task={{ id }}{% endfor %}">Download Excel</a>
+  </p>
+</div>
+
+<div class="card">
+  <div class="searchbar">
+    <input type="search" data-filter-table="time-table" placeholder="Search employees…">
+  </div>
+  <div class="gridwrap">
+    <table id="time-table">
+      <thead>
+        <tr>
+          <th>Name</th><th>Department</th>
+          {% for y, mo in result.months %}<th class="nowrap">{{ month_label(y, mo) }}</th>{% endfor %}
+          <th>Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in result.rows %}
+        <tr>
+          <td><a href="/admin/person/{{ r.employee.id }}">{{ r.employee.name }}</a></td>
+          <td>{{ r.department }}</td>
+          {% for ym in result.months %}<td class="nowrap">{{ r.by_month[ym]|hm if r.by_month[ym] else '—' }}</td>{% endfor %}
+          <td class="nowrap"><strong>{{ r.total|hm if r.total else '—' }}</strong></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="{{ result.months|length + 3 }}" class="muted">No employees match this filter.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="small muted" style="margin-top:8px">Grand total: <strong>{{ result.grand_total|hm if result.grand_total else '—' }}</strong></p>
+</div>
+
+<script>
+  function mkToggleCustomRange() {
+    var isCustom = document.getElementById('range-select').value === 'custom';
+    document.getElementById('custom-dates').style.display = isCustom ? '' : 'none';
+  }
+</script>
+{% endblock %}

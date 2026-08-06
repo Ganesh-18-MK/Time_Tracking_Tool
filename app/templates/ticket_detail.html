@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% set active_nav = 'support' %}
+{% block title %}{{ ticket.subject }} · MK Timekeeping{% endblock %}
+{% block content %}
+<p class="small"><a href="/tickets">← All tickets</a></p>
+<h1>{{ ticket.subject }}</h1>
+
+<div class="card">
+  <div class="formrow">
+    <div>
+      {% set p_class = {'urgent': 'b-missing', 'high': 'b-partial', 'medium': 'b-leave', 'low': 'b-holiday'}.get(ticket.priority, 'b-holiday') %}
+      <span class="badge {{ p_class }}">{{ TICKET_PRIORITY_LABELS.get(ticket.priority, ticket.priority) }}</span>
+    </div>
+    <div>
+      {% set s_class = {'open': 'b-missing', 'in_progress': 'b-partial', 'resolved': 'b-complete', 'closed': 'b-holiday'}.get(ticket.status, 'b-holiday') %}
+      <span class="badge {{ s_class }}">{{ TICKET_STATUS_LABELS.get(ticket.status, ticket.status) }}</span>
+    </div>
+    <div class="small muted">{{ TICKET_TYPE_LABELS.get(ticket.ticket_type, ticket.ticket_type) }}</div>
+    <div class="small muted">Raised by {{ ticket.employee.name }} on {{ ticket.created_at|mdy_dt }}</div>
+  </div>
+  <p style="white-space:pre-wrap; margin-top:12px">{{ ticket.description }}</p>
+
+  {% if ticket.attachment_path %}
+  <div style="margin-top:12px">
+    {% if ticket.attachment_path.endswith('.mp4') %}
+    <video src="/static/uploads/tickets/{{ ticket.attachment_path }}" controls style="max-width:100%; max-height:360px"></video>
+    {% else %}
+    <a href="/static/uploads/tickets/{{ ticket.attachment_path }}" target="_blank">
+      <img src="/static/uploads/tickets/{{ ticket.attachment_path }}" alt="Attachment" style="max-width:100%; max-height:360px; border-radius:8px">
+    </a>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if ticket.resolved_at %}
+  <p class="small muted" style="margin-top:12px">{{ TICKET_STATUS_LABELS.get(ticket.status, ticket.status) }} by {{ ticket.resolved_by }} on {{ ticket.resolved_at|mdy_dt }}</p>
+  {% endif %}
+
+  {% if user.is_developer %}
+  <form method="post" action="/tickets/{{ ticket.id }}/status" class="formrow" style="margin-top:12px">
+    <div>
+      <label>Change status</label>
+      <select name="status">
+        {% for s in TICKET_STATUSES %}<option value="{{ s }}" {{ 'selected' if s == ticket.status }}>{{ TICKET_STATUS_LABELS[s] }}</option>{% endfor %}
+      </select>
+    </div>
+    <div><button class="small">Update status</button></div>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Comments</h2>
+  {% for c in ticket.comments %}
+  <div style="padding:8px 0; border-bottom:1px solid var(--line)">
+    <div class="small muted">{{ c.employee.name }} · {{ c.created_at|mdy_dt }}</div>
+    <div style="white-space:pre-wrap">{{ c.message }}</div>
+  </div>
+  {% else %}
+  <p class="muted small">No comments yet.</p>
+  {% endfor %}
+
+  <form method="post" action="/tickets/{{ ticket.id }}/comment" class="formrow" style="margin-top:12px; flex-direction:column">
+    <div style="width:100%">
+      <textarea name="message" required rows="3" style="width:100%" placeholder="Add a comment…"></textarea>
+    </div>
+    <div><button class="small">Add comment</button></div>
+  </form>
+</div>
+{% endblock %}

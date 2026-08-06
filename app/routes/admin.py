@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app import bulk_upload, compensation, engine, leave_bulk_upload, lists_bulk_upload, models as m
 from app.auth import Forbidden, admin_department_scope, led_by, require_admin, require_super_admin
 from app.db import get_db
-from app.templating import flash, render
+from app.templating import TICKETING_ENABLED, flash, render
 from app.util import (
     FormError,
     ROLE_EMPLOYEE,
@@ -556,7 +556,7 @@ def roster(
 def _emp_from_form(
     db: Session, emp: m.Employee, name, email, department, designation, target_hours,
     work_days, start_date, active, tracked, role, dob="", phone="", country_code="",
-    reports_to_id="",
+    reports_to_id="", is_developer=False,
 ):
     emp.name = name.strip()
     emp.country_code = country_code.strip() or None
@@ -590,6 +590,17 @@ def _emp_from_form(
     emp.active = bool(active)
     emp.tracked = bool(tracked)
     emp.is_admin, emp.is_super_admin = role_to_flags(role)
+    # Ticketing System (Ganesh, 2026-08-06) — Developer is a third,
+    # independent axis, not tied to role at all (see Employee.is_developer's
+    # docstring): a plain employee can be a developer just as much as an
+    # admin can, so this isn't part of role_to_flags. While TICKETING_ENABLED
+    # is off the checkbox is hidden from both roster forms (see
+    # app/templating.py), so the form never submits this field at all —
+    # leave the stored value untouched rather than force it to False on
+    # every save, which would silently wipe it the instant the flag flips
+    # back on.
+    if TICKETING_ENABLED:
+        emp.is_developer = bool(is_developer)
     # blank/"0" -> no reporting lead set; never allow someone to report to
     # themselves, or to someone who isn't an admin (silently ignored rather
     # than a hard error — a stray/crafted selection shouldn't block saving
@@ -622,6 +633,7 @@ def roster_add(
     tracked: str = Form("1"),
     role: str = Form(ROLE_EMPLOYEE),
     reports_to_id: str = Form(""),
+    is_developer: str = Form(""),
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
@@ -629,7 +641,7 @@ def roster_add(
     try:
         _emp_from_form(db, emp, name, email, department, designation, target_hours,
                        work_days, start_date, active == "1", tracked == "1", role,
-                       dob, phone, country_code, reports_to_id)
+                       dob, phone, country_code, reports_to_id, is_developer == "1")
     except FormError as e:
         flash(request, e.message, "err")
         return RedirectResponse("/admin/roster", status_code=303)
@@ -704,6 +716,7 @@ def roster_edit(
     tracked: str = Form(""),
     role: str = Form(ROLE_EMPLOYEE),
     reports_to_id: str = Form(""),
+    is_developer: str = Form(""),
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
@@ -714,12 +727,12 @@ def roster_edit(
         "name": emp.name, "department": emp.department, "designation": emp.designation,
         "target": emp.daily_target_minutes, "work_days": emp.work_days,
         "active": emp.active, "tracked": emp.tracked, "is_admin": emp.is_admin,
-        "is_super_admin": emp.is_super_admin,
+        "is_super_admin": emp.is_super_admin, "is_developer": emp.is_developer,
     }
     try:
         _emp_from_form(db, emp, name, email, department, designation, target_hours,
                        work_days, start_date, active == "1", tracked == "1", role,
-                       dob, phone, country_code, reports_to_id)
+                       dob, phone, country_code, reports_to_id, is_developer == "1")
     except FormError as e:
         flash(request, e.message, "err")
         return RedirectResponse("/admin/roster", status_code=303)
