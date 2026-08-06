@@ -240,6 +240,38 @@ def time_by_activity_report(
     return {"months": months, "rows": rows, "grand_total": grand_total}
 
 
+def time_filters_summary(
+    db: Session, department: Optional[str], employee_ids: Optional[List[int]],
+    project_ids: Optional[List[int]], task_type_ids: Optional[List[int]],
+) -> dict:
+    """Human-readable description of exactly which filters produced a given
+    Time by Project/Task report (Ganesh's manager, 2026-08-06: "hard to
+    tell... would you add something that shows the Employees/Depts/
+    Projects/Tasks that were used" — the result table alone doesn't say
+    whether a project filter was actually applied or everyone's showing).
+    Resolves ids back to names so both the on-screen report and the
+    exported file are self-describing even opened cold, out of context —
+    which is the whole point ("helpful when viewing the data later")."""
+    def _names(model, ids):
+        if not ids:
+            return None
+        return [
+            row.name for row in db.execute(
+                select(model).where(model.id.in_(ids)).order_by(model.name)
+            ).scalars()
+        ]
+
+    emp_names = _names(m.Employee, employee_ids)
+    project_names = _names(m.Project, project_ids)
+    task_names = _names(m.TaskType, task_type_ids)
+    return {
+        "department": department or "All Departments",
+        "employees": ", ".join(emp_names) if emp_names else "All Employees",
+        "projects": ", ".join(project_names) if project_names else "All Projects",
+        "tasks": ", ".join(task_names) if task_names else "All Tasks",
+    }
+
+
 def attendance_report(db: Session, start: dt.date, end: dt.date,
                        department: Optional[str] = None, employee_id: Optional[int] = None) -> dict:
     """{"mode": "daily", "employee": Employee, "rows": [{"date","status","overtime"}]}

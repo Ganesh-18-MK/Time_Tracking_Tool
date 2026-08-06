@@ -64,6 +64,9 @@
   <p class="small muted" style="margin-top:8px">Showing {{ resolved_start|mdy }} to {{ resolved_end|mdy }}.
     <a href="/admin/reports/time.xlsx?dept={{ dept }}&range={{ range }}&start={{ start }}&end={{ end }}{% for id in emp %}&emp={{ id }}{% endfor %}{% for id in project %}&project={{ id }}{% endfor %}{% for id in task %}&task={{ id }}{% endfor %}">Download Excel</a>
   </p>
+  <p class="small" style="margin-top:4px; padding:8px 10px; background:var(--pending-bg); border-radius:8px">
+    <strong>Showing:</strong> {{ filters_summary.department }} · {{ filters_summary.employees }} · {{ filters_summary.projects }} · {{ filters_summary.tasks }}
+  </p>
 </div>
 
 <div class="card">

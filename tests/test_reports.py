@@ -27,6 +27,7 @@ from app.reports import (
     resolve_date_range,
     strikes_report,
     time_by_activity_report,
+    time_filters_summary,
 )
 
 FUTURE_YEAR = dt.date.today().year + 1
@@ -373,3 +374,35 @@ class TestTimeByActivityReport:
         result = time_by_activity_report(db, dt.date(2026, 7, 1), dt.date(2026, 7, 31), department="Nobody Here")
         assert result["rows"] == []
         assert result["grand_total"] == 0
+
+
+class TestTimeFiltersSummary:
+    """Ganesh's manager, 2026-08-06: after picking Project(s)/Task(s)/
+    Employee(s) it wasn't obvious from the result table which filters
+    actually applied — this resolves ids back to names for the "Showing:"
+    line on the report and the summary rows in its XLSX export."""
+
+    def test_no_filters_reads_as_everything(self, db):
+        result = time_filters_summary(db, None, None, None, None)
+        assert result == {
+            "department": "All Departments", "employees": "All Employees",
+            "projects": "All Projects", "tasks": "All Tasks",
+        }
+
+    def test_resolves_ids_to_names(self, db):
+        _emp(db, 1, "Asha")
+        _project(db, 1, "Website Revamp")
+        _task(db, 1, "Coding")
+        db.commit()
+        result = time_filters_summary(db, "Ops", [1], [1], [1])
+        assert result == {
+            "department": "Ops", "employees": "Asha",
+            "projects": "Website Revamp", "tasks": "Coding",
+        }
+
+    def test_multiple_ids_join_with_commas_alphabetically(self, db):
+        _emp(db, 1, "Zara")
+        _emp(db, 2, "Asha")
+        db.commit()
+        result = time_filters_summary(db, None, [1, 2], None, None)
+        assert result["employees"] == "Asha, Zara"

@@ -25,7 +25,10 @@ router = APIRouter(prefix="/admin/reports")
 
 def _header(ws, cols):
     ws.append(cols)
-    for c in ws[1]:
+    # ws.max_row (not a hardcoded row 1) so this still bolds the right row
+    # when a sheet has summary rows written before the actual header —
+    # see reports_time_xlsx's filter-summary block above.
+    for c in ws[ws.max_row]:
         c.font = Font(bold=True)
 
 
@@ -89,12 +92,14 @@ def reports_time(
         db, ctx["resolved_start"], ctx["resolved_end"], department=ctx["dept"] or None,
         employee_ids=emp or None, project_ids=project or None, task_type_ids=task or None,
     )
+    filters_summary = reports.time_filters_summary(db, ctx["dept"], emp, project, task)
     ctx.pop("emp", None)
     return render(
         request, "admin/reports_time.html",
         {
             "user": admin, "result": result, "emp": emp, "project": project, "task": task,
             "projects": reports.projects_list(db), "tasks": reports.task_types_list(db),
+            "filters_summary": filters_summary,
             **ctx,
         },
         db=db,
@@ -119,9 +124,21 @@ def reports_time_xlsx(
         db, start_date, end_date, department=dept or None,
         employee_ids=emp or None, project_ids=project or None, task_type_ids=task or None,
     )
+    filters_summary = reports.time_filters_summary(db, dept, emp, project, task)
     wb = Workbook()
     ws = wb.active
     ws.title = "Time by employee"
+    # Filter summary rows first (Ganesh's manager, 2026-08-06) — so the
+    # file is self-describing whenever it's reopened later, without needing
+    # to go back to the report screen to remember what was selected.
+    ws.append(["Date range", f"{fmt_date(start_date)} to {fmt_date(end_date)}"])
+    ws.append(["Department", filters_summary["department"]])
+    ws.append(["Employees", filters_summary["employees"]])
+    ws.append(["Projects", filters_summary["projects"]])
+    ws.append(["Tasks", filters_summary["tasks"]])
+    for row in ws["A1:A5"]:
+        row[0].font = Font(bold=True)
+    ws.append([])
     month_cols = [month_label(y, mo) for y, mo in result["months"]]
     _header(ws, ["Name", "Department"] + month_cols + ["Total"])
     for r in result["rows"]:
