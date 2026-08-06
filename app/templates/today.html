@@ -182,7 +182,7 @@
         <td class="nowrap"><strong>{{ e.duration_minutes|hm }}</strong></td>
         <td>{{ e.project.name }}</td>
         <td>{{ e.task_type.name }}</td>
-        <td>{{ e.details }}</td>
+        <td style="white-space:pre-wrap">{{ e.details }}</td>
         <td>
           {% if not (sub and sub.locked) %}
           <form method="post" action="/entries/{{ e.id }}/delete" class="inline"
@@ -219,7 +219,7 @@
     <span class="big" id="tasktimer">00:00</span>
     <span class="muted">{{ active_timer.project.name }} · {{ active_timer.task_type.name }} — started {{ active_timer.start_minute|clock }}</span>
     <form method="post" action="/task-timer/stop" class="inline">
-      <input name="details" placeholder="Details{% if active_timer.details %} (already set — optional to change){% else %} (min 5 chars){% endif %}" style="width:220px">
+      <textarea name="details" placeholder="Details{% if active_timer.details %} (already set — optional to change){% else %} (min 5 chars){% endif %}" rows="1" style="width:220px; resize:vertical"></textarea>
       <button>Stop &amp; Log</button>
     </form>
     <form method="post" action="/task-timer/cancel" class="inline" onsubmit="return confirm('Discard this timer — nothing gets logged?')">
@@ -257,7 +257,7 @@
       <input type="hidden" name="task_type_id">
       <div class="combo-menu" hidden></div>
     </div>
-    <div style="flex:1 1 200px"><label>Details (optional now, needed by Stop)</label><input name="details" style="width:100%"></div>
+    <div style="flex:1 1 200px"><label>Details (optional now, needed by Stop)</label><textarea name="details" rows="1" style="width:100%; resize:vertical"></textarea></div>
     <div><button class="secondary">Start Timer</button></div>
   </form>
   {% endif %}
@@ -284,7 +284,7 @@
     </div>
     <div style="flex:1 1 220px">
       <label>Details (min 5 chars)</label>
-      <input name="details" required minlength="5" style="width:100%" placeholder="What exactly was done">
+      <textarea name="details" required minlength="5" rows="2" style="width:100%; resize:vertical" placeholder="What exactly was done"></textarea>
     </div>
     <div>
       <label>Start</label>
