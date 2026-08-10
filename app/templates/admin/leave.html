@@ -113,22 +113,24 @@
 
 <div class="card">
   <h2 style="margin-top:0">Leave balances</h2>
-  <p class="small muted" style="margin:-4px 0 10px">Annual entitlement per employee
-  {% if user.is_super_admin %}— set via <a href="/admin/leave/bulk-upload">Bulk assign leaves</a>{% endif %}.
-  Display only: nothing here blocks recording or approving leave past these numbers.</p>
+  <p class="small muted" style="margin:-4px 0 10px">Remaining vs. annual entitlement per employee, for {{ balance_year }}
+  {% if user.is_super_admin %}— entitlement is set via <a href="/admin/leave/bulk-upload">Bulk assign leaves</a>{% endif %}.
+  Remaining = entitlement minus approved leave taken so far this calendar year; it resets automatically each January.
+  Still nothing here blocks recording or approving leave past 0 remaining.</p>
   <div class="searchbar">
     <input type="search" data-filter-table="leave-balances-table" placeholder="Search employees…">
   </div>
   <table id="leave-balances-table">
-    <thead><tr><th>Employee</th><th>Department</th><th>Casual/yr</th><th>Sick/yr</th><th>Vacation/yr</th></tr></thead>
+    <thead><tr><th>Employee</th><th>Department</th><th>Casual (left/yr)</th><th>Sick (left/yr)</th><th>Vacation (left/yr)</th></tr></thead>
     <tbody>
       {% for e in emps %}
+      {% set b = balances[e.id] %}
       <tr>
         <td><a href="/admin/person/{{ e.id }}">{{ e.name }}</a></td>
         <td>{{ e.department or '—' }}</td>
-        <td>{{ e.casual_leave_days or 0 }}</td>
-        <td>{{ e.sick_leave_days or 0 }}</td>
-        <td>{{ e.vacation_leave_days or 0 }}</td>
+        <td class="nowrap{% if b['Casual']['remaining'] < 0 %} b-missing{% endif %}">{{ b['Casual']['remaining'] }} / {{ b['Casual']['entitlement'] }}</td>
+        <td class="nowrap{% if b['Sick']['remaining'] < 0 %} b-missing{% endif %}">{{ b['Sick']['remaining'] }} / {{ b['Sick']['entitlement'] }}</td>
+        <td class="nowrap{% if b['Vacation']['remaining'] < 0 %} b-missing{% endif %}">{{ b['Vacation']['remaining'] }} / {{ b['Vacation']['entitlement'] }}</td>
       </tr>
       {% endfor %}
     </tbody>

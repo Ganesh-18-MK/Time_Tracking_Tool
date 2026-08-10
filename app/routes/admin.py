@@ -1192,11 +1192,12 @@ def leave_page(
         # recent rows before the scoping filter ever sees them
         pending = [lv for lv in pending if lv.employee_id in scoped_ids]
         approved = [lv for lv in approved if lv.employee_id in scoped_ids][:100]
+    balances = {e.id: engine.leave_balance(db, e) for e in emps}
     return render(
         request, "admin/leave.html",
         {
             "user": admin, "emps": emps, "pending": pending, "approved": approved,
-            "leave_types": m.LEAVE_TYPES,
+            "leave_types": m.LEAVE_TYPES, "balances": balances, "balance_year": today_local().year,
         },
         db=db,
     )

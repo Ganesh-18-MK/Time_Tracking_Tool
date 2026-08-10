@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import models as m
 from app.db import Base
-from app.engine import compute_day, leave_minutes_on, strikes_in, today_attendance
+from app.engine import compute_day, leave_balance, leave_minutes_on, strikes_in, today_attendance
 
 MON = dt.date(2026, 7, 20)  # Monday
 SAT = dt.date(2026, 7, 25)
@@ -284,3 +284,150 @@ class TestTodayAttendance:
         s.commit()
         out = today_attendance(s, m.CONFIG_DEFAULTS, TODAY)
         assert out["logged"] == out["on_leave"] == out["not_yet"] == out["off_today"] == []
+
+
+class TestLeaveBalance:
+    """engine.leave_balance() — manager request, 2026-08-10: approving leave
+    should count against the employee's annual entitlement, not just
+    display it (see the function's own docstring for the full rationale:
+    computed live from approved LeaveRecords, nothing stored/decremented,
+    so a calendar-year boundary resets it automatically)."""
+
+    def _emp(self, s, **entitlements):
+        e = m.Employee(
+            id=1, name="E1", daily_target_minutes=480, work_days="0,1,2,3,4",
+            casual_leave_days=entitlements.get("casual"),
+            sick_leave_days=entitlements.get("sick"),
+            vacation_leave_days=entitlements.get("vacation"),
+        )
+        s.add(e)
+        s.commit()
+        return e
+
+    def test_no_leave_taken_remaining_equals_entitlement(self, attendance_db):
+        s = attendance_db
+        e = self._emp(s, casual=10, sick=8, vacation=12)
+        bal = leave_balance(s, e, year=2026)
+        assert bal["Casual"] == {"entitlement": 10, "used": 0, "remaining": 10}
+        assert bal["Sick"] == {"entitlement": 8, "used": 0, "remaining": 8}
+        assert bal["Vacation"] == {"entitlement": 12, "used": 0, "remaining": 12}
+
+    def test_unset_entitlement_reads_as_zero(self, attendance_db):
+        # NULL columns (never bulk-assigned) -> 0, same convention as the
+        # Employee model docstring / the old static balances table
+        s = attendance_db
+        e = self._emp(s)
+        bal = leave_balance(s, e, year=2026)
+        assert bal["Casual"]["entitlement"] == 0
+        assert bal["Casual"]["remaining"] == 0
+
+    def test_approved_full_day_leave_decrements_by_one(self, attendance_db):
+        s = attendance_db
+        e = self._emp(s, casual=10)
+        s.add(m.LeaveRecord(
+            employee_id=e.id, start_date=dt.date(2026, 3, 10), end_date=dt.date(2026, 3, 10),
+            type="Casual", minutes_per_day=None, status=m.LEAVE_APPROVED,
+        ))
+        s.commit()
+        bal = leave_balance(s, e, year=2026)
+        assert bal["Casual"] == {"entitlement": 10, "used": 1, "remaining": 9}
+
+    def test_matches_manager_worked_example_10_minus_2_is_8(self, attendance_db):
+        # the exact scenario from the conversation: 10 assigned, 2 approved
+        # full days taken -> 8 remaining
+        s = attendance_db
+        e = self._emp(s, casual=10)
+        for d in (dt.date(2026, 3, 10), dt.date(2026, 3, 11)):
+            s.add(m.LeaveRecord(
+                employee_id=e.id, start_date=d, end_date=d,
+                type="Casual", minutes_per_day=None, status=m.LEAVE_APPROVED,
+            ))
+        s.commit()
+        assert leave_balance(s, e, year=2026)["Casual"]["remaining"] == 8
+
+    def test_pending_request_does_not_decrement(self, attendance_db):
+        s = attendance_db
+        e = self._emp(s, casual=10)
+        s.add(m.LeaveRecord(
+            employee_id=e.id, start_date=dt.date(2026, 3, 10), end_date=dt.date(2026, 3, 10),
+            type="Casual", minutes_per_day=None, status=m.LEAVE_REQUESTED,
+        ))
+        s.commit()
+        assert leave_balance(s, e, year=2026)["Casual"]["remaining"] == 10
+
+    def test_rejected_request_does_not_decrement(self, attendance_db):
+        s = attendance_db
+        e = self._emp(s, casual=10)
+        s.add(m.LeaveRecord(
+            employee_id=e.id, start_date=dt.date(2026, 3, 10), end_date=dt.date(2026, 3, 10),
+            type="Casual", minutes_per_day=None, status=m.LEAVE_REJECTED,
+        ))
+        s.commit()
+        assert leave_balance(s, e, year=2026)["Casual"]["remaining"] == 10
+
+    def test_half_day_leave_decrements_by_half(self, attendance_db):
+        s = attendance_db
+        e = self._emp(s, sick=8)
+        s.add(m.LeaveRecord(
+            employee_id=e.id, start_date=dt.date(2026, 3, 10), end_date=dt.date(2026, 3, 10),
+            type="Sick", minutes_per_day=240, status=m.LEAVE_APPROVED,  # half of 480
+        ))
+        s.commit()
+        assert leave_balance(s, e, year=2026)["Sick"]["remaining"] == 7.5
+
+    def test_multi_day_leave_decrements_once_per_day(self, attendance_db):
+        s = attendance_db
+        e = self._emp(s, vacation=12)
+        s.add(m.LeaveRecord(
+            employee_id=e.id, start_date=dt.date(2026, 3, 10), end_date=dt.date(2026, 3, 14),
+            type="Vacation", minutes_per_day=None, status=m.LEAVE_APPROVED,
+        ))
+        s.commit()
+        assert leave_balance(s, e, year=2026)["Vacation"]["remaining"] == 7  # 12 - 5
+
+    def test_other_type_does_not_affect_any_bucket(self, attendance_db):
+        # "Other" has no entitlement column to track against — see
+        # _LEAVE_ENTITLEMENT_FIELDS
+        s = attendance_db
+        e = self._emp(s, casual=10, sick=8, vacation=12)
+        s.add(m.LeaveRecord(
+            employee_id=e.id, start_date=dt.date(2026, 3, 10), end_date=dt.date(2026, 3, 10),
+            type="Other", note="jury duty", minutes_per_day=None, status=m.LEAVE_APPROVED,
+        ))
+        s.commit()
+        bal = leave_balance(s, e, year=2026)
+        assert bal["Casual"]["remaining"] == 10
+        assert bal["Sick"]["remaining"] == 8
+        assert bal["Vacation"]["remaining"] == 12
+
+    def test_leave_in_a_different_year_does_not_count(self, attendance_db):
+        # resets automatically each January: querying year=2026 must ignore
+        # a 2025 leave record entirely
+        s = attendance_db
+        e = self._emp(s, casual=10)
+        s.add(m.LeaveRecord(
+            employee_id=e.id, start_date=dt.date(2025, 12, 15), end_date=dt.date(2025, 12, 15),
+            type="Casual", minutes_per_day=None, status=m.LEAVE_APPROVED,
+        ))
+        s.commit()
+        assert leave_balance(s, e, year=2026)["Casual"]["remaining"] == 10
+        # but it does count against 2025's own balance
+        assert leave_balance(s, e, year=2025)["Casual"]["remaining"] == 9
+
+    def test_leave_spanning_year_boundary_only_counts_days_in_that_year(self, attendance_db):
+        # Dec 30 2025 -> Jan 2 2026: 2 days fall in 2025, 2 days fall in 2026
+        s = attendance_db
+        e = self._emp(s, casual=10)
+        s.add(m.LeaveRecord(
+            employee_id=e.id, start_date=dt.date(2025, 12, 30), end_date=dt.date(2026, 1, 2),
+            type="Casual", minutes_per_day=None, status=m.LEAVE_APPROVED,
+        ))
+        s.commit()
+        assert leave_balance(s, e, year=2025)["Casual"]["remaining"] == 8
+        assert leave_balance(s, e, year=2026)["Casual"]["remaining"] == 8
+
+    def test_default_year_is_today_local(self, attendance_db):
+        # no year kwarg -> uses today_local().year, not the raw system clock
+        s = attendance_db
+        e = self._emp(s, casual=10)
+        assert leave_balance(s, e)["Casual"]["entitlement"] == 10

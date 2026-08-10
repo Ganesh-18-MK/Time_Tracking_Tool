@@ -4,12 +4,12 @@
 
 - ✅ Feature-complete against [PRD Draft v1](docs/PRD.md)
 - ✅ Acceptance test passing (**168/168** historical strike counts reproduced)
-- ✅ 302 unit tests green
+- ✅ 314 unit tests green
 - Updated 10 Aug 2026
 
 One web app that replaces the three manual spreadsheets used to run offshore time tracking — the per-person **Task Summary** files, the 57-tab **Leave Tracker**, and the monthly **Compliance sheet**. The employee logs time once; leave, hours variance, and compliance status all derive from that single entry automatically. Interim tool until the third-party HR pilot concludes: **designed for export, not permanence.**
 
-Beyond the original PRD build, the app now also has: real employee/admin login with self-signup passwords and lockout after repeated failures, break tracking with a live timer, a Punch In/Out countdown with automatic overtime tracking, an automatic Punch-Clock compensation balance, a three-tier admin role (Employee / department-scoped Admin / Super Admin) plus an independent Developer flag for the Ticketing System, employee-submitted leave requests, overtime pre-approval requests, support questions, and bug/enhancement/new-feature tickets (each with its own admin/developer queue), profile photos, Personal Details and Employment Details self-service profile cards, bulk employee onboarding/updating/offboarding via an Excel upload, a redesigned live compliance dashboard, and three cascading-filter Reports pages (Attendance, Strikes, Time by Project/Task with a monthly trend view) with XLSX export. See **[MK_Timekeeping_Documentation.pdf](MK_Timekeeping_Documentation.pdf)** for a plain-English, page-by-page walkthrough with a flow diagram — handy to hand to a non-technical stakeholder.
+Beyond the original PRD build, the app now also has: real employee/admin login with self-signup passwords and lockout after repeated failures, break tracking with a live timer, a Punch In/Out countdown with automatic overtime tracking, an automatic Punch-Clock compensation balance, a three-tier admin role (Employee / department-scoped Admin / Super Admin) plus an independent Developer flag for the Ticketing System, employee-submitted leave requests with a live per-type leave balance (annual entitlement minus approved leave taken this calendar year, resets automatically each January), overtime pre-approval requests, support questions, and bug/enhancement/new-feature tickets (each with its own admin/developer queue), profile photos, Personal Details and Employment Details self-service profile cards, bulk employee onboarding/updating/offboarding via an Excel upload, a redesigned live compliance dashboard, and three cascading-filter Reports pages (Attendance, Strikes, Time by Project/Task with a monthly trend view) with XLSX export. See **[MK_Timekeeping_Documentation.pdf](MK_Timekeeping_Documentation.pdf)** for a plain-English, page-by-page walkthrough with a flow diagram — handy to hand to a non-technical stakeholder.
 
 > **Feature flag:** the Ticketing System (routes, templates, Roster's Developer checkbox, the two Support-page links) is fully built and tested but deliberately dormant in production — `TICKETING_ENABLED` (env var, `app/templating.py`) defaults to off. Ganesh wants to ship the Time by Project/Task report on its own first (2026-08-06) and turn Ticketing on separately later. Set `TICKETING_ENABLED=1` in the host's environment when ready — no code changes needed.
 
@@ -263,7 +263,7 @@ MK_Timekeeping_Documentation.pdf
 | `app/main.py` | FastAPI app, session middleware, exception → error-page handlers, `/healthz`, startup hooks |
 | `app/db.py` | Engine/session setup; SQLite by default, `DATABASE_URL` for Postgres |
 | `app/models.py` | All entities (PRD §8) + `CONFIG_DEFAULTS` — minutes everywhere |
-| `app/engine.py` | Status/variance/strike computation, recompute, ledger, `today_attendance()` |
+| `app/engine.py` | Status/variance/strike computation, recompute, ledger, `today_attendance()`, `leave_balance()` |
 | `app/validation.py` | PRD §4 entry rules, back-dating window, gap flags |
 | `app/compensation.py` | Automatic Punch Clock compensation balance (`monthly_summary()`) — independent of `engine.py`/`DayStatus`/strikes, see its module docstring |
 | `app/auth.py` | `AUTH_MODE` (`dev` / `password` / `entra`) — the Entra ID swap point. Also `require_super_admin` and `admin_department_scope()` — the department-scoping gate used by Dashboard/Leave Requests/Reports |

@@ -5,6 +5,19 @@
 <h1>Leave</h1>
 
 <div class="card">
+  <h2 style="margin-top:0">Your leave balance — {{ balance_year }}</h2>
+  <div class="kpis">
+    {% for t in ('Casual', 'Sick', 'Vacation') %}
+    <div class="kpi{% if balance[t]['remaining'] < 0 %} badk{% endif %}">
+      <span class="n">{{ balance[t]['remaining'] }}</span>
+      <span class="l">{{ t }} days left of {{ balance[t]['entitlement'] }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  <p class="small muted" style="margin:10px 0 0">Resets automatically each January. Only approved leave counts against it — a pending request doesn't yet.</p>
+</div>
+
+<div class="card">
   <h2>Request leave</h2>
   <form method="post" action="/leave/request" class="formrow">
     <div><label>From</label><input type="date" name="start_date" required></div>

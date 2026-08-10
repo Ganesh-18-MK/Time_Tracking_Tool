@@ -683,9 +683,13 @@ def my_leave(
             .order_by(m.LeaveRecord.start_date.desc())
         ).scalars()
     )
+    today = today_local()
     return render(
         request, "leave.html",
-        {"user": user, "records": records, "leave_types": m.LEAVE_TYPES, "today": today_local()},
+        {
+            "user": user, "records": records, "leave_types": m.LEAVE_TYPES, "today": today,
+            "balance": engine.leave_balance(db, user, today.year), "balance_year": today.year,
+        },
     )
 
 

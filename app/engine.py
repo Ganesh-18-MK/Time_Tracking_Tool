@@ -81,6 +81,67 @@ def leave_minutes_on(leaves: List[m.LeaveRecord], emp: m.Employee, d: dt.date) -
     return min(total, emp.daily_target_minutes)
 
 
+# The three typed entitlement columns on Employee, each paired with the
+# LEAVE_TYPES value it tracks — "Other" has no entitlement column, so it's
+# deliberately excluded from leave_balance() below (matches the old static
+# balances table, which only ever showed these three).
+_LEAVE_ENTITLEMENT_FIELDS = {
+    "Casual": "casual_leave_days",
+    "Sick": "sick_leave_days",
+    "Vacation": "vacation_leave_days",
+}
+
+
+def leave_balance(db: Session, emp: m.Employee, year: Optional[int] = None) -> Dict[str, Dict[str, float]]:
+    """Remaining leave balance per type for one calendar year (manager
+    request, 2026-08-10: approving a leave request should actually count
+    against the employee's annual number, not just display it).
+
+    "Used" is computed live from approved LeaveRecords whose date range
+    overlaps that year — the identical day-by-day partial-day fraction math
+    My Month's leave_totals already uses (app/routes/employee.py's my_leave/
+    my_month: a half-day counts as 0.5, each day capped at 1.0 even if
+    minutes_per_day somehow exceeds the daily target). Nothing is stored or
+    decremented — recomputed fresh every call — so a calendar-year boundary
+    resets the balance automatically with no separate reset job: once
+    Jan 1 arrives, "used" for the new year starts back at 0 against that
+    year's entitlement number. Pending/rejected requests never count (same
+    LEAVE_APPROVED-only rule as leave_minutes_on above).
+
+    Returns {type: {"entitlement": int, "used": float, "remaining": float}}
+    for Casual/Sick/Vacation. An unset entitlement (NULL column) reads as 0,
+    same convention as the Employee model docstring."""
+    year = year or today_local().year
+    y_start, y_end = dt.date(year, 1, 1), dt.date(year, 12, 31)
+    entitlements = {t: getattr(emp, field) or 0 for t, field in _LEAVE_ENTITLEMENT_FIELDS.items()}
+    used = {t: 0.0 for t in entitlements}
+    rows = db.execute(
+        select(m.LeaveRecord).where(
+            m.LeaveRecord.employee_id == emp.id,
+            m.LeaveRecord.start_date <= y_end,
+            m.LeaveRecord.end_date >= y_start,
+            m.LeaveRecord.status == m.LEAVE_APPROVED,
+        )
+    ).scalars()
+    for lv in rows:
+        if lv.type not in used:
+            continue  # "Other" or any custom type has nothing to track against
+        d = max(lv.start_date, y_start)
+        while d <= min(lv.end_date, y_end):
+            per_day = lv.minutes_per_day if lv.minutes_per_day is not None else emp.daily_target_minutes
+            frac = per_day / emp.daily_target_minutes if emp.daily_target_minutes else 1
+            used[lv.type] += min(frac, 1.0)
+            d += dt.timedelta(days=1)
+    return {
+        t: {
+            "entitlement": entitlements[t],
+            "used": round(used[t], 2),
+            "remaining": round(entitlements[t] - used[t], 2),
+        }
+        for t in entitlements
+    }
+
+
 # ---- core day computation ---------------------------------------------------
 def compute_day(
     emp: m.Employee,
