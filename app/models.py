@@ -3,8 +3,12 @@
 Conventions:
   * All durations/targets/variances are integer MINUTES (no float-hour drift,
     matches the minute-level logging the whole system is built on).
-  * Times of day are integer minutes since midnight (0..1440). No timezones —
-    every value is in the employee's local working time, same as the sheets.
+  * Times of day are integer minutes since midnight (0..1440). No PER-EMPLOYEE
+    timezones — every value is captured in one fixed reference timezone (the
+    firm's home Central time, see util.py's BUSINESS_TZ/now_local()/
+    today_local()), regardless of the server container's own OS clock or
+    wherever an employee physically is. Matches the single-timezone
+    assumption the legacy sheets were built on.
   * DayStatus is the materialized compliance view. Rows with source='imported'
     are frozen legacy fact and are never recomputed; source='computed' rows
     are rebuilt from live data at any time.
@@ -415,13 +419,14 @@ class ActiveTaskTimer(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
     task_type_id: Mapped[int] = mapped_column(ForeignKey("task_types.id"))
     details: Mapped[str] = mapped_column(Text, default="")
-    # Local clock-face minute at Start (dt.datetime.now(), NOT started_at
-    # below) — same split BreakEntry/PunchSession already use: this is what
-    # becomes TaskEntry.start_minute when the timer stops, so it must be
-    # the same "employee's local working time" every other minute value in
-    # this app is (see module docstring's no-timezones rule). started_at is
-    # a full UTC timestamp, kept only so the live count-up widget survives
-    # a page refresh — it is NEVER read for the minute-of-day value.
+    # Business-timezone clock-face minute at Start (util.now_local(), NOT
+    # started_at below) — same split BreakEntry/PunchSession already use:
+    # this is what becomes TaskEntry.start_minute when the timer stops, so
+    # it must be expressed the same fixed BUSINESS_TZ every other minute
+    # value in this app is (see util.py's BUSINESS_TZ / no-per-employee-
+    # timezones rule). started_at is a full UTC timestamp, kept only so the
+    # live count-up widget survives a page refresh — it is NEVER read for
+    # the minute-of-day value.
     start_minute: Mapped[int] = mapped_column(Integer)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 

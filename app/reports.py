@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app import engine, models as m
 from app.models import COMPLETE, HOLIDAY, LEAVE, MISSING, PARTIAL, STRIKE_STATUSES, WEEKEND
-from app.util import overtime_minutes
+from app.util import overtime_minutes, today_local
 
 STATUS_ORDER = [COMPLETE, PARTIAL, MISSING, LEAVE, HOLIDAY, WEEKEND]
 STATUS_LABELS = {
@@ -41,7 +41,7 @@ def resolve_date_range(range_key: str, start: Optional[dt.date] = None,
                         end: Optional[dt.date] = None, today: Optional[dt.date] = None):
     """-> (start_date, end_date), inclusive. Falls back to the default
     preset if range_key is "custom" without both dates, or is unrecognized."""
-    today = today or dt.date.today()
+    today = today or today_local()
     if range_key == "custom" and start and end:
         return (start, end) if start <= end else (end, start)
     for key, _label, days in RANGE_PRESETS:
@@ -77,7 +77,7 @@ def _empty_counts() -> Dict[str, int]:
 
 
 def _ensure_fresh(db: Session, start: dt.date, end: dt.date) -> None:
-    today = dt.date.today()
+    today = today_local()
     if start <= today:
         engine.recompute_all(db, start, min(end, today))
 

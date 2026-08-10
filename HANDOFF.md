@@ -30,7 +30,7 @@ No bundle? The repo alone still demos: `python -m demo.run_demo` serves the comm
 
 ## The five concepts you must understand (10 minutes)
 
-1. **Minutes, everywhere.** All durations/targets/variances are integer minutes; times-of-day are minutes since midnight. No floats, no timezones (everything is the employee's local working time, same as the sheets). Formatting is Jinja filters `hm` / `hm_signed` / `clock`.
+1. **Minutes, everywhere.** All durations/targets/variances are integer minutes; times-of-day are minutes since midnight. No floats. No *per-employee* timezones — every clock-face value is captured in one fixed reference timezone (`app/util.py`'s `BUSINESS_TZ` = America/Chicago, the firm's home timezone, via `now_local()`/`today_local()`), regardless of the server's own OS clock or wherever an employee physically is (2026-08-10, after an offshore employee's auto-timer showed the wrong start time — the server container defaults to UTC). Formatting is Jinja filters `hm` / `hm_signed` / `clock`.
 
 2. **Frozen history vs live computation.** `DayStatus.source='imported'` rows are legacy fact — raw sheet token kept in `imported_token`, never recomputed. Live rows (`source='computed'`) rebuild freely from entries+leave, but only from `live_start_date` (config) onward. This split is why the acceptance test stays stable while the app keeps computing new days. **Never hand-edit imported rows;** admins use overrides instead.
 

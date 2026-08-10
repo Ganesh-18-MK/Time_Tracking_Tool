@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app import models as m
 from app.engine import cfg_int, holidays_set, is_working_day
+from app.util import today_local
 
 
 class EntryError(Exception):
@@ -48,7 +49,7 @@ def validate_entry(
     acting_admin: bool = False,
 ) -> None:
     errors: List[str] = []
-    today = dt.date.today()
+    today = today_local()
 
     # --- date window ---------------------------------------------------------
     if not acting_admin:

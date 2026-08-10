@@ -29,8 +29,11 @@ from app.reports import (
     time_by_activity_report,
     time_filters_summary,
 )
+from app.util import today_local
 
-FUTURE_YEAR = dt.date.today().year + 1
+# "today" everywhere below (and inside _ensure_fresh()/attendance_report())
+# is today_local() (BUSINESS_TZ), not the test runner's own OS clock.
+FUTURE_YEAR = today_local().year + 1
 BASE_DATE = dt.date(FUTURE_YEAR, 6, 1)
 
 

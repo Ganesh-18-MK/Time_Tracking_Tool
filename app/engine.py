@@ -32,6 +32,7 @@ from app.models import (
     STRIKE_STATUSES,
     WEEKEND,
 )
+from app.util import today_local
 
 
 # ---- config ----------------------------------------------------------------
@@ -141,7 +142,7 @@ def recompute_employee(
     """Rebuild computed DayStatus rows for one employee over [start, end].
     Imported rows are left untouched; override fields are preserved."""
     cfg = cfg or get_config(db)
-    today = today or dt.date.today()
+    today = today or today_local()
     tolerance = cfg_int(cfg, "tolerance_minutes")
     ls = live_start(cfg)
     if ls and start < ls:
@@ -364,7 +365,7 @@ def today_attendance(
     separately in 'off_today' so they don't inflate a 'not yet logged'
     count admins can't actually act on."""
     cfg = cfg or get_config(db)
-    today = today or dt.date.today()
+    today = today or today_local()
     holidays = holidays_set(db)
     emps = list(
         db.execute(

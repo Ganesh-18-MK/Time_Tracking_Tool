@@ -16,11 +16,13 @@ from app.util import (
     FormError,
     audit,
     clamp_break_end,
+    now_local,
     overtime_minutes,
     parse_date_field,
     parse_hhmm,
     parse_int_field,
     punch_remaining_minutes,
+    today_local,
 )
 from app.validation import EntryError, earliest_allowed_date, gap_flags, validate_entry
 
@@ -48,7 +50,7 @@ MAX_PHOTO_BYTES = 2 * 1024 * 1024  # 2 MB
 
 
 def _allowed_dates(db: Session, emp: m.Employee, cfg) -> list:
-    today = dt.date.today()
+    today = today_local()
     earliest = earliest_allowed_date(
         emp, today, engine.cfg_int(cfg, "backdate_working_days"), engine.holidays_set(db)
     )
@@ -220,7 +222,7 @@ def today_page(
     db: Session = Depends(get_db),
 ):
     cfg = engine.get_config(db)
-    day = dt.date.fromisoformat(date) if date else dt.date.today()
+    day = dt.date.fromisoformat(date) if date else today_local()
     projects, tasks = _visible_projects_and_tasks(db, user)
     assigned_project_ids = {
         row[0] for row in db.execute(
@@ -239,7 +241,7 @@ def today_page(
             "suggest_start": f"{last_end // 60:02d}:{last_end % 60:02d}" if last_end else "",
             "user": user,
             "day": day,
-            "today": dt.date.today(),
+            "today": today_local(),
             "allowed_dates": _allowed_dates(db, user, cfg),
             # plain dicts, not ORM objects — the template feeds these straight
             # into the searchable-combo widget via |tojson. Assigned ones
@@ -330,7 +332,7 @@ def start_break(
     """Deliberately always 'today', regardless of what date the Today page
     happens to be viewing — a break is a live, right-now thing, not
     something you log after the fact."""
-    today = dt.date.today()
+    today = today_local()
     break_type = break_type if break_type in m.BREAK_TYPES else m.BREAK_PERSONAL
 
     todays_breaks = list(
@@ -349,7 +351,7 @@ def start_break(
         flash(request, "Lunch/Dinner break is allowed once per day — you've already taken it today.", "err")
         return RedirectResponse("/today", status_code=303)
 
-    now = dt.datetime.now()
+    now = now_local()
     db.add(m.BreakEntry(
         employee_id=user.id, date=today, break_type=break_type,
         start_minute=now.hour * 60 + now.minute,
@@ -366,7 +368,7 @@ def end_break(
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    today = dt.date.today()
+    today = today_local()
     active = db.execute(
         select(m.BreakEntry).where(
             m.BreakEntry.employee_id == user.id, m.BreakEntry.date == today,
@@ -374,7 +376,7 @@ def end_break(
         )
     ).scalar_one_or_none()
     if active is not None:
-        now = dt.datetime.now()
+        now = now_local()
         active.end_minute = clamp_break_end(active.start_minute, now.hour * 60 + now.minute)
         active.ended_at = dt.datetime.utcnow()
         db.commit()
@@ -390,7 +392,7 @@ def _finish_task_timer(db: Session, user: m.Employee, timer: m.ActiveTaskTimer, 
     Returns (True, None) on success; on failure returns (False, message)
     and leaves the timer running/untouched so nothing is silently lost —
     the employee can fix Details and try Stop again, or keep working."""
-    now = dt.datetime.now()
+    now = now_local()
     end_minute = clamp_break_end(timer.start_minute, now.hour * 60 + now.minute)
     try:
         validate_entry(
@@ -424,7 +426,7 @@ def start_task_timer(
     saves whatever was already running as a real TaskEntry first, rather
     than allowing several to run at once (see ActiveTaskTimer docstring)."""
     cfg = engine.get_config(db)
-    today = dt.date.today()
+    today = today_local()
 
     existing = db.execute(
         select(m.ActiveTaskTimer).where(m.ActiveTaskTimer.employee_id == user.id)
@@ -443,7 +445,7 @@ def start_task_timer(
         flash(request, "Choose a Project and Task before starting the timer.", "err")
         return RedirectResponse("/today", status_code=303)
 
-    now = dt.datetime.now()
+    now = now_local()
     db.add(m.ActiveTaskTimer(
         employee_id=user.id, date=today, project_id=project_id, task_type_id=task_type_id,
         details=details.strip(), start_minute=now.hour * 60 + now.minute,
@@ -507,7 +509,7 @@ def punch_in(
     """Personal countdown timer only — see PunchSession's docstring.
     Deliberately always 'today', same reasoning as start_break: this is a
     live, right-now action, not something logged after the fact."""
-    today = dt.date.today()
+    today = today_local()
     already_open = db.execute(
         select(m.PunchSession).where(
             m.PunchSession.employee_id == user.id, m.PunchSession.date == today,
@@ -530,7 +532,7 @@ def punch_out(
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    today = dt.date.today()
+    today = today_local()
     active = db.execute(
         select(m.PunchSession).where(
             m.PunchSession.employee_id == user.id, m.PunchSession.date == today,
@@ -594,7 +596,7 @@ def my_month(
     year, month = parse_ym(ym)
     first, last = engine.month_range(year, month)
     # keep the visible month fresh
-    engine.recompute_employee(db, user, first, min(last, dt.date.today()), cfg)
+    engine.recompute_employee(db, user, first, min(last, today_local()), cfg)
 
     rows = {
         r.date: r
@@ -638,7 +640,7 @@ def my_month(
             leave_totals[lv.type] = leave_totals.get(lv.type, 0) + min(frac, 1.0)
             d += dt.timedelta(days=1)
 
-    ledger = engine.running_ledger(db, user, first, min(last, dt.date.today()))
+    ledger = engine.running_ledger(db, user, first, min(last, today_local()))
     balance = ledger[-1]["balance"] if ledger else 0
     comp = compensation.monthly_summary(db, user, year, month)
     (py, pm), (ny, nm) = prev_next_month(year, month)
@@ -659,7 +661,7 @@ def my_month(
             "comp": comp,
             "prev_ym": f"{py}-{pm:02d}",
             "next_ym": f"{ny}-{nm:02d}",
-            "today": dt.date.today(),
+            "today": today_local(),
         },
     )
 
@@ -683,7 +685,7 @@ def my_leave(
     )
     return render(
         request, "leave.html",
-        {"user": user, "records": records, "leave_types": m.LEAVE_TYPES, "today": dt.date.today()},
+        {"user": user, "records": records, "leave_types": m.LEAVE_TYPES, "today": today_local()},
     )
 
 

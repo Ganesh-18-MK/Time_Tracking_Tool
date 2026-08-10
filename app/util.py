@@ -5,6 +5,7 @@ import json
 import os
 import re
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
@@ -12,6 +13,36 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models as m
+
+# The firm's home timezone (manager request, 2026-08-10): every "now"/"today"
+# the app captures from the real world is expressed in THIS one fixed
+# timezone, regardless of the server container's own OS clock (Cloud Run
+# defaults to UTC) or of wherever an employee physically is. An employee in
+# IST clicking Start at 8:00 PM local time is captured as ~9:30 AM CDT the
+# same instant, not 8:00 PM. CLAUDE.md's "no timezones" hard rule means no
+# PER-EMPLOYEE timezone handling (nobody's individual location is tracked or
+# converted for) — not "the app has zero timezone awareness." Handles
+# CST/CDT automatically (America/Chicago, not a fixed UTC offset).
+BUSINESS_TZ = ZoneInfo("America/Chicago")
+
+
+def now_local() -> dt.datetime:
+    """The current wall-clock moment in BUSINESS_TZ. Use this instead of
+    dt.datetime.now() anywhere a start_minute/end_minute (clock-face-of-day,
+    minutes since midnight) needs to be captured from the real world —
+    dt.datetime.now() returns the container's raw OS time (UTC), which is
+    not what should ever be shown to or stored for an employee. See
+    BUSINESS_TZ above for why."""
+    return dt.datetime.now(dt.timezone.utc).astimezone(BUSINESS_TZ)
+
+
+def today_local() -> dt.date:
+    """The current calendar date in BUSINESS_TZ. Use this instead of
+    dt.date.today() (which reads the container's raw UTC date) anywhere
+    "today" drives business logic — which day a submission/entry/punch
+    belongs to, compliance recompute windows, a report's default date
+    range, etc. See BUSINESS_TZ above."""
+    return now_local().date()
 
 
 def fmt_hm(minutes: Optional[int]) -> str:
@@ -366,7 +397,7 @@ def prev_next_month(year: int, month: int):
 
 
 def parse_ym(ym: Optional[str], default: Optional[dt.date] = None):
-    d = default or dt.date.today()
+    d = default or today_local()
     if ym:
         try:
             y, mo = ym.split("-")

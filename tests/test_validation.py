@@ -7,10 +7,14 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
 from app import models as m
+from app.util import today_local
 from app.validation import EntryError, earliest_allowed_date, gap_flags, validate_entry
 
 CFG = dict(m.CONFIG_DEFAULTS)
-TODAY = dt.date.today()
+# validate_entry() itself now computes "today" via today_local() (BUSINESS_TZ,
+# not the test runner's own OS clock) — this must match, or these tests would
+# be flaky specifically in the UTC-vs-Central gap around midnight.
+TODAY = today_local()
 
 
 @pytest.fixture()

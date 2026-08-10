@@ -7,7 +7,7 @@ time/leave/compliance tracking (~45 offshore staff). Spec: docs/PRD.md. Onboardi
 
 ```bash
 .venv/bin/python -m uvicorn app.main:app --port 8127     # run (http://localhost:8127, dev pick-a-user auth)
-.venv/bin/python -m pytest tests/ -q                     # 35 tests — must stay green
+.venv/bin/python -m pytest tests/ -q                     # 302 tests — must stay green
 .venv/bin/python -m legacy.verify_strikes                # acceptance: MUST print 168/168
 rm tms.db && .venv/bin/python -m legacy.import_legacy    # rebuild DB from the 3 legacy .ods files
 ```
@@ -16,7 +16,8 @@ rm tms.db && .venv/bin/python -m legacy.import_legacy    # rebuild DB from the 3
 
 - **The project directory name ends with a trailing space** — always quote absolute paths.
 - Python 3.9 (system). No `X | Y` unions in runtime annotations; use `Optional[...]`.
-- All durations/targets/variances are **integer minutes**; times-of-day are minutes since midnight. No floats, no timezones. Format via Jinja filters `hm`/`hm_signed`/`clock`.
+- All durations/targets/variances are **integer minutes**; times-of-day are minutes since midnight. No floats. Format via Jinja filters `hm`/`hm_signed`/`clock`.
+- **One fixed reference timezone, not per-employee ones** (manager request, 2026-08-10): every `start_minute`/`end_minute`/"today" the app captures from the real world is expressed in `app/util.py`'s `BUSINESS_TZ` (`America/Chicago`, handles CST/CDT automatically) — never the server container's own OS clock (Cloud Run defaults to UTC) and never wherever an employee physically is. Always capture "now"/"today" via `util.now_local()`/`util.today_local()` — never call `dt.datetime.now()`/`dt.date.today()` directly anywhere a clock-face value or business day is being determined. (`dt.datetime.utcnow()` is still correct and unchanged for audit-trail timestamps like `reviewed_at`/`updated_at`/`started_at` — those are pure elapsed-time/audit values, not clock-face-of-day, so they stay in UTC.)
 - Every human-read date/timestamp is **MM/DD/YYYY** (manager request, 2026-08-03) via the `mdy`/`mdy_dt` Jinja filters or `app/util.py`'s `fmt_date`/`fmt_datetime` — never a raw `.isoformat()`/`.strftime()` in a template or export. Exception: `<input type="date">` values, hidden form fields, and option/checkbox submit values stay ISO (`YYYY-MM-DD`) — that's the HTML date-input spec and what `parse_date_field`/`dt.date.fromisoformat` expect back, not something a human reads.
 - `DayStatus.source='imported'` rows are **frozen legacy fact** — never recompute, migrate, or "fix" them (raw sheet cell is in `imported_token`). Admins change history via overrides only.
 - `strike_exempt=True` rows (pre-policy days before 2026-04-15) must never count as strikes — the legacy sheets' own formulas excluded them. Changing this breaks `verify_strikes`.
@@ -27,6 +28,7 @@ rm tms.db && .venv/bin/python -m legacy.import_legacy    # rebuild DB from the 3
 
 ## Layout
 
+- `app/util.py` — formatting/audit helpers shared by routes and templates; also the one place `now_local()`/`today_local()`/`BUSINESS_TZ` live (see Hard rules above)
 - `app/engine.py` — all business math (statuses, variance, strikes, recompute, ledger)
 - `app/validation.py` — PRD §4 entry rules (overlaps block, gaps flag, 4h cap, backdate window)
 - `app/routes/` — auth (dev login), employee (Today/My Month/Leave/Overtime/Support/Profile), admin (dashboard/roster/lists/leave/overtime/config/audit/support), tickets (Ticketing System — raise/list/detail/comment/status-change), exports (XLSX/CSV)

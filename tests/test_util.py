@@ -1,4 +1,7 @@
 """Small pure-function helpers in app/util.py."""
+import datetime as dt
+from zoneinfo import ZoneInfo
+
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -6,15 +9,61 @@ from sqlalchemy.orm import sessionmaker
 from app import models as m
 from app.db import Base
 from app.util import (
+    BUSINESS_TZ,
     clamp_break_end,
     ensure_bootstrap_admins,
     ensure_list_status_backfill,
     flags_to_role,
     mask_tail,
+    now_local,
     overtime_minutes,
     punch_remaining_minutes,
     role_to_flags,
+    today_local,
 )
+
+
+class TestBusinessTimezone:
+    """now_local()/today_local() (manager request, 2026-08-10): every
+    clock-face capture is expressed in one fixed reference timezone
+    (BUSINESS_TZ = America/Chicago), independent of the server container's
+    own OS clock (Cloud Run defaults to UTC) or wherever an employee
+    physically is. See CLAUDE.md's "no timezones" hard rule and
+    app/util.py's BUSINESS_TZ docstring."""
+
+    def test_now_local_is_timezone_aware_in_business_tz(self):
+        now = now_local()
+        assert now.tzinfo is not None
+        assert now.utcoffset() is not None
+        # CST is UTC-6, CDT is UTC-5 — never naive, never any other offset
+        assert now.utcoffset() in (dt.timedelta(hours=-6), dt.timedelta(hours=-5))
+
+    def test_today_local_matches_now_local_date(self):
+        # both read the same instant through the same BUSINESS_TZ; the tiny
+        # gap between the two calls can only matter within a few ms of
+        # midnight, which this test isn't trying to pin down
+        assert today_local() == now_local().date()
+
+    def test_summer_date_is_cdt_utc_minus_5(self):
+        # August: US Central is on daylight time
+        instant = dt.datetime(2026, 8, 10, 12, 0, tzinfo=BUSINESS_TZ)
+        assert instant.utcoffset() == dt.timedelta(hours=-5)
+        assert instant.tzname() == "CDT"
+
+    def test_winter_date_is_cst_utc_minus_6(self):
+        # January: US Central is on standard time
+        instant = dt.datetime(2026, 1, 10, 12, 0, tzinfo=BUSINESS_TZ)
+        assert instant.utcoffset() == dt.timedelta(hours=-6)
+        assert instant.tzname() == "CST"
+
+    def test_ist_evening_converts_to_business_tz_morning(self):
+        # The exact worked example from the manager conversation, 2026-08-10:
+        # an employee in IST clicking Start at 8:00 PM local time must be
+        # captured as ~9:30 AM Central the same instant — not 8:00 PM.
+        ist_instant = dt.datetime(2026, 8, 10, 20, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+        converted = ist_instant.astimezone(BUSINESS_TZ)
+        assert (converted.hour, converted.minute) == (9, 30)
+        assert converted.tzname() == "CDT"
 
 
 class TestClampBreakEnd:

@@ -4,14 +4,16 @@
 
 - ✅ Feature-complete against [PRD Draft v1](docs/PRD.md)
 - ✅ Acceptance test passing (**168/168** historical strike counts reproduced)
-- ✅ 297 unit tests green
-- Updated 06 Aug 2026
+- ✅ 302 unit tests green
+- Updated 10 Aug 2026
 
 One web app that replaces the three manual spreadsheets used to run offshore time tracking — the per-person **Task Summary** files, the 57-tab **Leave Tracker**, and the monthly **Compliance sheet**. The employee logs time once; leave, hours variance, and compliance status all derive from that single entry automatically. Interim tool until the third-party HR pilot concludes: **designed for export, not permanence.**
 
 Beyond the original PRD build, the app now also has: real employee/admin login with self-signup passwords and lockout after repeated failures, break tracking with a live timer, a Punch In/Out countdown with automatic overtime tracking, an automatic Punch-Clock compensation balance, a three-tier admin role (Employee / department-scoped Admin / Super Admin) plus an independent Developer flag for the Ticketing System, employee-submitted leave requests, overtime pre-approval requests, support questions, and bug/enhancement/new-feature tickets (each with its own admin/developer queue), profile photos, Personal Details and Employment Details self-service profile cards, bulk employee onboarding/updating/offboarding via an Excel upload, a redesigned live compliance dashboard, and three cascading-filter Reports pages (Attendance, Strikes, Time by Project/Task with a monthly trend view) with XLSX export. See **[MK_Timekeeping_Documentation.pdf](MK_Timekeeping_Documentation.pdf)** for a plain-English, page-by-page walkthrough with a flow diagram — handy to hand to a non-technical stakeholder.
 
 > **Feature flag:** the Ticketing System (routes, templates, Roster's Developer checkbox, the two Support-page links) is fully built and tested but deliberately dormant in production — `TICKETING_ENABLED` (env var, `app/templating.py`) defaults to off. Ganesh wants to ship the Time by Project/Task report on its own first (2026-08-06) and turn Ticketing on separately later. Set `TICKETING_ENABLED=1` in the host's environment when ready — no code changes needed.
+
+> **Timezone:** every clock-face time (`start_minute`/`end_minute`, breaks, the auto time-capture timer, "today") is captured in one fixed reference timezone — `America/Chicago`, the firm's home timezone — via `app/util.py`'s `now_local()`/`today_local()`, **not** the server container's own OS clock (Cloud Run defaults to UTC) and not wherever an employee physically is (manager request, 2026-08-10, after an offshore employee's auto-timer showed the wrong start time). An employee in IST clicking Start at 8:00 PM local time gets logged as ~9:30 AM CDT the same instant — that's correct, not a bug. Requires the `tzdata` package (`requirements.txt`) so `zoneinfo` resolves correctly even on a minimal container image without a compiled OS tz database.
 
 New to this codebase? Start with **[HANDOFF.md](HANDOFF.md)**. The original requirements are in **[docs/PRD.md](docs/PRD.md)**.
 
@@ -271,7 +273,7 @@ MK_Timekeeping_Documentation.pdf
 | `app/leave_bulk_upload.py` | Leave-allocation Excel parsing: bulk-set Casual/Sick/Vacation entitlement by Employee ID |
 | `app/lists_bulk_upload.py` | Single-column, add-only Excel parsing for Project/Employer and Task Type dropdown values |
 | `app/reports.py` | Attendance/Strike/Time-by-Project-Task report aggregation, cascading filters |
-| `app/util.py` | Formatting filters, `FormError`, `audit()`, employee-code generation, `xlsx_response()` |
+| `app/util.py` | Formatting filters, `FormError`, `audit()`, employee-code generation, `xlsx_response()`, `now_local()`/`today_local()`/`BUSINESS_TZ` |
 | `app/templating.py` | Jinja env, filters (`hm`, `hm_signed`, `clock`, `mdy`, `mdy_dt`, `tojson`), flash helpers, nav badges |
 | `app/routes/` | `auth` (login/signup), `employee` (Today/My Month/Leave/Overtime/Support/Profile), `admin` (dashboard/roster/lists/leave/overtime/config/audit/support), `tickets` (raise/list/detail/comment/status-change — Ticketing System), `reports`, `exports` |
 | `app/templates/` | Base layout + employee pages + `admin/` pages (server-rendered, small inline JS) |

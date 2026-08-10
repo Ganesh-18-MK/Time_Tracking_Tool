@@ -43,7 +43,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import engine, models as m
-from app.util import overtime_minutes
+from app.util import overtime_minutes, today_local
 
 
 def _completed_punch_minutes_by_day(
@@ -105,7 +105,7 @@ def monthly_summary(
     nets against each other. Only days with a positive
     DayStatus.target_minutes count as a working day; leave/holiday/weekend
     days have target 0 and are never a shortfall."""
-    today = today or dt.date.today()
+    today = today or today_local()
     first, last = engine.month_range(year, month)
     end = min(last, today)
     if end < first:

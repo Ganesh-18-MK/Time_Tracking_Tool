@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app import engine, models as m
 from app.auth import Forbidden, admin_department_scope, require_admin, require_super_admin
 from app.db import get_db
-from app.util import STATUS_LABELS, fmt_date, fmt_hm, parse_ym
+from app.util import STATUS_LABELS, fmt_date, fmt_hm, parse_ym, today_local
 
 router = APIRouter(prefix="/export")
 
@@ -132,7 +132,7 @@ def person_xlsx(
                "Compensated", "Override", "Source"])
     for c in ws[1]:
         c.font = Font(bold=True)
-    for item in engine.running_ledger(db, emp, first, min(last, dt.date.today())):
+    for item in engine.running_ledger(db, emp, first, min(last, today_local())):
         r = item["row"]
         ws.append([
             fmt_date(r.date), r.effective_status(), fmt_hm(r.actual_minutes),

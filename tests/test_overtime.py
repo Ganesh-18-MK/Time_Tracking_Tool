@@ -17,9 +17,10 @@ from app import models as m
 from app.auth import led_by
 from app.db import Base
 from app.reports import attendance_report
+from app.util import today_local
 
 YEAR, MONTH = 2026, 8
-FUTURE_YEAR = dt.date.today().year + 1  # keeps attendance_report tests out of
+FUTURE_YEAR = today_local().year + 1  # keeps attendance_report tests out of
 # _ensure_fresh()'s recompute path, same reasoning as test_reports.py's
 # module docstring — these tests seed DayStatus rows directly and a
 # recompute would wipe them.

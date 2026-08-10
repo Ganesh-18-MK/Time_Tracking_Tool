@@ -26,6 +26,7 @@ from app.util import (
     parse_ym,
     prev_next_month,
     role_to_flags,
+    today_local,
 )
 
 router = APIRouter(prefix="/admin")
@@ -46,7 +47,7 @@ def dashboard(
     cfg = engine.get_config(db)
     year, month = parse_ym(ym)
     first, last = engine.month_range(year, month)
-    today = dt.date.today()
+    today = today_local()
 
     # live months stay fresh on load (cheap at this scale; nightly job optional)
     if first <= today:
@@ -210,7 +211,7 @@ def recompute(
 ):
     year, month = parse_ym(ym)
     first, last = engine.month_range(year, month)
-    n = engine.recompute_all(db, first, min(last, dt.date.today()))
+    n = engine.recompute_all(db, first, min(last, today_local()))
     audit(db, admin.name, "recompute_month", "DayStatus", ym, {"rows": n})
     flash(request, f"Recomputed {n} day-statuses for {ym}.", "ok")
     return RedirectResponse(f"/admin?ym={ym}", status_code=303)
@@ -239,7 +240,7 @@ def person(
     cfg = engine.get_config(db)
     year, month = parse_ym(ym)
     first, last = engine.month_range(year, month)
-    today = dt.date.today()
+    today = today_local()
     if first <= today:
         engine.recompute_employee(db, emp, first, min(last, today), cfg)
 
@@ -1297,7 +1298,7 @@ def leave_approve(
     audit(db, admin.name, "leave_approve", "LeaveRecord", lv.id,
           {"employee": emp.name if emp else lv.employee_id, "range": f"{lv.start_date}..{lv.end_date}"})
     if emp is not None:
-        engine.recompute_employee(db, emp, lv.start_date, min(lv.end_date, dt.date.today()))
+        engine.recompute_employee(db, emp, lv.start_date, min(lv.end_date, today_local()))
     flash(request, f"Approved leave for {emp.name if emp else lv.employee_id}.", "ok")
     return RedirectResponse("/admin/leave", status_code=303)
 
@@ -1325,7 +1326,7 @@ def leave_reject(
     audit(db, admin.name, "leave_reject", "LeaveRecord", lv.id,
           {"employee": emp.name if emp else lv.employee_id, "reason": review_note.strip()})
     if emp is not None:
-        engine.recompute_employee(db, emp, lv.start_date, min(lv.end_date, dt.date.today()))
+        engine.recompute_employee(db, emp, lv.start_date, min(lv.end_date, today_local()))
     flash(request, f"Rejected leave request for {emp.name if emp else lv.employee_id}.", "ok")
     return RedirectResponse("/admin/leave", status_code=303)
 
@@ -1376,7 +1377,7 @@ def leave_add(
     db.commit()
     audit(db, admin.name, "leave_add", "LeaveRecord", lv.id,
           {"employee": emp.name, "range": f"{start}..{end}", "type": type, "minutes": minutes})
-    engine.recompute_employee(db, emp, start, min(end, dt.date.today()))
+    engine.recompute_employee(db, emp, start, min(end, today_local()))
     flash(request, f"Leave recorded for {emp.name}.", "ok")
     return RedirectResponse("/admin/leave", status_code=303)
 
@@ -1399,7 +1400,7 @@ def leave_delete(
         audit(db, admin.name, "leave_delete", "LeaveRecord", leave_id,
               {"employee": emp.name if emp else lv.employee_id})
         if emp is not None:
-            engine.recompute_employee(db, emp, lv.start_date, min(lv.end_date, dt.date.today()))
+            engine.recompute_employee(db, emp, lv.start_date, min(lv.end_date, today_local()))
     return RedirectResponse("/admin/leave", status_code=303)
 
 
