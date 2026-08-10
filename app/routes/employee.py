@@ -24,7 +24,13 @@ from app.util import (
     punch_remaining_minutes,
     today_local,
 )
-from app.validation import EntryError, earliest_allowed_date, gap_flags, validate_entry
+from app.validation import (
+    EntryError,
+    earliest_allowed_date,
+    entry_details_edit_error,
+    gap_flags,
+    validate_entry,
+)
 
 router = APIRouter()
 
@@ -319,6 +325,49 @@ def delete_entry(
     else:
         db.delete(entry)
         db.commit()
+    return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
+
+
+@router.post("/entries/{entry_id}/edit")
+def edit_entry_details(
+    entry_id: int,
+    request: Request,
+    details: str = Form(...),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Ganesh, 2026-08-10: rows were previously delete-and-re-add only, no
+    in-place edit. Deliberately scoped to just the Details text (not
+    times/project/task — changing those re-opens overlap/cap validation,
+    a bigger change than what was asked for) and, for a self-service
+    employee, to TODAY's own rows only — yesterday's log is closed to quiet
+    edits the same way it's closed to deletes once locked, so history stays
+    trustworthy. Admins bypass both the ownership and today-only checks,
+    same precedent as delete_entry above; the day-lock check still applies
+    to them only if they're not an admin, also matching delete_entry."""
+    entry = db.get(m.TaskEntry, entry_id)
+    if entry is None or (entry.employee_id != user.id and not user.is_admin):
+        return RedirectResponse("/today", status_code=303)
+    day = entry.date
+    sub = db.execute(
+        select(m.DaySubmission).where(
+            m.DaySubmission.employee_id == entry.employee_id, m.DaySubmission.date == day
+        )
+    ).scalar_one_or_none()
+    err = entry_details_edit_error(entry, user, today_local(), sub)
+    if err:
+        flash(request, err, "err")
+        return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
+    cfg = engine.get_config(db)
+    cleaned = (details or "").strip()
+    min_chars = engine.cfg_int(cfg, "min_details_chars")
+    if len(cleaned) < min_chars:
+        flash(request, f"Details must be at least {min_chars} characters.", "err")
+        return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
+    entry.details = cleaned
+    db.commit()
+    audit(db, user.name, "entry_details_edited", "TaskEntry", str(entry.id), {"date": day.isoformat()})
+    flash(request, "Details updated.", "ok")
     return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
 
 

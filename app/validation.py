@@ -35,6 +35,30 @@ def earliest_allowed_date(
     return d
 
 
+def entry_details_edit_error(
+    entry: m.TaskEntry, user: m.Employee, today: dt.date, day_submission: Optional[m.DaySubmission]
+) -> Optional[str]:
+    """Guard for editing an existing TaskEntry's Details text in place
+    (Ganesh, 2026-08-10 — rows were previously delete-and-re-add only, no
+    in-place edit). Pulled out of routes/employee.py's edit_entry_details
+    so the rule is unit-testable without a live route/DB round trip, same
+    pattern as the rest of this module. Returns None when editing is
+    allowed, or a user-facing error message when it isn't.
+
+    Ownership (entry.employee_id != user.id) is checked by the route
+    before this is even called, same as delete_entry's existing pattern —
+    this only covers the two rules that gate the edit itself: today-only
+    for a self-service employee (yesterday's log is closed to quiet edits
+    the same way it's closed to deletes once locked, so history stays
+    trustworthy), and the existing day-lock rule. Admins bypass both,
+    same precedent as delete_entry."""
+    if not user.is_admin and entry.date != today:
+        return "You can only edit today's entries — ask an admin to fix a past day."
+    if day_submission is not None and day_submission.locked and not user.is_admin:
+        return "Day is locked — ask an admin to unlock it."
+    return None
+
+
 def validate_entry(
     db: Session,
     emp: m.Employee,

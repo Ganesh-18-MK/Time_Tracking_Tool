@@ -8,7 +8,13 @@ from sqlalchemy.orm import sessionmaker
 from app.db import Base
 from app import models as m
 from app.util import today_local
-from app.validation import EntryError, earliest_allowed_date, gap_flags, validate_entry
+from app.validation import (
+    EntryError,
+    earliest_allowed_date,
+    entry_details_edit_error,
+    gap_flags,
+    validate_entry,
+)
 
 CFG = dict(m.CONFIG_DEFAULTS)
 # validate_entry() itself now computes "today" via today_local() (BUSINESS_TZ,
@@ -171,3 +177,59 @@ class TestGapFlags:
         b = m.TaskEntry(id=2, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
                         details="b", start_minute=615, end_minute=680)
         assert gap_flags([a, b], 15) == {}
+
+
+class TestEntryDetailsEditGuard:
+    """validation.entry_details_edit_error() — Ganesh, 2026-08-10: rows were
+    delete-and-re-add only before; this is the guard behind the new
+    in-place Details edit (routes/employee.py's edit_entry_details).
+    Ownership itself is checked by the route before this is ever called,
+    same as delete_entry's existing pattern — not this function's job."""
+
+    def _entry(self, date):
+        return m.TaskEntry(employee_id=1, date=date, project_id=1, task_type_id=1,
+                           details="x", start_minute=540, end_minute=600)
+
+    def test_own_entry_today_unlocked_is_allowed(self, db):
+        s, emp = db
+        assert entry_details_edit_error(self._entry(TODAY), emp, TODAY, None) is None
+
+    def test_own_entry_yesterday_is_blocked(self, db):
+        s, emp = db
+        yesterday = TODAY - dt.timedelta(days=1)
+        err = entry_details_edit_error(self._entry(yesterday), emp, TODAY, None)
+        assert err is not None and "today" in err.lower()
+
+    def test_own_entry_future_backdated_view_is_blocked_too(self, db):
+        # today-only means exactly today, not "today or anything else
+        # currently on screen" — a day in the future (shouldn't normally
+        # happen, but the guard doesn't special-case it) is also not today
+        s, emp = db
+        tomorrow = TODAY + dt.timedelta(days=1)
+        err = entry_details_edit_error(self._entry(tomorrow), emp, TODAY, None)
+        assert err is not None
+
+    def test_locked_day_is_blocked_even_if_today(self, db):
+        s, emp = db
+        sub = m.DaySubmission(employee_id=1, date=TODAY, locked=True)
+        err = entry_details_edit_error(self._entry(TODAY), emp, TODAY, sub)
+        assert err is not None and "locked" in err.lower()
+
+    def test_unlocked_submission_today_is_allowed(self, db):
+        # a DaySubmission row exists (day was submitted then unlocked by an
+        # admin) but locked=False -> editing is allowed again
+        s, emp = db
+        sub = m.DaySubmission(employee_id=1, date=TODAY, locked=False)
+        assert entry_details_edit_error(self._entry(TODAY), emp, TODAY, sub) is None
+
+    def test_admin_bypasses_today_only_rule(self, db):
+        s, emp = db
+        emp.is_admin = True
+        yesterday = TODAY - dt.timedelta(days=1)
+        assert entry_details_edit_error(self._entry(yesterday), emp, TODAY, None) is None
+
+    def test_admin_bypasses_lock_rule(self, db):
+        s, emp = db
+        emp.is_admin = True
+        sub = m.DaySubmission(employee_id=1, date=TODAY, locked=True)
+        assert entry_details_edit_error(self._entry(TODAY), emp, TODAY, sub) is None

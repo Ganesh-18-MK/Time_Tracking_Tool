@@ -182,7 +182,15 @@
         <td class="nowrap"><strong>{{ e.duration_minutes|hm }}</strong></td>
         <td>{{ e.project.name }}</td>
         <td>{{ e.task_type.name }}</td>
-        <td style="white-space:pre-wrap">{{ e.details }}</td>
+        <td style="white-space:pre-wrap">{{ e.details }}{%- if day == today and not (sub and sub.locked) -%}
+          <details class="details-edit">
+            <summary class="small muted">✎ edit</summary>
+            <form method="post" action="/entries/{{ e.id }}/edit" style="margin-top:6px;display:flex;gap:6px;align-items:flex-start">
+              <textarea name="details" rows="2" style="flex:1;min-width:180px">{{ e.details }}</textarea>
+              <button class="small">Save</button>
+            </form>
+          </details>
+          {%- endif %}</td>
         <td>
           {% if not (sub and sub.locked) %}
           <form method="post" action="/entries/{{ e.id }}/delete" class="inline"

@@ -196,3 +196,19 @@ tr.hide-dept { display: none !important; }
 .totalbar .big { font-size: 19px; font-weight: 700; }
 hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
 details > summary { cursor: pointer; color: var(--accent); }
+
+/* Today -> entries table: a small "edit" toggle under a row's Details text
+   (today-only, unlocked-day-only — see routes/employee.py's
+   edit_entry_details). Deliberately a short, fixed-text summary — never
+   the Details value itself, which can be long/multi-line/blank-line-
+   heavy; a <summary> renders as a list-item box keyed to its own content,
+   so multi-line text inside one pushes the disclosure marker down and
+   reserves blank space above it (that's what created the "gap" bug). */
+.details-edit { display: inline-block; margin-top: 2px;
+  /* Resets the parent td's white-space:pre-wrap (inherited by default) —
+   * without this, this element's own template-source indentation/newlines
+   * render as literal blank space, same root cause as the "gap" bug this
+   * whole block exists to avoid; see the Jinja whitespace-control note
+   * on the {% if %} tag in today.html. */
+  white-space: normal; }
+.details-edit summary { font-size: 12px; }
