@@ -134,6 +134,52 @@ class TestOverlaps:
         v(s, emp, start_minute=630, end_minute=690)  # back-to-back is fine
 
 
+class TestBreakOverlap:
+    """An employee can't log task time over a break they also logged
+    (Ganesh, 2026-08-11 — employee entered 1:15 PM start when their actual
+    break ran 12:57-1:18 PM; the row saved and the resulting gap got
+    flagged as unexplained even though a break covered nearly all of it).
+    Blocked in validate_entry rather than left to gap_flags's netting so
+    the employee gets a clear message and a valid time to pick instead."""
+
+    def test_entry_starting_inside_a_break_is_blocked(self, db):
+        s, emp = db
+        s.add(m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_LUNCH_DINNER,
+                            start_minute=777, end_minute=798))  # 12:57-1:18 PM
+        s.commit()
+        msg = errs(s, emp, start_minute=780, end_minute=840)  # 1:00-2:00 PM
+        assert "during your" in msg and "break" in msg
+
+    def test_entry_partially_overlapping_a_break_is_blocked(self, db):
+        s, emp = db
+        s.add(m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_LUNCH_DINNER,
+                            start_minute=777, end_minute=798))
+        s.commit()
+        # starts before the break and runs into it
+        assert "break" in errs(s, emp, start_minute=770, end_minute=780)
+
+    def test_entry_right_after_break_ends_is_allowed(self, db):
+        s, emp = db
+        s.add(m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_LUNCH_DINNER,
+                            start_minute=777, end_minute=798))
+        s.commit()
+        v(s, emp, start_minute=798, end_minute=860)  # 1:18 PM onward — touching is fine
+
+    def test_entry_before_break_starts_is_allowed(self, db):
+        s, emp = db
+        s.add(m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_LUNCH_DINNER,
+                            start_minute=777, end_minute=798))
+        s.commit()
+        v(s, emp, start_minute=690, end_minute=777)  # ends exactly when break starts
+
+    def test_entry_during_an_open_ongoing_break_is_blocked(self, db):
+        s, emp = db
+        s.add(m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_PERSONAL,
+                            start_minute=777, end_minute=None))  # still running
+        s.commit()
+        assert "break" in errs(s, emp, start_minute=780, end_minute=840)
+
+
 class TestLockAndBackdate:
     def test_locked_day_rejects_entries(self, db):
         s, emp = db
@@ -177,6 +223,44 @@ class TestGapFlags:
         b = m.TaskEntry(id=2, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
                         details="b", start_minute=615, end_minute=680)
         assert gap_flags([a, b], 15) == {}
+
+    def test_break_nets_out_of_gap_even_when_not_exactly_aligned(self):
+        # Exact screenshot scenario (Ganesh, 2026-08-11): prev row ends
+        # 12:55 PM (775), break runs 12:57-1:18 PM (777-798), next row
+        # starts 1:15 PM (795). Raw gap is 20min; the break covers 18 of
+        # those 20 (777-795 overlap), leaving only 2min unexplained — well
+        # under the 15min threshold, so this should NOT be flagged, even
+        # though the break doesn't start/end exactly on the adjacent rows.
+        prev = m.TaskEntry(id=1, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                           details="a", start_minute=690, end_minute=775)  # 11:30-12:55
+        cur = m.TaskEntry(id=2, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                          details="b", start_minute=795, end_minute=870)  # 1:15-2:30
+        brk = m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_LUNCH_DINNER,
+                           start_minute=777, end_minute=798)
+        assert gap_flags([prev, cur], 15, [brk]) == {}
+
+    def test_gap_beyond_break_still_flagged_with_remaining_minutes_only(self):
+        # Same prev row + break as above, but the employee doesn't log the
+        # next row until 1:40 PM (820) — 45min raw gap, break covers 21min
+        # (777-798, entirely inside the gap this time), leaving 24min
+        # genuinely unexplained. Should flag 24, not the raw 45.
+        prev = m.TaskEntry(id=1, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                           details="a", start_minute=690, end_minute=775)
+        cur = m.TaskEntry(id=2, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                          details="b", start_minute=820, end_minute=870)
+        brk = m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_LUNCH_DINNER,
+                           start_minute=777, end_minute=798)
+        assert gap_flags([prev, cur], 15, [brk]) == {2: 24}
+
+    def test_no_breaks_passed_flags_full_raw_gap(self):
+        # breaks=None (default) behaves exactly like before this feature —
+        # nothing nets out, full raw gap is flagged.
+        a = m.TaskEntry(id=1, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                        details="a", start_minute=540, end_minute=600)
+        b = m.TaskEntry(id=2, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                        details="b", start_minute=620, end_minute=680)
+        assert gap_flags([a, b], 15) == {2: 20}
+        assert gap_flags([a, b], 15, []) == {2: 20}
 
 
 class TestEntryDetailsEditGuard:

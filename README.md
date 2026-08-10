@@ -4,7 +4,7 @@
 
 - ✅ Feature-complete against [PRD Draft v1](docs/PRD.md)
 - ✅ Acceptance test passing (**168/168** historical strike counts reproduced)
-- ✅ 321 unit tests green
+- ✅ 329 unit tests green
 - Updated 10 Aug 2026
 
 One web app that replaces the three manual spreadsheets used to run offshore time tracking — the per-person **Task Summary** files, the 57-tab **Leave Tracker**, and the monthly **Compliance sheet**. The employee logs time once; leave, hours variance, and compliance status all derive from that single entry automatically. Interim tool until the third-party HR pilot concludes: **designed for export, not permanence.**
@@ -197,7 +197,7 @@ Admin → Config. Stored in the `config` table; defaults in [app/models.py](app/
 | `strike_threshold` | 5 | Monthly strikes ⇒ In-Violation flag | §10.1 |
 | `max_row_minutes` | 240 | Max single entry length | §4 |
 | `backdate_working_days` | 1 | How far back employees may log | §10.7 |
-| `gap_flag_minutes` | 15 | Gap size that gets a visual flag | §4 |
+| `gap_flag_minutes` | 15 | Unexplained gap size that gets a visual flag — logged break time between the two rows is netted out first, so a gap the employee explained with a break only flags the leftover unaccounted minutes, not the whole thing | §4 |
 | `min_details_chars` | 5 | Details minimum length | §4 |
 | `comp_erases_strike` | on | Fully compensated shortfall reads Complete | §10.3 |
 | `live_start_date` | import day | Frozen history before, live computation after | §9 |
@@ -264,7 +264,7 @@ MK_Timekeeping_Documentation.pdf
 | `app/db.py` | Engine/session setup; SQLite by default, `DATABASE_URL` for Postgres |
 | `app/models.py` | All entities (PRD §8) + `CONFIG_DEFAULTS` — minutes everywhere |
 | `app/engine.py` | Status/variance/strike computation, recompute, ledger, `today_attendance()`, `leave_balance()` |
-| `app/validation.py` | PRD §4 entry rules, back-dating window, gap flags |
+| `app/validation.py` | PRD §4 entry rules, back-dating window, gap flags (break-time-netted), break-overlap block |
 | `app/compensation.py` | Automatic Punch Clock compensation balance (`monthly_summary()`) — independent of `engine.py`/`DayStatus`/strikes, see its module docstring |
 | `app/auth.py` | `AUTH_MODE` (`dev` / `password` / `entra`) — the Entra ID swap point. Also `require_super_admin` and `admin_department_scope()` — the department-scoping gate used by Dashboard/Leave Requests/Reports |
 | `app/security.py` | Stdlib password hashing (`AUTH_MODE=password`) |
@@ -294,7 +294,7 @@ No JS framework, no build step; the only runtime deps are FastAPI, SQLAlchemy, J
 ```
 
 - `test_engine.py` — status mapping incl. exact tolerance boundaries, leave-reduced targets, weekend surplus, part-time targets, strike counting, compensation on/off, override precedence, pre-policy exemption.
-- `test_validation.py` — overlaps, touching rows, midnight/duration/details rules, locked days, deactivated dropdown values, back-dating across weekends and holidays, gap flags, and (Ganesh, 2026-08-01) pending Project/Task suggestions usable only by whoever submitted them, rejected suggestions unusable even by the submitter.
+- `test_validation.py` — overlaps, touching rows, midnight/duration/details rules, locked days, deactivated dropdown values, back-dating across weekends and holidays, gap flags (Ganesh, 2026-08-11: now netting out overlapping break time before thresholding, and blocking a new row from being logged over a break in the first place), and (Ganesh, 2026-08-01) pending Project/Task suggestions usable only by whoever submitted them, rejected suggestions unusable even by the submitter.
 - `test_util.py` — formatting/parsing helpers, including `role_to_flags`/`flags_to_role` (the three-tier admin role mapping) and `ensure_bootstrap_admins` (creates the initial Super Admins on a fresh deploy only, permanent no-op once any employee exists).
 - `test_bulk_upload.py` — header matching, required-vs-optional fields by mode (new hire vs update), partial-update semantics, bulk-deactivate via the Action column, sample/export workbook round-trips, the **Reports To** column (resolves against an already-existing Employee ID, works on both new-hire and update rows, unknown code is a clear error), and the **Workdays** `Default` shortcut (Mon-Fri, case-insensitive, doesn't shadow an explicit custom schedule).
 - `test_leave_bulk_upload.py` — Employee-ID resolution, blank-vs-provided leave-count semantics (blank = unchanged, 0 = provided), whole-number validation, sample/export workbook round-trips.

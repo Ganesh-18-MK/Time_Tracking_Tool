@@ -147,19 +147,67 @@ def validate_entry(
                 )
                 break
 
+        # --- no logging over a break --------------------------------------------
+        # An employee can't be doing task work and on a break at the same time.
+        # Blocked here (not just left to gap_flags's netting, below) so the
+        # employee gets pointed at the actual break window and a valid start
+        # time, instead of silently saving a row that overlaps it (Ganesh,
+        # 2026-08-11 — employee logged 1:15 PM when their break ran 12:57–1:18
+        # PM). An open/still-running break (end_minute is None) blocks
+        # everything from its start to end of day, same as "you're on a break
+        # right now."
+        breaks = db.execute(
+            select(m.BreakEntry).where(
+                m.BreakEntry.employee_id == emp.id, m.BreakEntry.date == date
+            )
+        ).scalars()
+        for b in breaks:
+            b_end = b.end_minute if b.end_minute is not None else 1440
+            if start_minute < b_end and b.start_minute < end_minute:
+                b_end_label = fmt_minute(b.end_minute) if b.end_minute is not None else "now"
+                errors.append(
+                    f"That time is during your {b.break_type} break "
+                    f"({fmt_minute(b.start_minute)}–{b_end_label}). "
+                    f"Choose a start time after the break ends."
+                )
+                break
+
     if errors:
         raise EntryError(errors)
 
 
-def gap_flags(entries: List[m.TaskEntry], gap_minutes: int) -> dict:
-    """entry.id -> gap in minutes since previous row, when over threshold.
-    Visual flag only, never a block (breaks are legitimate)."""
+def gap_flags(
+    entries: List[m.TaskEntry], gap_minutes: int, breaks: Optional[List[m.BreakEntry]] = None
+) -> dict:
+    """entry.id -> unexplained gap in minutes since previous row, when over
+    threshold. Visual flag only, never a block (breaks are legitimate —
+    logging *over* one is blocked separately, in validate_entry).
+
+    `breaks` (an employee's BreakEntry rows for the same day, normally just
+    the completed ones) are netted out of each raw gap before it's compared
+    to the threshold, and the flag — when still over threshold — shows the
+    *remaining* unexplained minutes, not the raw gap (Ganesh, 2026-08-11:
+    previously a break had to line up exactly with both neighboring rows to
+    the minute to suppress the flag at all — see employee.py's old
+    _day_context post-processing — so a break that started/ended a couple
+    minutes off from the adjacent task rows still flagged the *entire* gap).
+    Passing breaks=None (or omitting it) flags the full raw gap, unchanged
+    from before this existed."""
     flags = {}
     ordered = sorted(entries, key=lambda e: e.start_minute)
     for prev, cur in zip(ordered, ordered[1:]):
         gap = cur.start_minute - prev.end_minute
-        if gap > gap_minutes:
-            flags[cur.id] = gap
+        if gap <= 0:
+            continue
+        covered = 0
+        for b in breaks or ():
+            b_end = b.end_minute if b.end_minute is not None else cur.start_minute
+            overlap = min(cur.start_minute, b_end) - max(prev.end_minute, b.start_minute)
+            if overlap > 0:
+                covered += overlap
+        remaining = gap - min(covered, gap)
+        if remaining > gap_minutes:
+            flags[cur.id] = remaining
     return flags
 
 

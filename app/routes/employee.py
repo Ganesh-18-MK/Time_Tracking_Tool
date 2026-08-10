@@ -145,19 +145,10 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
         select(m.ActiveTaskTimer).where(m.ActiveTaskTimer.employee_id == emp.id)
     ).scalar_one_or_none()
 
-    flags = gap_flags(entries, engine.cfg_int(cfg, "gap_flag_minutes"))
-    if flags:
-        ordered = sorted(entries, key=lambda e: e.start_minute)
-        for prev, cur in zip(ordered, ordered[1:]):
-            if cur.id not in flags:
-                continue
-            gap_start, gap_end = prev.end_minute, cur.start_minute
-            # a gap the employee logged as a break isn't an unexplained gap
-            if any(
-                b.start_minute <= gap_start and (b.end_minute or gap_end) >= gap_end
-                for b in completed_breaks
-            ):
-                del flags[cur.id]
+    # completed_breaks are netted out of each gap inside gap_flags itself now
+    # (Ganesh, 2026-08-11) — a break that doesn't line up to the exact minute
+    # with the rows on either side of it no longer flags the whole gap.
+    flags = gap_flags(entries, engine.cfg_int(cfg, "gap_flag_minutes"), completed_breaks)
 
     return {
         "entries": entries,
