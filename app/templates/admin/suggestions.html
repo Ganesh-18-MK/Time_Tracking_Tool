@@ -3,8 +3,8 @@
 {% block title %}Suggestions · MK Timekeeping{% endblock %}
 {% block content %}
 <h1>Project &amp; task suggestions</h1>
-<p class="small muted">Employees can suggest a new project or task straight from Today — they can use it themselves
-  right away, but it stays hidden from everyone else until you approve it here.
+<p class="small muted">Employees can suggest a new project or task straight from Today — it stays hidden and
+  unusable, even for whoever suggested it, until you approve it here.
   {% if not user.is_super_admin %}Showing your department only.{% endif %}</p>
 
 <div class="card">

@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import RedirectResponse
-from sqlalchemy import and_, or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import compensation, engine, models as m
@@ -21,6 +21,7 @@ from app.util import (
     parse_date_field,
     parse_hhmm,
     parse_int_field,
+    punch_out_error,
     punch_remaining_minutes,
     today_local,
 )
@@ -173,28 +174,27 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
 
 def _visible_projects_and_tasks(db: Session, user: m.Employee):
     """What a given employee is allowed to pick from Today's Project/Task
-    dropdowns: every approved, active one, PLUS any pending suggestion
-    THEY made themselves (Ganesh, 2026-08-01 — usable by the submitter
-    right away, invisible to everyone else until a team lead approves it).
-    validate_entry() enforces the same rule server-side, so this filter is
-    a UI convenience, not the only thing standing between an employee and
-    someone else's not-yet-approved suggestion."""
-    visible = or_(
-        m.Project.status == m.LIST_APPROVED,
-        and_(m.Project.status == m.LIST_PENDING, m.Project.created_by_employee_id == user.id),
-    )
+    dropdowns: every approved, active one — nothing else. A suggestion
+    (Ganesh, 2026-08-01) is invisible to everyone, including whoever
+    suggested it, until a team lead/admin approves it (Ganesh, 2026-08-11:
+    previously the submitter could use their own pending suggestion right
+    away — an admin reported this let unreviewed projects/tasks end up on
+    real logged time before anyone had signed off on them). validate_entry()
+    enforces the same rule server-side, so this filter is a UI convenience,
+    not the only thing standing between an employee and a not-yet-approved
+    suggestion."""
     projects = list(
         db.execute(
-            select(m.Project).where(m.Project.active.is_(True), visible).order_by(m.Project.name)
+            select(m.Project)
+            .where(m.Project.active.is_(True), m.Project.status == m.LIST_APPROVED)
+            .order_by(m.Project.name)
         ).scalars()
-    )
-    visible_t = or_(
-        m.TaskType.status == m.LIST_APPROVED,
-        and_(m.TaskType.status == m.LIST_PENDING, m.TaskType.created_by_employee_id == user.id),
     )
     tasks = list(
         db.execute(
-            select(m.TaskType).where(m.TaskType.active.is_(True), visible_t).order_by(m.TaskType.name)
+            select(m.TaskType)
+            .where(m.TaskType.active.is_(True), m.TaskType.status == m.LIST_APPROVED)
+            .order_by(m.TaskType.name)
         ).scalars()
     )
     return projects, tasks
@@ -579,10 +579,20 @@ def punch_out(
             m.PunchSession.punched_out_at.is_(None),
         )
     ).scalar_one_or_none()
-    if active is not None:
-        active.punched_out_at = dt.datetime.utcnow()
-        db.commit()
-        flash(request, f"Punched out — {active.duration_minutes} min this session.", "ok")
+    if active is None:
+        return RedirectResponse("/today", status_code=303)
+    sub = db.execute(
+        select(m.DaySubmission).where(
+            m.DaySubmission.employee_id == user.id, m.DaySubmission.date == today
+        )
+    ).scalar_one_or_none()
+    err = punch_out_error(sub)
+    if err:
+        flash(request, err, "err")
+        return RedirectResponse("/today", status_code=303)
+    active.punched_out_at = dt.datetime.utcnow()
+    db.commit()
+    flash(request, f"Punched out — {active.duration_minutes} min this session.", "ok")
     return RedirectResponse("/today", status_code=303)
 
 
@@ -904,10 +914,12 @@ def suggest_list_item(
     db: Session = Depends(get_db),
 ):
     """Employee/lead-suggested Project or Task (Ganesh, 2026-08-01) —
-    usable by whoever suggested it right away (see
-    _visible_projects_and_tasks and validate_entry above), invisible to
-    everyone else until a team lead approves it (see app/routes/admin.py
-    suggestions_page / suggestion_approve)."""
+    invisible and unusable by anyone, including whoever suggested it (see
+    _visible_projects_and_tasks and validate_entry above), until a team
+    lead/admin approves it (see app/routes/admin.py suggestions_page /
+    suggestion_approve). Ganesh, 2026-08-11: this used to be usable by the
+    submitter right away; removed after an admin reported unreviewed
+    suggestions ending up on real logged time before review."""
     name = name.strip()
     if not name:
         flash(request, "Enter a name before suggesting it.", "err")
@@ -923,7 +935,7 @@ def suggest_list_item(
     db.add(model(name=name, active=True, status=m.LIST_PENDING, created_by_employee_id=user.id))
     db.commit()
     label = "Project" if kind == "project" else "Task"
-    flash(request, f"{label} '{name}' suggested — you can use it right away; a team lead will review it soon.", "ok")
+    flash(request, f"{label} '{name}' suggested — a team lead will review it before it's usable.", "ok")
     return RedirectResponse("/today", status_code=303)
 
 

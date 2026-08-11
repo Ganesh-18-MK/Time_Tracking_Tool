@@ -45,7 +45,7 @@ No bundle? The repo alone still demos: `python -m demo.run_demo` serves the comm
 
 ```
 app/engine.py        ← all business math. Touch with tests + verify_strikes.
-app/validation.py    ← PRD §4 entry rules. Client JS mirrors it; server is authoritative.
+app/validation.py    ← PRD §4 entry rules. Since 2026-08-11 this also blocks a row from being logged over a time span already logged as a break, and nets logged break minutes out of the gap-flag threshold instead of flagging the raw gap. Client JS mirrors it; server is authoritative.
 app/models.py        ← schema + CONFIG_DEFAULTS. Schema change = rm tms.db + re-import (no alembic in POC).
 app/auth.py          ← THE swap point for Entra ID. Session/role gating stays as-is.
 app/routes/          ← thin controllers; admin.py has most of them.
@@ -82,7 +82,7 @@ docs/PRD.md          ← the spec. HANDOFF (this file) + README are the map.
 1. Sign in as **Steve** → Dashboard: July 2026 rebuilt live, department groups, strike totals, violation flags. Hover any cell — the raw legacy token is in the tooltip. Scroll right for STRIKES.
 2. Click a person (Divya's page shows the richest data) → running balance, ledger, legacy leave notes, her imported task log with locked submissions.
 3. Compensation: her Jul 24 shortfall is linked to six +0:30 surplus days → day reads **Complete ↺**, strike erased, original PARTIAL retained in notes.
-4. Sign out → sign in as any employee → **Today**: add a row (dropdowns are the real client list), watch duration compute; try an overlapping row — blocked with the exact reason; leave a >15 min gap — flagged, not blocked. **Submit Day** → locked.
+4. Sign out → sign in as any employee → **Today**: add a row (dropdowns are the real client list), watch duration compute; try an overlapping row — blocked with the exact reason; leave a >15 min gap — flagged, not blocked (a logged break inside the gap nets out of that 15 min automatically); try logging a row over a time you already logged as a break — blocked with the break window shown. **Submit Day** → locked.
 5. **My Month** as that employee: live strike count and variance balance — the transparency employees never had.
 6. Back as Steve → **Export XLSX** on the dashboard: the legacy sheet layout, generated from the database.
 

@@ -17,6 +17,7 @@ from app.util import (
     mask_tail,
     now_local,
     overtime_minutes,
+    punch_out_error,
     punch_remaining_minutes,
     role_to_flags,
     today_local,
@@ -146,6 +147,31 @@ class TestOvertimeMinutes:
         # a full-day-leave day has target 0 (see app/engine.py compute_day)
         # — any punched time that day is, by definition, all overtime
         assert overtime_minutes(60, 0) == 60
+
+
+class TestPunchOutError:
+    """Punch Out guard (Ganesh, 2026-08-11) — an employee was punching out
+    with the day's task rows never Submit Day'd, so the punched duration
+    had nothing backing it in the task log. Punch In/Out is always keyed to
+    "today" (see the punch_in/punch_out routes), so this only ever needs
+    today's own DaySubmission row."""
+
+    def test_no_submission_yet_blocks_punch_out(self):
+        assert punch_out_error(None) is not None
+
+    def test_unsubmitted_day_blocks_punch_out(self):
+        sub = m.DaySubmission(employee_id=1, date=dt.date(2026, 8, 10), total_minutes=0, locked=False)
+        assert punch_out_error(sub) is not None
+
+    def test_admin_reopened_day_blocks_punch_out_until_resubmitted(self):
+        # an admin unlocking a day for corrections sets locked=False again —
+        # punching out mid-correction shouldn't be allowed either
+        sub = m.DaySubmission(employee_id=1, date=dt.date(2026, 8, 10), total_minutes=60, locked=False)
+        assert punch_out_error(sub) is not None
+
+    def test_submitted_and_locked_day_allows_punch_out(self):
+        sub = m.DaySubmission(employee_id=1, date=dt.date(2026, 8, 10), total_minutes=480, locked=True)
+        assert punch_out_error(sub) is None
 
 
 class TestRoleToFlags:

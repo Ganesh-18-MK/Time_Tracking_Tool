@@ -55,7 +55,8 @@ The employee's main screen is today's log. Each row:
 ### Validation on entry (the strict guidelines)
 
 - No overlapping rows within a day.
-- Gaps between rows over 15 minutes get a visual flag, not a block. Breaks are legitimate; the flag makes them visible.
+- Gaps between rows over 15 minutes get a visual flag, not a block. Breaks are legitimate, so logged break time inside the gap is netted out first — only the leftover, still-unexplained minutes get flagged (added 2026-08-11, after the flag fired on a gap almost entirely covered by a logged break).
+- A row cannot be logged over a time span the employee already logged as a break — blocked outright, with a message pointing at the break window, so work time and break time can't overlap in the log (added 2026-08-11).
 - No row may span past midnight; split across days.
 - Maximum single-row duration 4 hours (configurable). Longer rows force the employee to break work down, which is the point of minute-level logging.
 

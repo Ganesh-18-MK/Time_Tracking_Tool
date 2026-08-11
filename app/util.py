@@ -256,8 +256,8 @@ def ensure_list_status_backfill(db: Session) -> None:
     existing row NULL, not the ORM-level default — without this, every
     project/task created before this feature shipped would silently
     disappear from the Today picker and be rejected by validate_entry
-    (both only treat status == LIST_APPROVED, or a still-pending row's own
-    submitter, as usable — NULL matches neither). Every pre-existing row is
+    (both only treat status == LIST_APPROVED as usable — NULL doesn't match).
+    Every pre-existing row is
     an already-in-use, already-trusted entry, not a suggestion awaiting
     review, so it backfills straight to approved rather than pending.
     A no-op once every row already has a status — safe on every startup,
@@ -373,6 +373,22 @@ def overtime_minutes(punched_minutes: int, target_minutes: Optional[int]) -> int
     if target_minutes is None:
         return 0
     return max(0, punched_minutes - target_minutes)
+
+
+def punch_out_error(day_submission: Optional[m.DaySubmission]) -> Optional[str]:
+    """Guard for Punch Out (Ganesh, 2026-08-11 — employees were punching out
+    with the day's task rows never actually Submit Day'd, so the punched
+    duration had nothing backing it in the task log, and compliance had no
+    real total to compute against). Punch In/Out is always keyed to "today"
+    (see the punch_in/punch_out routes), so this only ever needs today's own
+    DaySubmission row, not a date parameter — same "right now" convention as
+    the break widget. `sub.locked` is the existing "day is submitted" signal
+    used everywhere else (validate_entry, entry_details_edit_error), so this
+    reuses it rather than inventing a second one. Returns None when punching
+    out is allowed, or a user-facing error otherwise."""
+    if day_submission is None or not day_submission.locked:
+        return "Submit today's task log (Submit Day) before punching out."
+    return None
 
 
 def fmt_hours(minutes: Optional[int]) -> str:

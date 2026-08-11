@@ -219,12 +219,15 @@ class EmployeeBankDetails(Base):
 
 
 # Project/TaskType suggestion workflow (Ganesh, 2026-08-01): employees and
-# leads can suggest a new one; it's usable immediately by whoever suggested
-# it (see app/routes/employee.py's dropdown-visibility filter: approved OR
-# created_by_employee_id == me) but stays invisible to everyone else until
-# a team lead approves it. Every row created before this existed, and every
-# row an admin adds directly via Lists/bulk-upload, defaults straight to
-# LIST_APPROVED — nothing already in the roster is retroactively hidden.
+# leads can suggest a new one; it stays invisible AND unusable by anyone —
+# including whoever suggested it (Ganesh, 2026-08-11: the original
+# immediate-use-by-submitter carve-out was removed after an admin reported
+# unreviewed suggestions ending up on real logged time before review) —
+# until a team lead/admin approves it (see app/routes/employee.py's
+# dropdown-visibility filter and validate_entry, both status == LIST_APPROVED
+# only). Every row created before this existed, and every row an admin adds
+# directly via Lists/bulk-upload, defaults straight to LIST_APPROVED —
+# nothing already in the roster is retroactively hidden.
 LIST_APPROVED = "approved"
 LIST_PENDING = "pending"
 LIST_REJECTED = "rejected"

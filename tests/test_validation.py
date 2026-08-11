@@ -90,31 +90,43 @@ class TestRowRules:
 
 
 class TestSuggestionStatus:
-    """Employee/lead-suggested Project/Task (Ganesh, 2026-08-01) — usable
-    ONLY by whoever suggested it while pending, enforced here server-side
-    (not just hidden client-side — see app/routes/employee.py
-    _visible_projects_and_tasks for the matching dropdown filter)."""
+    """Employee/lead-suggested Project/Task (Ganesh, 2026-08-01), tightened
+    2026-08-11: a pending suggestion is unusable by ANYONE — including
+    whoever suggested it — until a team lead/admin approves it. (Previously
+    the submitter could use their own pending suggestion immediately; that
+    carve-out let unreviewed suggestions end up on real logged time before
+    review, so it's gone.) Enforced here server-side, not just hidden
+    client-side — see app/routes/employee.py _visible_projects_and_tasks
+    for the matching dropdown filter."""
 
-    def test_submitter_can_use_their_own_pending_project(self, db):
-        v(*db, project_id=3)  # emp (id=1) suggested project id=3
+    def test_submitter_cannot_use_their_own_pending_project_yet(self, db):
+        s, emp = db
+        assert "awaiting admin approval" in errs(s, emp, project_id=3)  # emp (id=1) suggested project id=3
 
-    def test_submitter_can_use_their_own_pending_task(self, db):
-        v(*db, task_type_id=2)  # emp (id=1) suggested task id=2
+    def test_submitter_cannot_use_their_own_pending_task_yet(self, db):
+        s, emp = db
+        assert "awaiting admin approval" in errs(s, emp, task_type_id=2)  # emp (id=1) suggested task id=2
 
-    def test_someone_else_cannot_use_a_pending_project_not_their_own(self, db):
+    def test_someone_else_also_cannot_use_a_pending_project(self, db):
         s, _emp = db
         other = s.get(m.Employee, 2)
-        assert "Project/Employer" in errs(s, other, project_id=3)
+        assert "awaiting admin approval" in errs(s, other, project_id=3)
 
-    def test_someone_else_cannot_use_a_pending_task_not_their_own(self, db):
+    def test_someone_else_also_cannot_use_a_pending_task(self, db):
         s, _emp = db
         other = s.get(m.Employee, 2)
-        assert "Task" in errs(s, other, task_type_id=2)
+        assert "awaiting admin approval" in errs(s, other, task_type_id=2)
+
+    def test_approved_suggestion_becomes_usable_by_anyone(self, db):
+        s, emp = db
+        proj = s.get(m.Project, 3)
+        proj.status = m.LIST_APPROVED
+        s.commit()
+        v(s, emp, project_id=3)  # no longer pending — fine now
 
     def test_rejected_suggestion_unusable_even_by_the_submitter(self, db):
         # rejected also sets active=False (see app/routes/admin.py
-        # suggestion_reject) — the "usable while pending" carve-out only
-        # applies to genuinely pending rows, not rejected ones
+        # suggestion_reject)
         assert "Project/Employer" in errs(*db, project_id=4)
 
 

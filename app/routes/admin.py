@@ -1038,10 +1038,12 @@ def suggestion_reject(
     if item is None:
         return RedirectResponse("/admin/suggestions", status_code=303)
     item.status = m.LIST_REJECTED
-    # also deactivate: a rejected suggestion must stop being usable even by
-    # the person who submitted it (the "usable while pending" carve-out only
-    # applies to genuinely pending rows — see validate_entry/
-    # _visible_projects_and_tasks in app/routes/employee.py)
+    # also deactivate, belt-and-suspenders: LIST_REJECTED already isn't
+    # LIST_APPROVED so validate_entry/_visible_projects_and_tasks in
+    # app/routes/employee.py already reject/hide it either way, but active
+    # is what every OTHER dropdown-visibility check in the app keys off —
+    # keeps a rejected row consistent with how a deactivated one behaves
+    # everywhere else, not just in the suggestion flow.
     item.active = False
     item.reviewed_by = admin.name
     item.reviewed_at = dt.datetime.utcnow()

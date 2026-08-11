@@ -45,6 +45,9 @@
       <button>Punch Out</button>
     </form>
   </div>
+  {% if not (sub and sub.locked) %}
+  <div class="muted small">Submit today's task log below before punching out.</div>
+  {% endif %}
   <script>
   (function () {
     // Same epoch-based approach as the break timer just below — see its
@@ -325,8 +328,8 @@
     <div style="flex:1 1 240px"><label>Name</label><input name="name" required style="width:100%"></div>
     <div><button class="secondary">Suggest</button></div>
   </form>
-  <p class="small muted" style="margin:6px 0 0">You can use it right away on your own entries — it stays hidden from
-    everyone else until a team lead approves it.</p>
+  <p class="small muted" style="margin:6px 0 0">It stays hidden and can't be used on any entry — not even your own —
+    until a team lead approves it.</p>
 </details>
 
 <script src="/static/combo.js?v={{ static_version }}"></script>

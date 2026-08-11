@@ -7,7 +7,7 @@ time/leave/compliance tracking (~45 offshore staff). Spec: docs/PRD.md. Onboardi
 
 ```bash
 .venv/bin/python -m uvicorn app.main:app --port 8127     # run (http://localhost:8127, dev pick-a-user auth)
-.venv/bin/python -m pytest tests/ -q                     # 329 tests — must stay green
+.venv/bin/python -m pytest tests/ -q                     # 334 tests — must stay green
 .venv/bin/python -m legacy.verify_strikes                # acceptance: MUST print 168/168
 rm tms.db && .venv/bin/python -m legacy.import_legacy    # rebuild DB from the 3 legacy .ods files
 ```
