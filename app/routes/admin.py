@@ -5,7 +5,7 @@ import io
 import json
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse, StreamingResponse
 from openpyxl import load_workbook
 from sqlalchemy import delete, select
@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app import bulk_upload, compensation, engine, holiday_bulk_upload, leave_bulk_upload, lists_bulk_upload, models as m
 from app.auth import Forbidden, admin_department_scope, led_by, require_admin, require_super_admin
 from app.db import get_db
-from app.templating import TICKETING_ENABLED, flash, render
+from app.templating import HOLIDAY_MANAGEMENT_ENABLED, TICKETING_ENABLED, flash, render
 from app.util import (
     FormError,
     ROLE_EMPLOYEE,
@@ -653,7 +653,12 @@ def roster_add(
     try:
         _emp_from_form(db, emp, name, email, department, designation, target_hours,
                        work_days, start_date, active == "1", tracked == "1", role,
-                       dob, phone, country_code, reports_to_id, is_developer == "1", location)
+                       dob, phone, country_code, reports_to_id, is_developer == "1",
+                       # Held back from the 2026-08-13 deploy: Country is hidden from
+                       # this form, so `location` is just Form()'s unsubmitted-field
+                       # default, not an admin choice — None leaves the new
+                       # Employee row on its own model-level default (still India).
+                       location if HOLIDAY_MANAGEMENT_ENABLED else None)
     except FormError as e:
         flash(request, e.message, "err")
         return RedirectResponse("/admin/roster", status_code=303)
@@ -746,7 +751,14 @@ def roster_edit(
     try:
         _emp_from_form(db, emp, name, email, department, designation, target_hours,
                        work_days, start_date, active == "1", tracked == "1", role,
-                       dob, phone, country_code, reports_to_id, is_developer == "1", location)
+                       dob, phone, country_code, reports_to_id, is_developer == "1",
+                       # Held back from the 2026-08-13 deploy: Country is hidden from
+                       # this form, so `location` is just Form()'s unsubmitted-field
+                       # default, not an admin choice — None leaves emp.location
+                       # exactly as it was (see _emp_from_form's own guard); without
+                       # this, every roster edit would silently reset location back
+                       # to India regardless of what it was set to.
+                       location if HOLIDAY_MANAGEMENT_ENABLED else None)
     except FormError as e:
         flash(request, e.message, "err")
         return RedirectResponse("/admin/roster", status_code=303)
@@ -1660,6 +1672,8 @@ def holidays_page(
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
+    if not HOLIDAY_MANAGEMENT_ENABLED:
+        raise HTTPException(status_code=404)
     all_holidays = list(db.execute(select(m.Holiday).order_by(m.Holiday.date)).scalars())
     holidays_by_location = {loc: [] for loc in m.LOCATIONS}
     for h in all_holidays:
@@ -1680,6 +1694,8 @@ def holiday_add(
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
+    if not HOLIDAY_MANAGEMENT_ENABLED:
+        raise HTTPException(status_code=404)
     try:
         d = parse_date_field(date)
     except FormError as e:
@@ -1707,6 +1723,8 @@ def holiday_delete(
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
+    if not HOLIDAY_MANAGEMENT_ENABLED:
+        raise HTTPException(status_code=404)
     h = db.get(m.Holiday, holiday_id)
     if h is not None:
         db.delete(h)
@@ -1721,11 +1739,15 @@ def holiday_bulk_upload_page(
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
+    if not HOLIDAY_MANAGEMENT_ENABLED:
+        raise HTTPException(status_code=404)
     return render(request, "admin/holiday_bulk_upload.html", {"user": admin, "result": None}, db=db)
 
 
 @router.get("/holidays/bulk-upload/sample.xlsx")
 def holiday_bulk_upload_sample(admin: m.Employee = Depends(require_super_admin)):
+    if not HOLIDAY_MANAGEMENT_ENABLED:
+        raise HTTPException(status_code=404)
     buf = io.BytesIO()
     holiday_bulk_upload.build_sample_workbook().save(buf)
     buf.seek(0)
@@ -1741,6 +1763,8 @@ def holiday_bulk_upload_existing(
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
+    if not HOLIDAY_MANAGEMENT_ENABLED:
+        raise HTTPException(status_code=404)
     buf = io.BytesIO()
     holiday_bulk_upload.build_existing_holidays_workbook(db).save(buf)
     buf.seek(0)
@@ -1758,6 +1782,8 @@ def holiday_bulk_upload_post(
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
+    if not HOLIDAY_MANAGEMENT_ENABLED:
+        raise HTTPException(status_code=404)
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
         flash(request, "Please upload an .xlsx file — use the sample template.", "err")
         return RedirectResponse("/admin/holidays/bulk-upload", status_code=303)

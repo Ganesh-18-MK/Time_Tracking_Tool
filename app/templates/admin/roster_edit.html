@@ -18,12 +18,14 @@
       <div style="flex:1"><label>Number</label><input name="phone" value="{{ emp.phone or '' }}" style="width:100%"></div>
     </div>
     <div class="formrow" style="margin-top:8px">
+      {% if HOLIDAY_MANAGEMENT_ENABLED %}
       <div>
         <label>Country</label>
         <select name="location">
           {% for loc in locations %}<option value="{{ loc }}" {{ 'selected' if loc == emp.location }}>{{ loc }}</option>{% endfor %}
         </select>
       </div>
+      {% endif %}
       <div><label>Department</label><input name="department" value="{{ emp.department }}"></div>
       <div><label>Designation</label><input name="designation" value="{{ emp.designation }}"></div>
       <div><label>Target hours/day</label>

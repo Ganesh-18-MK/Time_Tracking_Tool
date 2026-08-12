@@ -8,7 +8,7 @@ US-based — see the location/holiday hard rule below). Spec: docs/PRD.md. Onboa
 
 ```bash
 .venv/bin/python -m uvicorn app.main:app --port 8127     # run (http://localhost:8127, dev pick-a-user auth)
-.venv/bin/python -m pytest tests/ -q                     # 362 tests — must stay green
+.venv/bin/python -m pytest tests/ -q                     # 366 tests — must stay green
 .venv/bin/python -m legacy.verify_strikes                # acceptance: MUST print 168/168
 rm tms.db && .venv/bin/python -m legacy.import_legacy    # rebuild DB from the 3 legacy .ods files
 ```
@@ -27,6 +27,7 @@ rm tms.db && .venv/bin/python -m legacy.import_legacy    # rebuild DB from the 3
 - Schema changes: no alembic in the POC — `rm tms.db` + re-import is the migration path.
 - Config lives in the `config` table (defaults: `CONFIG_DEFAULTS` in app/models.py); read via `engine.get_config(db)`, never hardcode thresholds.
 - **Holidays are per-country, not company-wide** (manager request, 2026-08-12 — the team now has both US and India staff): `Employee.location` and `Holiday.location` (`m.LOCATIONS` = `("India", "US")`) drive which calendar applies. Always fetch holidays scoped to a specific employee's own `location` — `engine.holidays_set(db, emp.location)` for a single employee, `engine.holidays_by_location(db)` when looping over many (see `today_attendance`). Calling `holidays_set(db)` with no location returns every country's holidays flattened together, which is almost never correct for a compliance calculation. `Holiday`'s uniqueness is `(date, location)`, not `date` alone — the same calendar date can be a holiday in one country and a normal working day in the other.
+- **Holiday Management is behind `HOLIDAY_MANAGEMENT_ENABLED`** (env var, `app/templating.py`, defaults **on**). Briefly defaulted off for the 2026-08-13 deploy so My Month's read-only lookback and a button-highlight fix could ship first; back to on the same day once that landed. Guarded server-side either direction, not just hidden from nav: `holidays_page`/`update_location` in `app/routes/employee.py` and all six `holiday_*` routes in `app/routes/admin.py` 404 while off. Roster add/edit pass `None` instead of the submitted `location` to `_emp_from_form` while off, so editing an employee for an unrelated reason never silently resets their country back to the default. The underlying model/engine code (`Employee.location`, `Holiday.location`, `holidays_set()`) is unaffected by the flag — only the UI/routes are gated. Set `HOLIDAY_MANAGEMENT_ENABLED=0` on a host to take it dark again without a code change.
 
 ## Layout
 

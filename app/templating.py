@@ -32,6 +32,16 @@ from app.util import (
 # if that's ever useful (e.g. enabled in a staging deploy first).
 TICKETING_ENABLED = os.environ.get("TICKETING_ENABLED", "0") == "1"
 
+# Same pattern as TICKETING_ENABLED above. Held back from the 2026-08-13
+# deploy (default off) so My Month's read-only lookback and the button-
+# highlight fix could ship on their own first; back on by default as of
+# 2026-08-13 (Ganesh) now that deploy has landed. The env var still works
+# as an override either direction — set HOLIDAY_MANAGEMENT_ENABLED=0 on a
+# host if it ever needs to go dark again without a code change. See
+# app/routes/employee.py's holidays_page()/update_location() and
+# app/routes/admin.py's holiday_* routes for the matching guards.
+HOLIDAY_MANAGEMENT_ENABLED = os.environ.get("HOLIDAY_MANAGEMENT_ENABLED", "1") == "1"
+
 templates = Jinja2Templates(
     directory=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 )
@@ -74,6 +84,7 @@ templates.env.globals["TICKET_TYPES"] = list(m.TICKET_TYPES)
 templates.env.globals["TICKET_PRIORITIES"] = list(m.TICKET_PRIORITIES)
 templates.env.globals["TICKET_STATUSES"] = list(m.TICKET_STATUSES)
 templates.env.globals["TICKETING_ENABLED"] = TICKETING_ENABLED
+templates.env.globals["HOLIDAY_MANAGEMENT_ENABLED"] = HOLIDAY_MANAGEMENT_ENABLED
 
 
 def flash(request, message: str, kind: str = "ok") -> None:

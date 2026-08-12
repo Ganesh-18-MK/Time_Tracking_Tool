@@ -108,7 +108,7 @@
       {% else %}Not punched in yet — today's target is {{ target|hm }}{% endif %}
     </span>
     <form method="post" action="/punch/in" class="inline">
-      <button class="secondary">Punch In</button>
+      <button>Punch In</button>
     </form>
   </div>
   {% endif %}
@@ -157,7 +157,7 @@
         <option value="Personal">Personal</option>
         <option value="Lunch/Dinner">Lunch/Dinner</option>
       </select>
-      <button class="secondary">Start Break</button>
+      <button>Start Break</button>
     </form>
   </div>
   {% if break_excess %}
@@ -269,7 +269,7 @@
       <div class="combo-menu" hidden></div>
     </div>
     <div style="flex:1 1 200px"><label>Details (optional now, needed by Stop)</label><textarea name="details" rows="1" style="width:100%; resize:vertical"></textarea></div>
-    <div><button class="secondary">Start Timer</button></div>
+    <div><button>Start Timer</button></div>
   </form>
   {% endif %}
   <p class="small muted" style="margin:6px 0 0">Starts a live timer and auto-fills Start/End from the clock when you stop —

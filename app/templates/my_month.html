@@ -93,10 +93,11 @@
 <div class="card">
   <h2>Hours ledger (variance &amp; running balance)</h2>
   <table>
-    <thead><tr><th>Date</th><th>Status</th><th>Actual</th><th>Target</th><th>Variance</th><th>Balance</th></tr></thead>
+    <thead><tr><th>Date</th><th>Status</th><th>Actual</th><th>Target</th><th>Variance</th><th>Balance</th><th>Entries</th></tr></thead>
     <tbody>
       {% for item in ledger|reverse %}
       {% set r = item.row %}
+      {% set day_entries = entries_by_date.get(r.date, []) %}
       <tr>
         <td>{{ r.date.strftime('%a') }} {{ r.date|mdy }}</td>
         <td><span class="badge b-{{ r.effective_status(comp_erases) }}">{{ STATUS_NAMES.get(r.effective_status(comp_erases)) }}</span></td>
@@ -104,9 +105,52 @@
         <td>{{ r.target_minutes|hm }}</td>
         <td>{{ r.variance_minutes|hm_signed if r.variance_minutes is not none else '—' }}</td>
         <td><strong>{{ item.balance|hm_signed }}</strong></td>
+        <td>
+          {% if day_entries %}
+          <details>
+            <summary class="small muted">View ({{ day_entries|length }})</summary>
+          </details>
+          {% else %}
+          <span class="small muted">—</span>
+          {% endif %}
+        </td>
       </tr>
+      {% if day_entries %}
+      <tr class="entries-detail-row" style="display:none">
+        <td colspan="7">
+          <table class="small" style="margin:4px 0">
+            <thead>
+              <tr><th>Start</th><th>End</th><th>Duration</th><th>Project/Employer</th><th>Task</th><th>Details</th></tr>
+            </thead>
+            <tbody>
+              {% for e in day_entries %}
+              <tr>
+                <td class="nowrap">{{ e.start_minute|clock }}</td>
+                <td class="nowrap">{{ e.end_minute|clock }}</td>
+                <td class="nowrap">{{ e.duration_minutes|hm }}</td>
+                <td>{{ e.project.name }}</td>
+                <td>{{ e.task_type.name }}</td>
+                <td style="white-space:pre-wrap">{{ e.details }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </td>
+      </tr>
+      {% endif %}
       {% endfor %}
     </tbody>
   </table>
+  <p class="small muted">Read-only — past entries can't be edited here. Today's rows can still be edited/deleted from the Today page.</p>
 </div>
+<script>
+  document.querySelectorAll('details').forEach(function (d) {
+    var row = d.closest('tr').nextElementSibling;
+    if (row && row.classList.contains('entries-detail-row')) {
+      d.addEventListener('toggle', function () {
+        row.style.display = d.open ? '' : 'none';
+      });
+    }
+  });
+</script>
 {% endblock %}

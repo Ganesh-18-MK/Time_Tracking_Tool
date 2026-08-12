@@ -3,7 +3,7 @@ import datetime as dt
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app import compensation, engine, models as m
 from app.auth import current_user
 from app.db import get_db
-from app.templating import flash, render
+from app.templating import HOLIDAY_MANAGEMENT_ENABLED, flash, render
 from app.util import (
     FormError,
     audit,
@@ -694,6 +694,19 @@ def my_month(
     balance = ledger[-1]["balance"] if ledger else 0
     comp = compensation.monthly_summary(db, user, year, month)
     (py, pm), (ny, nm) = prev_next_month(year, month)
+
+    # read-only lookback (Ganesh, 2026-08-13): employees can't edit a past
+    # day's rows outside today, but they should still be able to see what
+    # they logged. One query for the whole month, grouped by date, so the
+    # ledger table below can expand each row in place with no extra route.
+    entries_by_date = {}
+    for e in db.execute(
+        select(m.TaskEntry)
+        .where(m.TaskEntry.employee_id == user.id, m.TaskEntry.date.between(first, last))
+        .order_by(m.TaskEntry.date, m.TaskEntry.start_minute)
+    ).scalars():
+        entries_by_date.setdefault(e.date, []).append(e)
+
     return render(
         request,
         "my_month.html",
@@ -708,6 +721,7 @@ def my_month(
             "leave_totals": leave_totals,
             "ledger": ledger,
             "balance": balance,
+            "entries_by_date": entries_by_date,
             "comp": comp,
             "prev_ym": f"{py}-{pm:02d}",
             "next_ym": f"{ny}-{nm:02d}",
@@ -916,7 +930,10 @@ def holidays_page(
     (see Holiday's docstring in app/models.py). Defaults to the employee's
     own Profile-set location, but either tab is viewable regardless — this
     is informational, not the compliance calendar itself (that's My Month,
-    which only ever uses the employee's own location, see engine.py)."""
+    which only ever uses the employee's own location, see engine.py).
+    Held back from the 2026-08-13 deploy (see HOLIDAY_MANAGEMENT_ENABLED)."""
+    if not HOLIDAY_MANAGEMENT_ENABLED:
+        raise HTTPException(status_code=404)
     selected = country if country in m.LOCATIONS else user.location
     holidays = list(
         db.execute(
@@ -1042,7 +1059,10 @@ def update_location(
     Holiday calendar this employee's own compliance days/My Month use (see
     engine.holidays_set()/is_working_day()). Takes effect immediately: the
     next recompute (My Month load, dashboard, etc.) picks up the new
-    location straight from the Employee row, nothing cached to invalidate."""
+    location straight from the Employee row, nothing cached to invalidate.
+    Held back from the 2026-08-13 deploy (see HOLIDAY_MANAGEMENT_ENABLED)."""
+    if not HOLIDAY_MANAGEMENT_ENABLED:
+        raise HTTPException(status_code=404)
     if location not in m.LOCATIONS:
         flash(request, "Choose a valid country.", "err")
         return RedirectResponse("/profile", status_code=303)

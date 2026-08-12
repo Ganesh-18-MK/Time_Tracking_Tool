@@ -17,6 +17,7 @@
     </div>
   </div>
   <div class="formrow" style="align-items:flex-start">
+    {% if HOLIDAY_MANAGEMENT_ENABLED %}
     <form method="post" action="/profile/location" style="flex:1">
       <label>Country</label>
       <select name="location" onchange="this.form.submit()">
@@ -27,6 +28,7 @@
       <p class="small muted" style="margin:4px 0 0">Sets which country's <a href="/holidays">Holidays</a>
         list applies to your My Month calendar.</p>
     </form>
+    {% endif %}
     <form method="post" action="/profile/photo" enctype="multipart/form-data" style="flex:1">
       <label>Upload a new photo (JPEG/PNG/WebP, max 2 MB)</label>
       <input type="file" name="photo" accept="image/jpeg,image/png,image/webp" required>

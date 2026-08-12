@@ -22,7 +22,7 @@
     <input type="search" data-filter-table="roster-table" placeholder="Search employees…">
   </div>
   <table id="roster-table">
-    <thead><tr><th>ID</th><th>Name</th><th>Country</th><th>Department</th><th>Designation</th><th>Reports to</th><th>Target/day</th>
+    <thead><tr><th>ID</th><th>Name</th>{% if HOLIDAY_MANAGEMENT_ENABLED %}<th>Country</th>{% endif %}<th>Department</th><th>Designation</th><th>Reports to</th><th>Target/day</th>
       <th>Work days</th><th>Start date</th><th>Flags</th><th></th></tr></thead>
     <tbody>
       {% for e in emps %}
@@ -32,7 +32,7 @@
           {% if e.photo_path %}<img src="/static/uploads/avatars/{{ e.photo_path }}" class="avatar-sm" alt="">{% endif %}
           <a href="/admin/person/{{ e.id }}">{{ e.name }}</a>
         </td>
-        <td class="small">{{ e.location }}</td>
+        {% if HOLIDAY_MANAGEMENT_ENABLED %}<td class="small">{{ e.location }}</td>{% endif %}
         <td>{{ e.department or '—' }}</td>
         <td>{{ e.designation or '—' }}</td>
         <td class="small">{{ e.reports_to.name if e.reports_to else '—' }}</td>
@@ -62,12 +62,14 @@
     <div><label>Email</label><input name="email" type="email"></div>
     <div><label>Country code</label><input name="country_code" placeholder="+91" style="width:70px"></div>
     <div><label>Phone</label><input name="phone"></div>
+    {% if HOLIDAY_MANAGEMENT_ENABLED %}
     <div>
       <label>Country</label>
       <select name="location">
         {% for loc in locations %}<option value="{{ loc }}" {{ 'selected' if loc == default_location }}>{{ loc }}</option>{% endfor %}
       </select>
     </div>
+    {% endif %}
     <div><label>Department</label><input name="department"></div>
     <div><label>Designation</label><input name="designation"></div>
     <div><label>Target hours/day</label><input name="target_hours" value="8" style="width:70px"></div>
