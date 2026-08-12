@@ -59,7 +59,7 @@ MAX_PHOTO_BYTES = 2 * 1024 * 1024  # 2 MB
 def _allowed_dates(db: Session, emp: m.Employee, cfg) -> list:
     today = today_local()
     earliest = earliest_allowed_date(
-        emp, today, engine.cfg_int(cfg, "backdate_working_days"), engine.holidays_set(db)
+        emp, today, engine.cfg_int(cfg, "backdate_working_days"), engine.holidays_set(db, emp.location)
     )
     days = []
     d = earliest
@@ -905,6 +905,30 @@ def support_page(
     return render(request, "support.html", {"user": user, "records": records})
 
 
+@router.get("/holidays")
+def holidays_page(
+    request: Request,
+    country: Optional[str] = None,
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Ganesh, 2026-08-12 — each country's holiday calendar is separate now
+    (see Holiday's docstring in app/models.py). Defaults to the employee's
+    own Profile-set location, but either tab is viewable regardless — this
+    is informational, not the compliance calendar itself (that's My Month,
+    which only ever uses the employee's own location, see engine.py)."""
+    selected = country if country in m.LOCATIONS else user.location
+    holidays = list(
+        db.execute(
+            select(m.Holiday).where(m.Holiday.location == selected).order_by(m.Holiday.date)
+        ).scalars()
+    )
+    return render(
+        request, "holidays.html",
+        {"user": user, "locations": m.LOCATIONS, "selected": selected, "holidays": holidays},
+    )
+
+
 @router.post("/suggestions")
 def suggest_list_item(
     request: Request,
@@ -966,7 +990,10 @@ def profile_page(
     request: Request,
     user: m.Employee = Depends(current_user),
 ):
-    return render(request, "profile.html", {"user": user, "pd": user.personal_details, "bd": user.bank_details})
+    return render(
+        request, "profile.html",
+        {"user": user, "pd": user.personal_details, "bd": user.bank_details, "locations": m.LOCATIONS},
+    )
 
 
 @router.post("/profile/photo")
@@ -1001,6 +1028,29 @@ def upload_photo(
     user.photo_path = filename
     db.commit()
     flash(request, "Profile photo updated.", "ok")
+    return RedirectResponse("/profile", status_code=303)
+
+
+@router.post("/profile/location")
+def update_location(
+    request: Request,
+    location: str = Form(...),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Self-service country (Ganesh, 2026-08-12) — drives which country's
+    Holiday calendar this employee's own compliance days/My Month use (see
+    engine.holidays_set()/is_working_day()). Takes effect immediately: the
+    next recompute (My Month load, dashboard, etc.) picks up the new
+    location straight from the Employee row, nothing cached to invalidate."""
+    if location not in m.LOCATIONS:
+        flash(request, "Choose a valid country.", "err")
+        return RedirectResponse("/profile", status_code=303)
+    if location != user.location:
+        user.location = location
+        db.commit()
+        audit(db, user.name, "location_change", "Employee", str(user.id), {"location": location})
+        flash(request, f"Country set to {location}.", "ok")
     return RedirectResponse("/profile", status_code=303)
 
 

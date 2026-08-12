@@ -81,7 +81,7 @@ def validate_entry(
             errors.append("Cannot log time in the future.")
         else:
             earliest = earliest_allowed_date(
-                emp, today, cfg_int(cfg, "backdate_working_days"), holidays_set(db)
+                emp, today, cfg_int(cfg, "backdate_working_days"), holidays_set(db, emp.location)
             )
             if date < earliest:
                 errors.append(

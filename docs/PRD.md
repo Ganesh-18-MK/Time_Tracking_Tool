@@ -188,7 +188,7 @@ Defaults let the build start. Every one of these is a config value or a one-line
 | 6 | Leave quotas per category per year? None appear in the tracker. | No quotas enforced, totals displayed |
 | 7 | How far back can an employee log or edit an unsubmitted day? | 1 working day |
 | 8 | Are weekends universally non-working? Compliance sheet leaves them blank, but Prem's history shows weekend and pre-shift logging. | Mon-Fri working, per-person schedule override available |
-| 9 | Company holiday calendar source and regional scoping? | Admin-maintained table, single region |
+| 9 | Company holiday calendar source and regional scoping? | Admin-maintained table, per-country (2026-08-12: the team grew to include both US and India staff, so this changed from a single shared region to a `location` field on Employee/Holiday — each employee's own country decides which calendar their working-day/compliance calculation uses; self-service on Profile or admin-set via Roster) |
 
 ## 11. Out of scope for the POC
 

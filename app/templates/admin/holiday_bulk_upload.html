@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% set active_nav = 'admin_holidays' %}
+{% block title %}Bulk upload holidays · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Bulk upload holidays</h1>
+<p class="muted small"><a href="/admin/holidays">← Back to Holiday Management</a></p>
+
+<div class="cols">
+  <div class="card">
+    <h2 style="margin-top:0">Blank template</h2>
+    <p class="small muted">Holiday Name, Holiday Date, Country (US or India).</p>
+    <a class="btn secondary" href="/admin/holidays/bulk-upload/sample.xlsx">Download blank template</a>
+  </div>
+  <div class="card">
+    <h2 style="margin-top:0">Current holidays</h2>
+    <p class="small muted">Every holiday across both countries, one row each. Re-uploading a row whose
+    Date + Country already exists updates that holiday's name instead of creating a duplicate.</p>
+    <a class="btn secondary" href="/admin/holidays/bulk-upload/existing.xlsx">Download current holidays</a>
+  </div>
+</div>
+
+<div class="card" style="max-width:640px">
+  <h2 style="margin-top:0">Upload your sheet</h2>
+  <form method="post" action="/admin/holidays/bulk-upload" enctype="multipart/form-data" class="formrow">
+    <div><input type="file" name="file" accept=".xlsx" required></div>
+    <div><button>Upload</button></div>
+  </form>
+</div>
+
+{% if result %}
+<div class="card" style="max-width:760px">
+  <h2 style="margin-top:0">Result</h2>
+  <p>{{ result.added }} holiday(s) added, {{ result.updated }} updated.</p>
+  {% if result.skipped %}
+  <table>
+    <thead><tr><th>Row</th><th>Name / Date</th><th>Reason skipped</th></tr></thead>
+    <tbody>
+      {% for s in result.skipped %}
+      <tr><td>{{ s.row }}</td><td>{{ s.name }}</td><td class="small">{{ s.reason }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

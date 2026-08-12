@@ -34,23 +34,10 @@ use “Recompute month” on the dashboard to apply retroactively.</p>
   </div>
 
   <div class="card">
-    <h2>Company holidays (open question 9 — admin-maintained, single region)</h2>
-    <form method="post" action="/admin/holidays/add" class="formrow">
-      <div><label>Date</label><input type="date" name="date" required></div>
-      <div style="flex:1"><label>Name</label><input name="name" style="width:100%"></div>
-      <div><button class="small">Add</button></div>
-    </form>
-    <table>
-      {% for h in holidays %}
-      <tr>
-        <td>{{ h.date|mdy }}</td><td>{{ h.name }}</td>
-        <td class="right"><form method="post" action="/admin/holidays/{{ h.id }}/delete" class="inline">
-          <button class="small secondary">✕</button></form></td>
-      </tr>
-      {% else %}
-      <tr><td class="muted">None defined.</td></tr>
-      {% endfor %}
-    </table>
+    <h2 style="margin-top:0">Company holidays (open question 9)</h2>
+    <p class="small muted">Moved to its own page (Ganesh, 2026-08-12) — each country now has a separate
+    calendar, plus a bulk-upload option.</p>
+    <a class="btn secondary" href="/admin/holidays">Go to Holiday Management</a>
   </div>
 </div>
 {% endblock %}

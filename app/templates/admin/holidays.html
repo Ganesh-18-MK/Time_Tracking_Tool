@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% set active_nav = 'admin_holidays' %}
+{% block title %}Holiday Management · MK Timekeeping{% endblock %}
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
+  <h1 style="margin-bottom:0">Holiday Management</h1>
+  <a class="btn secondary small" href="/admin/holidays/bulk-upload">Bulk upload holidays</a>
+</div>
+<p class="muted small">Each country has its own calendar (Ganesh, 2026-08-12) — a US employee's compliance days
+and My Month only ever look at the US list below, and an India employee's only ever look at the India list.
+An employee's own country is set on their Profile page (self-service) or via Roster.</p>
+
+<div class="cols">
+  {% for loc in locations %}
+  <div class="card">
+    <h2 style="margin-top:0">{{ loc }} holidays ({{ holidays_by_location[loc]|length }})</h2>
+    <form method="post" action="/admin/holidays/add" class="formrow">
+      <input type="hidden" name="location" value="{{ loc }}">
+      <div><label>Date</label><input type="date" name="date" required></div>
+      <div style="flex:1"><label>Name</label><input name="name" style="width:100%"></div>
+      <div><button class="small">Add</button></div>
+    </form>
+    <table>
+      {% for h in holidays_by_location[loc] %}
+      <tr>
+        <td>{{ h.date|mdy }}</td><td>{{ h.name }}</td>
+        <td class="right"><form method="post" action="/admin/holidays/{{ h.id }}/delete" class="inline"
+              onsubmit="return confirm('Delete this holiday?')">
+          <button class="small secondary">✕</button></form></td>
+      </tr>
+      {% else %}
+      <tr><td class="muted" colspan="3">None defined.</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

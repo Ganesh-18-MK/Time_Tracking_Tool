@@ -272,6 +272,33 @@ def ensure_list_status_backfill(db: Session) -> None:
         db.commit()
 
 
+def ensure_location_backfill(db: Session) -> None:
+    """Backfill for `Employee.location` and `Holiday.location`, both added
+    2026-08-12 (per-country holiday management — the team now has both US
+    and India staff). Same root cause as ensure_list_status_backfill above:
+    SQLite's ADD COLUMN gives every existing row NULL, not the ORM-level
+    default — without this, every employee and every already-imported
+    historical holiday would silently fail to match either LOCATION_US or
+    LOCATION_INDIA in engine.holidays_set()/is_working_day(), so nobody's
+    calendar would show any holidays at all until they explicitly picked a
+    country. Backfills to m.DEFAULT_LOCATION ("India"), matching the
+    original all-offshore scope — a no-op for anyone/anything created after
+    this feature shipped, since the column default already applies there.
+    A no-op once every row already has a location — safe on every startup,
+    same pattern as ensure_employee_codes / ensure_list_status_backfill."""
+    changed = False
+    emp_rows = list(db.execute(select(m.Employee).where(m.Employee.location.is_(None))).scalars())
+    for row in emp_rows:
+        row.location = m.DEFAULT_LOCATION
+        changed = True
+    holiday_rows = list(db.execute(select(m.Holiday).where(m.Holiday.location.is_(None))).scalars())
+    for row in holiday_rows:
+        row.location = m.DEFAULT_LOCATION
+        changed = True
+    if changed:
+        db.commit()
+
+
 def ensure_bootstrap_admins(db: Session) -> None:
     """Creates the initial Super Admin account(s) from the BOOTSTRAP_ADMINS
     env var, but ONLY if the employees table is completely empty.

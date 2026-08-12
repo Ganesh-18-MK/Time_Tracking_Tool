@@ -41,6 +41,22 @@ STRIKE_STATUSES = (PARTIAL, MISSING)
 
 LEAVE_TYPES = ("Casual", "Sick", "Vacation", "Other")
 
+# Employee work location (Ganesh, 2026-08-12: holiday management — the team
+# now has both US and India staff, and each country's holiday calendar is
+# different, so compliance/"is this a working day" can no longer assume one
+# single region as it always has before — see engine.holidays_set()/
+# is_working_day(), both of which now take a location). Deliberately a short
+# open list, not a hardcoded two-value enum/bool, so adding a third country
+# later is a one-line change here, same convention as BREAK_TYPES/LEAVE_TYPES
+# below. Every existing employee and every already-imported historical
+# Holiday row defaults to "India" (the original scope was "~45 offshore
+# staff") — see ensure_location_backfill in app/util.py — so nothing changes
+# for anyone until they, or an admin, explicitly pick a country.
+LOCATION_US = "US"
+LOCATION_INDIA = "India"
+LOCATIONS = (LOCATION_INDIA, LOCATION_US)
+DEFAULT_LOCATION = LOCATION_INDIA
+
 
 class Employee(Base):
     __tablename__ = "employees"
@@ -120,6 +136,15 @@ class Employee(Base):
     # bulk-upload "Reports To" column (matched by employee code, same key
     # bulk *updates* already use — see app/bulk_upload.py).
     reports_to_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    # Work location / country (Ganesh, 2026-08-12) — drives which country's
+    # Holiday calendar this employee's own compliance days/My Month use (see
+    # engine.holidays_set()/is_working_day()). Self-service (Profile page,
+    # left of the photo upload) or admin-set (Roster -> Add/Edit), same
+    # dual-editable pattern as department/designation. Defaults to
+    # DEFAULT_LOCATION ("India") rather than NULL/blank, since "which
+    # calendar applies" always needs an answer, unlike e.g. date_of_birth
+    # where blank is a perfectly fine, honest "not collected yet" state.
+    location: Mapped[str] = mapped_column(String(20), default=DEFAULT_LOCATION)
 
     entries = relationship("TaskEntry", back_populates="employee")
     # remote_side=[id]: tells SQLAlchemy this is the "many" side pointing at
@@ -665,10 +690,25 @@ class TicketComment(Base):
 
 
 class Holiday(Base):
+    """Company holiday calendar (Ganesh, 2026-08-12: split per-country — the
+    team now has both US and India staff, and each country observes
+    different holidays, so a single company-wide list no longer makes
+    sense). `date` alone used to be unique across the whole table (one
+    calendar for everyone); now the same calendar date can appear twice —
+    once per country — as long as the (date, location) pair is unique, e.g.
+    a US-only July 4th row and a same-day India row would never collide,
+    but two India rows on the same date still would. Every already-imported
+    historical row (see legacy/import_legacy.py's auto-detected company
+    holidays) defaults to DEFAULT_LOCATION ("India") via
+    ensure_location_backfill in app/util.py, matching the original
+    all-offshore scope."""
+
     __tablename__ = "holidays"
+    __table_args__ = (UniqueConstraint("date", "location"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    date: Mapped[dt.date] = mapped_column(Date, unique=True)
+    date: Mapped[dt.date] = mapped_column(Date)
     name: Mapped[str] = mapped_column(String(200), default="")
+    location: Mapped[str] = mapped_column(String(20), default=DEFAULT_LOCATION)
 
 
 class DayStatus(Base):

@@ -23,6 +23,7 @@ from app.util import (
     ensure_bootstrap_admins,
     ensure_employee_codes,
     ensure_list_status_backfill,
+    ensure_location_backfill,
     ensure_super_admin_backfill,
 )
 
@@ -147,6 +148,7 @@ def _startup() -> None:
         ensure_employee_codes(db)
         ensure_super_admin_backfill(db)
         ensure_list_status_backfill(db)
+        ensure_location_backfill(db)
         ensure_bootstrap_admins(db)
     finally:
         db.close()

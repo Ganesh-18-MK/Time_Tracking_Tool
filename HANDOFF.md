@@ -45,6 +45,9 @@ No bundle? The repo alone still demos: `python -m demo.run_demo` serves the comm
 
 ```
 app/engine.py        ← all business math. Touch with tests + verify_strikes.
+                        Holidays are per-country since 2026-08-12 — see
+                        holidays_set()/holidays_by_location(), always scoped
+                        to an employee's own Employee.location, never flat.
 app/validation.py    ← PRD §4 entry rules. Since 2026-08-11 this also blocks a row from being logged over a time span already logged as a break, and nets logged break minutes out of the gap-flag threshold instead of flagging the raw gap. Client JS mirrors it; server is authoritative.
 app/models.py        ← schema + CONFIG_DEFAULTS. Schema change = rm tms.db + re-import (no alembic in POC).
 app/auth.py          ← THE swap point for Entra ID. Session/role gating stays as-is.

@@ -56,11 +56,36 @@ def live_start(cfg: Dict[str, str]) -> Optional[dt.date]:
 
 
 # ---- calendar helpers -------------------------------------------------------
-def holidays_set(db: Session) -> set:
-    return {h.date for h in db.execute(select(m.Holiday)).scalars()}
+def holidays_set(db: Session, location: Optional[str] = None) -> set:
+    """Holiday dates for one country's calendar (Ganesh, 2026-08-12 — the
+    team now has both US and India staff, and Holiday rows are per-country;
+    see Holiday's docstring). Pass an employee's own `location` for any
+    single-employee call site; `location=None` returns every holiday across
+    every country, which is almost never what a compliance calculation
+    wants (see holidays_by_location below for the multi-employee case)."""
+    q = select(m.Holiday)
+    if location is not None:
+        q = q.where(m.Holiday.location == location)
+    return {h.date for h in db.execute(q).scalars()}
+
+
+def holidays_by_location(db: Session) -> Dict[str, set]:
+    """Every country's holiday set, fetched in one query and bucketed by
+    location — for call sites that loop over many employees at once (e.g.
+    today_attendance) so they don't run one holidays_set() query per
+    employee. `is_working_day(emp, d, by_location.get(emp.location, set()))`
+    is the intended pairing."""
+    by_location: Dict[str, set] = {}
+    for h in db.execute(select(m.Holiday)).scalars():
+        by_location.setdefault(h.location, set()).add(h.date)
+    return by_location
 
 
 def is_working_day(emp: m.Employee, d: dt.date, holidays: set) -> bool:
+    """`holidays` must already be scoped to `emp.location` — see
+    holidays_set()/holidays_by_location() above. Not resolved inside this
+    function so a single-employee caller can pass a set computed once
+    outside a date-iteration loop, same as before this was location-aware."""
     if d in holidays:
         return False
     return d.weekday() in emp.work_day_set
@@ -211,7 +236,7 @@ def recompute_employee(
     if start > end:
         return 0
 
-    holidays = holidays_set(db)
+    holidays = holidays_set(db, emp.location)
     subs = {
         s.date: s
         for s in db.execute(
@@ -427,7 +452,7 @@ def today_attendance(
     count admins can't actually act on."""
     cfg = cfg or get_config(db)
     today = today or today_local()
-    holidays = holidays_set(db)
+    holidays_map = holidays_by_location(db)
     emps = list(
         db.execute(
             select(m.Employee)
@@ -463,7 +488,7 @@ def today_attendance(
 
     logged, on_leave, not_yet, off_today = [], [], [], []
     for e in emps:
-        if not is_working_day(e, today, holidays):
+        if not is_working_day(e, today, holidays_map.get(e.location, set())):
             off_today.append(e)
             continue
         emp_leaves = leaves_by_emp.get(e.id, [])

@@ -11,7 +11,7 @@ from openpyxl import load_workbook
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app import bulk_upload, compensation, engine, leave_bulk_upload, lists_bulk_upload, models as m
+from app import bulk_upload, compensation, engine, holiday_bulk_upload, leave_bulk_upload, lists_bulk_upload, models as m
 from app.auth import Forbidden, admin_department_scope, led_by, require_admin, require_super_admin
 from app.db import get_db
 from app.templating import TICKETING_ENABLED, flash, render
@@ -549,6 +549,7 @@ def roster(
         {
             "user": admin, "emps": emps, "show": show, "dept_counts": dept_counts,
             "all_depts": all_depts, "lead_choices": lead_choices,
+            "locations": m.LOCATIONS, "default_location": m.DEFAULT_LOCATION,
         },
         db=db,
     )
@@ -557,9 +558,18 @@ def roster(
 def _emp_from_form(
     db: Session, emp: m.Employee, name, email, department, designation, target_hours,
     work_days, start_date, active, tracked, role, dob="", phone="", country_code="",
-    reports_to_id="", is_developer=False,
+    reports_to_id="", is_developer=False, location=None,
 ):
     emp.name = name.strip()
+    # Work location / country (Ganesh, 2026-08-12) — admin-set here as an
+    # alternative to the employee's own Profile self-service dropdown, same
+    # dual-editable pattern as department/designation. Only touched when the
+    # caller actually passes one (both roster forms always submit a value,
+    # since it's a required <select>, but keeping this guarded means a
+    # future caller of _emp_from_form doesn't have to supply it to avoid
+    # silently resetting an existing employee back to the default).
+    if location in m.LOCATIONS:
+        emp.location = location
     emp.country_code = country_code.strip() or None
     emp.phone = phone.strip() or None
     # None (not "") so multiple blank emails never collide on the unique
@@ -635,6 +645,7 @@ def roster_add(
     role: str = Form(ROLE_EMPLOYEE),
     reports_to_id: str = Form(""),
     is_developer: str = Form(""),
+    location: str = Form(m.DEFAULT_LOCATION),
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
@@ -642,7 +653,7 @@ def roster_add(
     try:
         _emp_from_form(db, emp, name, email, department, designation, target_hours,
                        work_days, start_date, active == "1", tracked == "1", role,
-                       dob, phone, country_code, reports_to_id, is_developer == "1")
+                       dob, phone, country_code, reports_to_id, is_developer == "1", location)
     except FormError as e:
         flash(request, e.message, "err")
         return RedirectResponse("/admin/roster", status_code=303)
@@ -695,7 +706,7 @@ def roster_edit_page(
     )
     return render(
         request, "admin/roster_edit.html",
-        {"user": admin, "emp": emp, "lead_choices": lead_choices}, db=db,
+        {"user": admin, "emp": emp, "lead_choices": lead_choices, "locations": m.LOCATIONS}, db=db,
     )
 
 
@@ -718,6 +729,7 @@ def roster_edit(
     role: str = Form(ROLE_EMPLOYEE),
     reports_to_id: str = Form(""),
     is_developer: str = Form(""),
+    location: str = Form(m.DEFAULT_LOCATION),
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
@@ -729,11 +741,12 @@ def roster_edit(
         "target": emp.daily_target_minutes, "work_days": emp.work_days,
         "active": emp.active, "tracked": emp.tracked, "is_admin": emp.is_admin,
         "is_super_admin": emp.is_super_admin, "is_developer": emp.is_developer,
+        "location": emp.location,
     }
     try:
         _emp_from_form(db, emp, name, email, department, designation, target_hours,
                        work_days, start_date, active == "1", tracked == "1", role,
-                       dob, phone, country_code, reports_to_id, is_developer == "1")
+                       dob, phone, country_code, reports_to_id, is_developer == "1", location)
     except FormError as e:
         flash(request, e.message, "err")
         return RedirectResponse("/admin/roster", status_code=303)
@@ -1588,8 +1601,7 @@ def config_page(
     db: Session = Depends(get_db),
 ):
     cfg = engine.get_config(db)
-    holidays = list(db.execute(select(m.Holiday).order_by(m.Holiday.date)).scalars())
-    return render(request, "admin/config.html", {"user": admin, "cfg": cfg, "holidays": holidays}, db=db)
+    return render(request, "admin/config.html", {"user": admin, "cfg": cfg}, db=db)
 
 
 @router.post("/config")
@@ -1636,11 +1648,35 @@ def config_save(
     return RedirectResponse("/admin/config", status_code=303)
 
 
+# --------------------------------------------------------------------------
+# Holiday Management (Ganesh, 2026-08-12) — moved out of the general Config
+# page into its own screen once holidays became per-country: US and India
+# each get their own section and their own bulk-upload column (see
+# app/holiday_bulk_upload.py, same shape as leave_bulk_upload.py).
+# --------------------------------------------------------------------------
+@router.get("/holidays")
+def holidays_page(
+    request: Request,
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    all_holidays = list(db.execute(select(m.Holiday).order_by(m.Holiday.date)).scalars())
+    holidays_by_location = {loc: [] for loc in m.LOCATIONS}
+    for h in all_holidays:
+        holidays_by_location.setdefault(h.location, []).append(h)
+    return render(
+        request, "admin/holidays.html",
+        {"user": admin, "locations": m.LOCATIONS, "holidays_by_location": holidays_by_location},
+        db=db,
+    )
+
+
 @router.post("/holidays/add")
 def holiday_add(
     request: Request,
     date: str = Form(...),
     name: str = Form(""),
+    location: str = Form(...),
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
@@ -1648,12 +1684,20 @@ def holiday_add(
         d = parse_date_field(date)
     except FormError as e:
         flash(request, e.message, "err")
-        return RedirectResponse("/admin/config", status_code=303)
-    if db.execute(select(m.Holiday).where(m.Holiday.date == d)).scalar_one_or_none() is None:
-        db.add(m.Holiday(date=d, name=name.strip()))
+        return RedirectResponse("/admin/holidays", status_code=303)
+    if location not in m.LOCATIONS:
+        flash(request, "Choose a country.", "err")
+        return RedirectResponse("/admin/holidays", status_code=303)
+    exists = db.execute(
+        select(m.Holiday).where(m.Holiday.date == d, m.Holiday.location == location)
+    ).scalar_one_or_none()
+    if exists is None:
+        db.add(m.Holiday(date=d, name=name.strip(), location=location))
         db.commit()
-        audit(db, admin.name, "holiday_add", "Holiday", date, {"name": name.strip()})
-    return RedirectResponse("/admin/config", status_code=303)
+        audit(db, admin.name, "holiday_add", "Holiday", date, {"name": name.strip(), "location": location})
+    else:
+        flash(request, f"{location} already has a holiday on that date.", "err")
+    return RedirectResponse("/admin/holidays", status_code=303)
 
 
 @router.post("/holidays/{holiday_id}/delete")
@@ -1667,8 +1711,74 @@ def holiday_delete(
     if h is not None:
         db.delete(h)
         db.commit()
-        audit(db, admin.name, "holiday_delete", "Holiday", h.date.isoformat(), {})
-    return RedirectResponse("/admin/config", status_code=303)
+        audit(db, admin.name, "holiday_delete", "Holiday", h.date.isoformat(), {"location": h.location})
+    return RedirectResponse("/admin/holidays", status_code=303)
+
+
+@router.get("/holidays/bulk-upload")
+def holiday_bulk_upload_page(
+    request: Request,
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    return render(request, "admin/holiday_bulk_upload.html", {"user": admin, "result": None}, db=db)
+
+
+@router.get("/holidays/bulk-upload/sample.xlsx")
+def holiday_bulk_upload_sample(admin: m.Employee = Depends(require_super_admin)):
+    buf = io.BytesIO()
+    holiday_bulk_upload.build_sample_workbook().save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="holiday_template.xlsx"'},
+    )
+
+
+@router.get("/holidays/bulk-upload/existing.xlsx")
+def holiday_bulk_upload_existing(
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    buf = io.BytesIO()
+    holiday_bulk_upload.build_existing_holidays_workbook(db).save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="existing_holidays.xlsx"'},
+    )
+
+
+@router.post("/holidays/bulk-upload")
+def holiday_bulk_upload_post(
+    request: Request,
+    file: UploadFile = File(...),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
+        flash(request, "Please upload an .xlsx file — use the sample template.", "err")
+        return RedirectResponse("/admin/holidays/bulk-upload", status_code=303)
+    try:
+        wb = load_workbook(io.BytesIO(file.file.read()), data_only=True)
+    except Exception:
+        flash(request, "Couldn't read that file — is it a valid, unprotected .xlsx?", "err")
+        return RedirectResponse("/admin/holidays/bulk-upload", status_code=303)
+
+    result = holiday_bulk_upload.process_upload(db, wb)
+    if result["header_error"]:
+        flash(request, result["header_error"], "err")
+        return RedirectResponse("/admin/holidays/bulk-upload", status_code=303)
+    if result["added"] or result["updated"]:
+        audit(db, admin.name, "holiday_bulk_upload", "Holiday", "",
+              {"added": result["added"], "updated": result["updated"], "skipped": len(result["skipped"])})
+    summary = f"{result['added']} holiday(s) added, {result['updated']} updated."
+    if result["skipped"]:
+        summary += f" {len(result['skipped'])} row(s) skipped — see details below."
+    flash(request, summary, "ok" if (result["added"] or result["updated"]) else "err")
+    return render(request, "admin/holiday_bulk_upload.html", {"user": admin, "result": result}, db=db)
 
 
 # --------------------------------------------------------------------------

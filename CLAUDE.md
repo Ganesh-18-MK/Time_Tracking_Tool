@@ -1,13 +1,14 @@
 # CLAUDE.md — MK Timekeeping & Compliance POC
 
 FastAPI + SQLAlchemy + Jinja2 internal tool replacing three legacy spreadsheets for
-time/leave/compliance tracking (~45 offshore staff). Spec: docs/PRD.md. Onboarding: HANDOFF.md.
+time/leave/compliance tracking (~45 staff, originally all India-based offshore, now also
+US-based — see the location/holiday hard rule below). Spec: docs/PRD.md. Onboarding: HANDOFF.md.
 
 ## Commands
 
 ```bash
 .venv/bin/python -m uvicorn app.main:app --port 8127     # run (http://localhost:8127, dev pick-a-user auth)
-.venv/bin/python -m pytest tests/ -q                     # 334 tests — must stay green
+.venv/bin/python -m pytest tests/ -q                     # 362 tests — must stay green
 .venv/bin/python -m legacy.verify_strikes                # acceptance: MUST print 168/168
 rm tms.db && .venv/bin/python -m legacy.import_legacy    # rebuild DB from the 3 legacy .ods files
 ```
@@ -25,13 +26,15 @@ rm tms.db && .venv/bin/python -m legacy.import_legacy    # rebuild DB from the 3
 - Any change to `app/engine.py`, `app/validation.py`, or `legacy/import_legacy.py` ⇒ run pytest **and** verify_strikes before calling it done.
 - Schema changes: no alembic in the POC — `rm tms.db` + re-import is the migration path.
 - Config lives in the `config` table (defaults: `CONFIG_DEFAULTS` in app/models.py); read via `engine.get_config(db)`, never hardcode thresholds.
+- **Holidays are per-country, not company-wide** (manager request, 2026-08-12 — the team now has both US and India staff): `Employee.location` and `Holiday.location` (`m.LOCATIONS` = `("India", "US")`) drive which calendar applies. Always fetch holidays scoped to a specific employee's own `location` — `engine.holidays_set(db, emp.location)` for a single employee, `engine.holidays_by_location(db)` when looping over many (see `today_attendance`). Calling `holidays_set(db)` with no location returns every country's holidays flattened together, which is almost never correct for a compliance calculation. `Holiday`'s uniqueness is `(date, location)`, not `date` alone — the same calendar date can be a holiday in one country and a normal working day in the other.
 
 ## Layout
 
 - `app/util.py` — formatting/audit helpers shared by routes and templates; also the one place `now_local()`/`today_local()`/`BUSINESS_TZ` live (see Hard rules above)
 - `app/engine.py` — all business math (statuses, variance, strikes, recompute, ledger)
 - `app/validation.py` — PRD §4 entry rules (overlaps block, gaps flag, 4h cap, backdate window)
-- `app/routes/` — auth (dev login), employee (Today/My Month/Leave/Overtime/Support/Profile), admin (dashboard/roster/lists/leave/overtime/config/audit/support), tickets (Ticketing System — raise/list/detail/comment/status-change), exports (XLSX/CSV)
+- `app/routes/` — auth (dev login), employee (Today/My Month/Leave/Overtime/Holidays/Support/Profile), admin (dashboard/roster/lists/leave/overtime/holidays/config/audit/support), tickets (Ticketing System — raise/list/detail/comment/status-change), exports (XLSX/CSV)
+- `app/holiday_bulk_upload.py` — Excel upload for Holiday rows (name/date/country), same shape as `app/leave_bulk_upload.py`
 - `app/auth.py` — the Entra ID swap point; session/role gating stays
 - `legacy/` — streaming ODS reader (survives the 700 MB file), extractor, importer, strike verifier
 - `legacy/cache/import_report.json` — every oddity the import tolerated

@@ -2,7 +2,7 @@
 import datetime as dt
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app import models as m
@@ -284,6 +284,112 @@ class TestTodayAttendance:
         s.commit()
         out = today_attendance(s, m.CONFIG_DEFAULTS, TODAY)
         assert out["logged"] == out["on_leave"] == out["not_yet"] == out["off_today"] == []
+
+
+class TestLocationAwareHolidays:
+    """Holiday management (Ganesh, 2026-08-12) — the team now has both US
+    and India staff, each with their own holiday calendar (see Holiday's
+    docstring in app/models.py). holidays_set()/holidays_by_location() must
+    scope to one country at a time; is_working_day() must never fold in a
+    holiday from the *other* country."""
+
+    def _seed(self, s):
+        s.add_all([
+            m.Holiday(date=dt.date(2026, 7, 4), name="Independence Day", location=m.LOCATION_US),
+            m.Holiday(date=dt.date(2026, 11, 8), name="Diwali", location=m.LOCATION_INDIA),
+            # same calendar date, holiday in one country only in each row —
+            # exercises the (date, location) unique pair, not date alone
+            m.Holiday(date=dt.date(2026, 1, 26), name="Republic Day", location=m.LOCATION_INDIA),
+        ])
+        s.commit()
+
+    def test_holidays_set_scoped_to_india_excludes_us_only_dates(self, attendance_db):
+        s = attendance_db
+        self._seed(s)
+        from app.engine import holidays_set
+        india = holidays_set(s, m.LOCATION_INDIA)
+        assert dt.date(2026, 11, 8) in india
+        assert dt.date(2026, 1, 26) in india
+        assert dt.date(2026, 7, 4) not in india
+
+    def test_holidays_set_scoped_to_us_excludes_india_only_dates(self, attendance_db):
+        s = attendance_db
+        self._seed(s)
+        from app.engine import holidays_set
+        us = holidays_set(s, m.LOCATION_US)
+        assert dt.date(2026, 7, 4) in us
+        assert dt.date(2026, 11, 8) not in us
+        assert dt.date(2026, 1, 26) not in us
+
+    def test_holidays_set_unscoped_returns_every_country(self, attendance_db):
+        s = attendance_db
+        self._seed(s)
+        from app.engine import holidays_set
+        everyone = holidays_set(s)
+        assert everyone == {dt.date(2026, 7, 4), dt.date(2026, 11, 8), dt.date(2026, 1, 26)}
+
+    def test_holidays_by_location_buckets_correctly(self, attendance_db):
+        s = attendance_db
+        self._seed(s)
+        from app.engine import holidays_by_location
+        by_loc = holidays_by_location(s)
+        assert by_loc[m.LOCATION_US] == {dt.date(2026, 7, 4)}
+        assert by_loc[m.LOCATION_INDIA] == {dt.date(2026, 11, 8), dt.date(2026, 1, 26)}
+
+    def test_india_employee_still_works_on_a_us_only_holiday(self, attendance_db):
+        s = attendance_db
+        self._seed(s)
+        from app.engine import holidays_set, is_working_day
+        india_emp = m.Employee(name="I", daily_target_minutes=480, work_days="0,1,2,3,4,5,6",
+                               location=m.LOCATION_INDIA)
+        holidays = holidays_set(s, india_emp.location)
+        # July 4 is a Saturday in 2026, but work_days includes Sat/Sun here
+        # specifically so the assertion is about the holiday check, not the
+        # weekday check
+        assert is_working_day(india_emp, dt.date(2026, 7, 4), holidays) is True
+
+    def test_india_employee_does_not_work_on_an_india_holiday(self, attendance_db):
+        s = attendance_db
+        self._seed(s)
+        from app.engine import holidays_set, is_working_day
+        india_emp = m.Employee(name="I", daily_target_minutes=480, work_days="0,1,2,3,4,5,6",
+                               location=m.LOCATION_INDIA)
+        holidays = holidays_set(s, india_emp.location)
+        assert is_working_day(india_emp, dt.date(2026, 11, 8), holidays) is False
+
+    def test_us_employee_does_not_work_on_a_us_holiday_but_does_on_diwali(self, attendance_db):
+        s = attendance_db
+        self._seed(s)
+        from app.engine import holidays_set, is_working_day
+        us_emp = m.Employee(name="U", daily_target_minutes=480, work_days="0,1,2,3,4,5,6",
+                            location=m.LOCATION_US)
+        holidays = holidays_set(s, us_emp.location)
+        assert is_working_day(us_emp, dt.date(2026, 7, 4), holidays) is False
+        assert is_working_day(us_emp, dt.date(2026, 11, 8), holidays) is True
+
+    def test_recompute_employee_marks_holiday_only_for_matching_location(self, attendance_db):
+        # end-to-end: recompute_employee must pull the employee's OWN
+        # location's holiday set, not a flat company-wide one
+        s = attendance_db
+        self._seed(s)
+        from app.engine import recompute_employee
+        india_emp = m.Employee(id=10, name="I", daily_target_minutes=480,
+                               work_days="0,1,2,3,4,5,6", location=m.LOCATION_INDIA)
+        us_emp = m.Employee(id=11, name="U", daily_target_minutes=480,
+                            work_days="0,1,2,3,4,5,6", location=m.LOCATION_US)
+        s.add_all([india_emp, us_emp])
+        s.commit()
+        d = dt.date(2026, 11, 8)  # Diwali — India only
+        recompute_employee(s, india_emp, d, d, m.CONFIG_DEFAULTS, today=dt.date(2026, 11, 9))
+        recompute_employee(s, us_emp, d, d, m.CONFIG_DEFAULTS, today=dt.date(2026, 11, 9))
+        india_status = s.execute(
+            select(m.DayStatus).where(m.DayStatus.employee_id == 10, m.DayStatus.date == d)
+        ).scalar_one()
+        us_status = s.execute(
+            select(m.DayStatus).where(m.DayStatus.employee_id == 11, m.DayStatus.date == d)
+        ).scalar_one()
+        assert india_status.status == m.HOLIDAY
+        assert us_status.status != m.HOLIDAY
 
 
 class TestLeaveBalance:

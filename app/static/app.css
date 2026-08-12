@@ -28,6 +28,15 @@ h3 { font-size: 14px; margin: 16px 0 6px; }
 .topbar nav a { color: var(--ink); padding: 6px 10px; border-radius: 7px; }
 .topbar nav a.on, .topbar nav a:hover { background: var(--accent-light); color: var(--brand-dark);
   opacity: .9; text-decoration: none; }
+/* Country tabs (Ganesh, 2026-08-12) — Holidays page, US/India toggle.
+   Reuses the same on/hover treatment as the top nav rather than inventing
+   a new visual language for "selected". */
+.country-tabs { display: flex; gap: 4px; margin: 12px 0 16px; }
+.country-tabs a { color: var(--ink); padding: 6px 14px; border-radius: 7px;
+  border: 1px solid var(--line); text-decoration: none; }
+.country-tabs a.on, .country-tabs a:hover { background: var(--accent-light); color: var(--brand-dark);
+  border-color: var(--accent-light); }
+
 .navdrop { position: relative; }
 .navdrop summary { list-style: none; cursor: pointer; color: var(--ink); padding: 6px 10px;
   border-radius: 7px; display: inline-block; }
