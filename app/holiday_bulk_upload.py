@@ -5,17 +5,18 @@ Separate, smaller sibling of app/leave_bulk_upload.py, same shape: plain
 row-parsing functions testable without a database, and a process_upload()
 that applies everything in one transaction. Unlike the leave sheet (which
 only ever patches an existing employee), this one creates or updates
-Holiday rows directly — there's no employee to match against, just a
-(date, country) pair (see Holiday's docstring in app/models.py for why
-that pair, not date alone, is what has to be unique).
+Holiday rows directly — there's no employee to match against, just a date.
 
-Every row needs a Holiday Date and a Country (US or India — see
-m.LOCATIONS); Holiday Name is optional but recommended. Re-uploading is
-safe and expected: a row whose (date, country) already exists in the
-database just updates that row's name instead of creating a duplicate.
+Holidays are one shared company-wide list (Ganesh, 2026-08-14 — reverted
+the brief 2026-08-12 per-country split), so the sheet only needs two
+columns: Holiday Name and Holiday Date. Every row this module writes gets
+DEFAULT_LOCATION stamped on internally (see Holiday's docstring in
+app/models.py for why the location column still exists at all) — that
+value is never surfaced to the person filling in the sheet and never read
+back out anywhere.
 """
 import datetime as dt
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -26,30 +27,14 @@ from app.bulk_upload import parse_cell_date
 
 MAX_ROWS = 1000
 
-TEMPLATE_HEADERS = ["Holiday Name", "Holiday Date", "Country"]
-COL_WIDTHS = [30, 16, 12]
-COL_LETTERS = "ABC"
-
-_LOCATION_ALIASES = {loc.lower(): loc for loc in m.LOCATIONS}
-
-
-def parse_country(raw) -> str:
-    """Case-insensitive match against m.LOCATIONS ('US', 'India'). Blank or
-    unrecognized is an error — unlike the leave sheet's blank-means-
-    unchanged columns, there's no existing row to fall back to until the
-    (date, country) match below finds one, so this can't be optional."""
-    text = str(raw or "").strip()
-    if not text:
-        raise ValueError(f"Country is required — must be one of: {', '.join(m.LOCATIONS)}")
-    matched = _LOCATION_ALIASES.get(text.lower())
-    if matched is None:
-        raise ValueError(f"'{text}' isn't a recognized country — must be one of: {', '.join(m.LOCATIONS)}")
-    return matched
+TEMPLATE_HEADERS = ["Holiday Name", "Holiday Date"]
+COL_WIDTHS = [30, 16]
+COL_LETTERS = "AB"
 
 
 def parse_row(raw: dict) -> dict:
     """Returns one of:
-      {"mode": "ok", "date": dt.date, "location": str, "name": str, "error": None}
+      {"mode": "ok", "date": dt.date, "name": str, "error": None}
       {"mode": "error", "error": "..."}
     """
     name = str(raw.get("Holiday Name") or "").strip()
@@ -61,12 +46,7 @@ def parse_row(raw: dict) -> dict:
     if date is None:
         return {"mode": "error", "error": "Holiday Date is required"}
 
-    try:
-        location = parse_country(raw.get("Country"))
-    except ValueError as e:
-        return {"mode": "error", "error": str(e)}
-
-    return {"mode": "ok", "date": date, "location": location, "name": name, "error": None}
+    return {"mode": "ok", "date": date, "name": name, "error": None}
 
 
 def read_upload_rows(wb: Workbook) -> Tuple[List[dict], Optional[str]]:
@@ -98,9 +78,10 @@ def read_upload_rows(wb: Workbook) -> Tuple[List[dict], Optional[str]]:
 def process_upload(db, wb: Workbook) -> dict:
     """Parses + applies an uploaded workbook. Valid rows are applied and
     committed in one transaction; invalid rows are skipped and listed with
-    a reason, never silently dropped. A row matching an existing (date,
-    country) pair updates that row's name; otherwise a new Holiday is
-    created. Returns {"added": int, "updated": int,
+    a reason, never silently dropped. A row matching an existing Holiday
+    Date updates that row's name; otherwise a new Holiday is created (with
+    DEFAULT_LOCATION stamped on internally — see module docstring). Returns
+    {"added": int, "updated": int,
     "skipped": [{"row": int, "name": str, "reason": str}],
     "header_error": str | None}."""
     rows, header_error = read_upload_rows(wb)
@@ -112,10 +93,14 @@ def process_upload(db, wb: Workbook) -> dict:
             "header_error": f"Sheet has {len(rows)} data rows — max is {MAX_ROWS} per upload. Split it into batches.",
         }
 
-    existing = {
-        (h.date, h.location): h
-        for h in db.execute(select(m.Holiday)).scalars()
-    }
+    # Keyed by date alone now — one holiday per calendar date, company-wide.
+    # A date with more than one existing row (leftover from the brief
+    # per-country era) is matched to whichever comes back first; the rest
+    # are harmless duplicates from engine.holidays_set()'s point of view
+    # (it just wants the date in the set) and aren't touched by this upload.
+    existing = {}
+    for h in db.execute(select(m.Holiday)).scalars():
+        existing.setdefault(h.date, h)
 
     added = updated = 0
     skipped = []
@@ -125,12 +110,11 @@ def process_upload(db, wb: Workbook) -> dict:
         if result["error"]:
             skipped.append({"row": i, "name": display, "reason": result["error"]})
             continue
-        key = (result["date"], result["location"])
-        row = existing.get(key)
+        row = existing.get(result["date"])
         if row is None:
-            row = m.Holiday(date=result["date"], location=result["location"], name=result["name"])
+            row = m.Holiday(date=result["date"], location=m.DEFAULT_LOCATION, name=result["name"])
             db.add(row)
-            existing[key] = row
+            existing[result["date"]] = row
             added += 1
         else:
             row.name = result["name"]
@@ -148,8 +132,8 @@ def build_sample_workbook() -> Workbook:
     ws.append(TEMPLATE_HEADERS)
     for c in ws[1]:
         c.font = Font(bold=True)
-    ws.append(["Independence Day", dt.date(2026, 7, 4), "US"])
-    ws.append(["Diwali", dt.date(2026, 11, 8), "India"])
+    ws.append(["Independence Day", dt.date(2026, 7, 4)])
+    ws.append(["Diwali", dt.date(2026, 11, 8)])
     for col, width in zip(COL_LETTERS, COL_WIDTHS):
         ws.column_dimensions[col].width = width
 
@@ -160,11 +144,11 @@ def build_sample_workbook() -> Workbook:
     for row in [
         ("Holiday Name", "No", "Free text, e.g. 'Independence Day' — shown to employees"),
         ("Holiday Date", "Yes", "YYYY-MM-DD, or an Excel date cell"),
-        ("Country", "Yes", f"Must be one of: {', '.join(m.LOCATIONS)}"),
         ("", "", ""),
-        ("A row whose Date + Country already exists updates that", "", ""),
-        ("holiday's name instead of creating a duplicate — safe to", "", ""),
-        ("re-upload after fixing a typo.", "", ""),
+        ("Holidays are one shared list for everyone — no country column.", "", ""),
+        ("A row whose Date already exists updates that holiday's name", "", ""),
+        ("instead of creating a duplicate — safe to re-upload after", "", ""),
+        ("fixing a typo.", "", ""),
     ]:
         info.append(row)
     info.column_dimensions["A"].width = 55
@@ -174,10 +158,10 @@ def build_sample_workbook() -> Workbook:
 
 
 def build_existing_holidays_workbook(db) -> Workbook:
-    """Every holiday across every country, one row each — download-before-
-    edit companion to the sample template, same idea as
+    """Every holiday, one row each — download-before-edit companion to the
+    sample template, same idea as
     leave_bulk_upload.build_existing_allocations_workbook."""
-    holidays = list(db.execute(select(m.Holiday).order_by(m.Holiday.location, m.Holiday.date)).scalars())
+    holidays = list(db.execute(select(m.Holiday).order_by(m.Holiday.date)).scalars())
     wb = Workbook()
     ws = wb.active
     ws.title = "Holidays"
@@ -185,7 +169,7 @@ def build_existing_holidays_workbook(db) -> Workbook:
     for c in ws[1]:
         c.font = Font(bold=True)
     for h in holidays:
-        ws.append([h.name, h.date, h.location])
+        ws.append([h.name, h.date])
     for col, width in zip(COL_LETTERS, COL_WIDTHS):
         ws.column_dimensions[col].width = width
     return wb

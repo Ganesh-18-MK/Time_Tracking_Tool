@@ -690,18 +690,24 @@ class TicketComment(Base):
 
 
 class Holiday(Base):
-    """Company holiday calendar (Ganesh, 2026-08-12: split per-country — the
-    team now has both US and India staff, and each country observes
-    different holidays, so a single company-wide list no longer makes
-    sense). `date` alone used to be unique across the whole table (one
-    calendar for everyone); now the same calendar date can appear twice —
-    once per country — as long as the (date, location) pair is unique, e.g.
-    a US-only July 4th row and a same-day India row would never collide,
-    but two India rows on the same date still would. Every already-imported
-    historical row (see legacy/import_legacy.py's auto-detected company
-    holidays) defaults to DEFAULT_LOCATION ("India") via
-    ensure_location_backfill in app/util.py, matching the original
-    all-offshore scope."""
+    """Company holiday calendar — one shared list, common to every employee
+    regardless of location (Ganesh, 2026-08-14). Briefly split per-country
+    on 2026-08-12 (US and India each with their own calendar), reverted the
+    same week: the team decided holidays should just be common to everyone,
+    so there's no separate US/India view anywhere in the UI or bulk upload
+    anymore — see engine.holidays_set(), which now always returns every row
+    unscoped.
+
+    The `location` column and its (date, location) unique constraint are
+    still here even though nothing reads `location` anymore — dropping a
+    column/constraint isn't an additive change, and this app has no
+    alembic-style migration path once real employees have real data (see
+    CLAUDE.md's schema-change rule), so removing them isn't safe to do
+    casually. New rows just get DEFAULT_LOCATION ("India") written
+    invisibly by whatever creates them; since every write now uses the same
+    value, (date, location) behaves exactly like a plain unique-by-date
+    constraint in practice. Safe to actually drop both in a future
+    migration window if this table's shape ever needs cleaning up."""
 
     __tablename__ = "holidays"
     __table_args__ = (UniqueConstraint("date", "location"),)

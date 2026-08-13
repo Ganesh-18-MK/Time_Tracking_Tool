@@ -1661,10 +1661,12 @@ def config_save(
 
 
 # --------------------------------------------------------------------------
-# Holiday Management (Ganesh, 2026-08-12) — moved out of the general Config
-# page into its own screen once holidays became per-country: US and India
-# each get their own section and their own bulk-upload column (see
-# app/holiday_bulk_upload.py, same shape as leave_bulk_upload.py).
+# Holiday Management (Ganesh, 2026-08-12, moved out of the general Config
+# page into its own screen; reverted to one shared company-wide list on
+# 2026-08-14 after briefly splitting by country — see Holiday's docstring
+# in app/models.py for why the location column still exists on the model
+# even though nothing here reads or collects it anymore). Bulk-upload shape
+# in app/holiday_bulk_upload.py, same idea as leave_bulk_upload.py.
 # --------------------------------------------------------------------------
 @router.get("/holidays")
 def holidays_page(
@@ -1674,14 +1676,9 @@ def holidays_page(
 ):
     if not HOLIDAY_MANAGEMENT_ENABLED:
         raise HTTPException(status_code=404)
-    all_holidays = list(db.execute(select(m.Holiday).order_by(m.Holiday.date)).scalars())
-    holidays_by_location = {loc: [] for loc in m.LOCATIONS}
-    for h in all_holidays:
-        holidays_by_location.setdefault(h.location, []).append(h)
+    holidays = list(db.execute(select(m.Holiday).order_by(m.Holiday.date)).scalars())
     return render(
-        request, "admin/holidays.html",
-        {"user": admin, "locations": m.LOCATIONS, "holidays_by_location": holidays_by_location},
-        db=db,
+        request, "admin/holidays.html", {"user": admin, "holidays": holidays}, db=db,
     )
 
 
@@ -1690,7 +1687,6 @@ def holiday_add(
     request: Request,
     date: str = Form(...),
     name: str = Form(""),
-    location: str = Form(...),
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
@@ -1701,18 +1697,13 @@ def holiday_add(
     except FormError as e:
         flash(request, e.message, "err")
         return RedirectResponse("/admin/holidays", status_code=303)
-    if location not in m.LOCATIONS:
-        flash(request, "Choose a country.", "err")
-        return RedirectResponse("/admin/holidays", status_code=303)
-    exists = db.execute(
-        select(m.Holiday).where(m.Holiday.date == d, m.Holiday.location == location)
-    ).scalar_one_or_none()
+    exists = db.execute(select(m.Holiday).where(m.Holiday.date == d)).scalar_one_or_none()
     if exists is None:
-        db.add(m.Holiday(date=d, name=name.strip(), location=location))
+        db.add(m.Holiday(date=d, name=name.strip(), location=m.DEFAULT_LOCATION))
         db.commit()
-        audit(db, admin.name, "holiday_add", "Holiday", date, {"name": name.strip(), "location": location})
+        audit(db, admin.name, "holiday_add", "Holiday", date, {"name": name.strip()})
     else:
-        flash(request, f"{location} already has a holiday on that date.", "err")
+        flash(request, "There's already a holiday on that date.", "err")
     return RedirectResponse("/admin/holidays", status_code=303)
 
 
@@ -1729,7 +1720,7 @@ def holiday_delete(
     if h is not None:
         db.delete(h)
         db.commit()
-        audit(db, admin.name, "holiday_delete", "Holiday", h.date.isoformat(), {"location": h.location})
+        audit(db, admin.name, "holiday_delete", "Holiday", h.date.isoformat(), {"name": h.name})
     return RedirectResponse("/admin/holidays", status_code=303)
 
 

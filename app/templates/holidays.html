@@ -3,24 +3,18 @@
 {% block title %}Holidays · MK Timekeeping{% endblock %}
 {% block content %}
 <h1>Holidays</h1>
-<p class="muted small">Your own calendar defaults to your Profile country ({{ user.location }}) — switch tabs to
-see the other list. Only your own country's holidays count toward your working-day calendar and My Month.</p>
-
-<div class="country-tabs">
-  {% for loc in locations %}
-  <a href="/holidays?country={{ loc }}" class="{{ 'on' if loc == selected }}">{{ loc }}</a>
-  {% endfor %}
-</div>
+<p class="muted small">One shared calendar for everyone — these days count toward your working-day
+calendar and My Month.</p>
 
 <div class="card">
-  <h2 style="margin-top:0">{{ selected }} holidays ({{ holidays|length }})</h2>
+  <h2 style="margin-top:0">Holidays ({{ holidays|length }})</h2>
   <table>
     <thead><tr><th>Date</th><th>Holiday</th></tr></thead>
     <tbody>
       {% for h in holidays %}
       <tr><td class="nowrap">{{ h.date|mdy }}</td><td>{{ h.name }}</td></tr>
       {% else %}
-      <tr><td class="muted" colspan="2">None defined yet for {{ selected }}.</td></tr>
+      <tr><td class="muted" colspan="2">None defined yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>

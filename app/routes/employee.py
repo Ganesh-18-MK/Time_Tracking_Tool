@@ -59,7 +59,7 @@ MAX_PHOTO_BYTES = 2 * 1024 * 1024  # 2 MB
 def _allowed_dates(db: Session, emp: m.Employee, cfg) -> list:
     today = today_local()
     earliest = earliest_allowed_date(
-        emp, today, engine.cfg_int(cfg, "backdate_working_days"), engine.holidays_set(db, emp.location)
+        emp, today, engine.cfg_int(cfg, "backdate_working_days"), engine.holidays_set(db)
     )
     days = []
     d = earliest
@@ -922,28 +922,16 @@ def support_page(
 @router.get("/holidays")
 def holidays_page(
     request: Request,
-    country: Optional[str] = None,
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    """Ganesh, 2026-08-12 — each country's holiday calendar is separate now
-    (see Holiday's docstring in app/models.py). Defaults to the employee's
-    own Profile-set location, but either tab is viewable regardless — this
-    is informational, not the compliance calendar itself (that's My Month,
-    which only ever uses the employee's own location, see engine.py).
-    Held back from the 2026-08-13 deploy (see HOLIDAY_MANAGEMENT_ENABLED)."""
+    """One shared company-wide holiday calendar (Ganesh, 2026-08-14 — see
+    Holiday's docstring in app/models.py; briefly split per-country on
+    2026-08-12, reverted the same week)."""
     if not HOLIDAY_MANAGEMENT_ENABLED:
         raise HTTPException(status_code=404)
-    selected = country if country in m.LOCATIONS else user.location
-    holidays = list(
-        db.execute(
-            select(m.Holiday).where(m.Holiday.location == selected).order_by(m.Holiday.date)
-        ).scalars()
-    )
-    return render(
-        request, "holidays.html",
-        {"user": user, "locations": m.LOCATIONS, "selected": selected, "holidays": holidays},
-    )
+    holidays = list(db.execute(select(m.Holiday).order_by(m.Holiday.date)).scalars())
+    return render(request, "holidays.html", {"user": user, "holidays": holidays})
 
 
 @router.post("/suggestions")
@@ -1055,12 +1043,13 @@ def update_location(
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    """Self-service country (Ganesh, 2026-08-12) — drives which country's
-    Holiday calendar this employee's own compliance days/My Month use (see
-    engine.holidays_set()/is_working_day()). Takes effect immediately: the
-    next recompute (My Month load, dashboard, etc.) picks up the new
-    location straight from the Employee row, nothing cached to invalidate.
-    Held back from the 2026-08-13 deploy (see HOLIDAY_MANAGEMENT_ENABLED)."""
+    """Self-service country (Ganesh, 2026-08-12). No longer drives Holiday
+    scoping as of 2026-08-14 — holidays are one shared company-wide list
+    now (see Holiday's docstring in app/models.py) — this is just the
+    employee's own profile metadata at this point. Left in place (kept
+    gated behind HOLIDAY_MANAGEMENT_ENABLED, unchanged) since it was built
+    together with Holiday Management and nothing currently needs it
+    removed."""
     if not HOLIDAY_MANAGEMENT_ENABLED:
         raise HTTPException(status_code=404)
     if location not in m.LOCATIONS:

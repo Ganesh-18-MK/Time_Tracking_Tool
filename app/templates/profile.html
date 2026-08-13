@@ -25,8 +25,8 @@
         <option value="{{ loc }}" {{ 'selected' if loc == user.location }}>{{ loc }}</option>
         {% endfor %}
       </select>
-      <p class="small muted" style="margin:4px 0 0">Sets which country's <a href="/holidays">Holidays</a>
-        list applies to your My Month calendar.</p>
+      <p class="small muted" style="margin:4px 0 0">Your profile country. <a href="/holidays">Holidays</a>
+        are one shared calendar for everyone, so this no longer changes what you see there.</p>
     </form>
     {% endif %}
     <form method="post" action="/profile/photo" enctype="multipart/form-data" style="flex:1">
