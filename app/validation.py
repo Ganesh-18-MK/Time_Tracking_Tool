@@ -4,7 +4,7 @@ All rules enforced server-side; the Today screen mirrors them client-side
 for immediate feedback. Raises EntryError with a user-readable message list.
 """
 import datetime as dt
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -36,14 +36,18 @@ def earliest_allowed_date(
 
 
 def entry_details_edit_error(
-    entry: m.TaskEntry, user: m.Employee, today: dt.date, day_submission: Optional[m.DaySubmission]
+    entry: Union[m.TaskEntry, m.BreakEntry],
+    user: m.Employee,
+    today: dt.date,
+    day_submission: Optional[m.DaySubmission],
 ) -> Optional[str]:
-    """Guard for editing an existing TaskEntry's Details text in place
-    (Ganesh, 2026-08-10 — rows were previously delete-and-re-add only, no
-    in-place edit). Pulled out of routes/employee.py's edit_entry_details
-    so the rule is unit-testable without a live route/DB round trip, same
-    pattern as the rest of this module. Returns None when editing is
-    allowed, or a user-facing error message when it isn't.
+    """Guard for editing an existing TaskEntry's (or, since 2026-08-14, a
+    BreakEntry's) Details text in place (Ganesh, 2026-08-10 — rows were
+    previously delete-and-re-add only, no in-place edit). Pulled out of
+    routes/employee.py's edit_entry_details so the rule is unit-testable
+    without a live route/DB round trip, same pattern as the rest of this
+    module. Returns None when editing is allowed, or a user-facing error
+    message when it isn't.
 
     Ownership (entry.employee_id != user.id) is checked by the route
     before this is even called, same as delete_entry's existing pattern —
@@ -51,7 +55,9 @@ def entry_details_edit_error(
     for a self-service employee (yesterday's log is closed to quiet edits
     the same way it's closed to deletes once locked, so history stays
     trustworthy), and the existing day-lock rule. Admins bypass both,
-    same precedent as delete_entry."""
+    same precedent as delete_entry. Both models have a plain `.date`
+    column, so this works unchanged for either — no BreakEntry-specific
+    branch needed."""
     if not user.is_admin and entry.date != today:
         return "You can only edit today's entries — ask an admin to fix a past day."
     if day_submission is not None and day_submission.locked and not user.is_admin:
@@ -177,6 +183,56 @@ def validate_entry(
 
     if errors:
         raise EntryError(errors)
+
+
+def suggest_non_overlapping_start(
+    db: Session,
+    emp: m.Employee,
+    date: dt.date,
+    start_minute: int,
+    end_minute: int,
+    entry_id: Optional[int] = None,
+) -> Optional[int]:
+    """When start_minute..end_minute overlaps an existing TaskEntry row or a
+    BreakEntry (Ganesh, 2026-08-14 — a failed Add Row used to reset the
+    whole form and leave the employee to guess a new time by trial and
+    error), return the earliest minute that clears every conflict — the
+    latest end_minute among everything it overlapped, since touching a row
+    exactly at its boundary is fine (the overlap check below is strictly
+    `<`, matching validate_entry's own rule, not `<=`).
+
+    Returns None when nothing actually overlaps — including when the
+    failure was for an unrelated reason (missing details, unapproved
+    project, etc.) — so callers can safely call this unconditionally on any
+    validate_entry() failure and only get a suggestion back when a real
+    time conflict exists.
+
+    Deliberately duplicates validate_entry's own overlap conditions rather
+    than calling it (this only wants "does X overlap and by how much", not
+    a exception/error-message path) — the two overlap checks must be kept
+    in sync; a change to one almost certainly needs the same change here."""
+    if end_minute <= start_minute:
+        return None
+    conflict_end = None
+
+    others = db.execute(
+        select(m.TaskEntry).where(m.TaskEntry.employee_id == emp.id, m.TaskEntry.date == date)
+    ).scalars()
+    for other in others:
+        if entry_id is not None and other.id == entry_id:
+            continue
+        if start_minute < other.end_minute and other.start_minute < end_minute:
+            conflict_end = max(conflict_end or 0, other.end_minute)
+
+    breaks = db.execute(
+        select(m.BreakEntry).where(m.BreakEntry.employee_id == emp.id, m.BreakEntry.date == date)
+    ).scalars()
+    for b in breaks:
+        b_end = b.end_minute if b.end_minute is not None else 1440
+        if start_minute < b_end and b.start_minute < end_minute:
+            conflict_end = max(conflict_end or 0, b_end)
+
+    return conflict_end
 
 
 def gap_flags(

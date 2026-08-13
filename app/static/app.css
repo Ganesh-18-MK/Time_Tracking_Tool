@@ -69,7 +69,9 @@ em.poc { font-style: normal; font-size: 10px; background: var(--accent-light); c
   border-radius: 4px; padding: 2px 5px; margin-left: 8px; vertical-align: 2px; }
 
 .flashes { max-width: var(--content-width); margin: 12px auto 0; padding: 0 18px; }
-.flash { padding: 8px 12px; border-radius: 8px; margin-bottom: 6px; }
+.flash { padding: 8px 12px; border-radius: 8px; margin-bottom: 6px;
+  transition: opacity 0.4s ease, transform 0.4s ease; }
+.flash.fade-out { opacity: 0; transform: translateY(-4px); }
 .flash.ok { background: var(--ok-bg); color: var(--ok); }
 .sitefooter { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center;
   gap: 12px; flex-wrap: wrap; max-width: var(--content-width); margin: 0 auto; padding: 14px 18px;
@@ -257,4 +259,5 @@ details > summary { cursor: pointer; color: var(--accent); }
    * whole block exists to avoid; see the Jinja whitespace-control note
    * on the {% if %} tag in today.html. */
   white-space: normal; }
-.details-edit summary { font-size: 12px; }
+.details-edit summary { font-size: 12px; list-style: none; }
+.details-edit summary::-webkit-details-marker { display: none; }

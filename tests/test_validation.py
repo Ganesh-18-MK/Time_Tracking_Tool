@@ -13,6 +13,7 @@ from app.validation import (
     earliest_allowed_date,
     entry_details_edit_error,
     gap_flags,
+    suggest_non_overlapping_start,
     validate_entry,
 )
 
@@ -192,6 +193,72 @@ class TestBreakOverlap:
         assert "break" in errs(s, emp, start_minute=780, end_minute=840)
 
 
+class TestSuggestNonOverlappingStart:
+    """Ganesh, 2026-08-14: a failed Add Row used to reset the whole form and
+    leave the employee to guess a new time by trial and error.
+    suggest_non_overlapping_start() mirrors validate_entry's own overlap
+    conditions (TaskEntry rows + BreakEntry rows, touching a boundary
+    allowed) to hand back the earliest minute that actually clears every
+    conflict — see add_entry()'s _reopen() in app/routes/employee.py."""
+
+    def test_overlapping_task_entry_suggests_its_end(self, db):
+        s, emp = db
+        s.add(m.TaskEntry(employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                          details="existing row", start_minute=540, end_minute=600))
+        s.commit()
+        assert suggest_non_overlapping_start(s, emp, TODAY, 550, 650) == 600
+
+    def test_touching_a_row_exactly_at_its_end_is_not_a_conflict(self, db):
+        s, emp = db
+        s.add(m.TaskEntry(employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                          details="existing row", start_minute=540, end_minute=600))
+        s.commit()
+        assert suggest_non_overlapping_start(s, emp, TODAY, 600, 650) is None
+
+    def test_overlapping_a_break_suggests_its_end(self, db):
+        s, emp = db
+        s.add(m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_PERSONAL,
+                            start_minute=600, end_minute=630))
+        s.commit()
+        assert suggest_non_overlapping_start(s, emp, TODAY, 610, 700) == 630
+
+    def test_conflicting_with_both_task_and_break_takes_the_later_end(self, db):
+        s, emp = db
+        s.add(m.TaskEntry(employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                          details="existing row", start_minute=540, end_minute=600))
+        s.add(m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_PERSONAL,
+                            start_minute=650, end_minute=700))
+        s.commit()
+        assert suggest_non_overlapping_start(s, emp, TODAY, 590, 750) == 700
+
+    def test_no_conflict_returns_none(self, db):
+        s, emp = db
+        s.add(m.TaskEntry(employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                          details="existing row", start_minute=540, end_minute=600))
+        s.commit()
+        assert suggest_non_overlapping_start(s, emp, TODAY, 700, 800) is None
+
+    def test_still_open_break_extends_to_end_of_day(self, db):
+        s, emp = db
+        s.add(m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_PERSONAL,
+                            start_minute=600, end_minute=None))
+        s.commit()
+        assert suggest_non_overlapping_start(s, emp, TODAY, 610, 650) == 1440
+
+    def test_editing_own_row_excludes_itself_via_entry_id(self, db):
+        s, emp = db
+        e = m.TaskEntry(employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                        details="existing row", start_minute=540, end_minute=600)
+        s.add(e)
+        s.commit()
+        assert suggest_non_overlapping_start(s, emp, TODAY, 540, 600, entry_id=e.id) is None
+
+    def test_invalid_time_range_returns_none(self, db):
+        s, emp = db
+        assert suggest_non_overlapping_start(s, emp, TODAY, 600, 600) is None
+        assert suggest_non_overlapping_start(s, emp, TODAY, 700, 600) is None
+
+
 class TestLockAndBackdate:
     def test_locked_day_rejects_entries(self, db):
         s, emp = db
@@ -329,3 +396,23 @@ class TestEntryDetailsEditGuard:
         emp.is_admin = True
         sub = m.DaySubmission(employee_id=1, date=TODAY, locked=True)
         assert entry_details_edit_error(self._entry(TODAY), emp, TODAY, sub) is None
+
+    def test_works_unchanged_for_a_breakentry_too(self, db):
+        """Ganesh, 2026-08-14: the same guard now also gates editing a
+        break's optional note (app/routes/employee.py's edit_break_details)
+        — both models have a plain `.date` column, so no BreakEntry-specific
+        branch was needed, just a wider type hint."""
+        s, emp = db
+        brk_today = m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_PERSONAL,
+                                  start_minute=600, end_minute=630)
+        assert entry_details_edit_error(brk_today, emp, TODAY, None) is None
+
+        yesterday = TODAY - dt.timedelta(days=1)
+        brk_yesterday = m.BreakEntry(employee_id=1, date=yesterday, break_type=m.BREAK_PERSONAL,
+                                      start_minute=600, end_minute=630)
+        err = entry_details_edit_error(brk_yesterday, emp, TODAY, None)
+        assert err is not None and "today" in err.lower()
+
+        sub = m.DaySubmission(employee_id=1, date=TODAY, locked=True)
+        err = entry_details_edit_error(brk_today, emp, TODAY, sub)
+        assert err is not None and "locked" in err.lower()

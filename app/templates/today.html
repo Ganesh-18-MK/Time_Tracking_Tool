@@ -238,7 +238,7 @@
     </div>
     <div style="flex:1 1 220px">
       <label>Details (min 5 chars)</label>
-      <textarea name="details" required minlength="5" rows="2" style="width:100%; resize:vertical" placeholder="What exactly was done"></textarea>
+      <textarea name="details" required minlength="5" rows="2" style="width:100%; resize:vertical" placeholder="What exactly was done">{{ reopen_details or '' }}</textarea>
     </div>
     <div>
       <label>Start</label>
@@ -246,7 +246,7 @@
     </div>
     <div>
       <label>End</label>
-      <input type="time" name="end_time" required>
+      <input type="time" name="end_time" required value="{{ reopen_end or '' }}">
     </div>
     <div>
       <label>Duration</label>
@@ -279,6 +279,14 @@
             <summary class="small muted">✎ edit</summary>
             <form method="post" action="/entries/{{ e.id }}/edit" style="margin-top:6px;display:flex;gap:6px;align-items:flex-start">
               <textarea name="details" rows="2" style="flex:1;min-width:180px">{{ e.details }}</textarea>
+              <button class="small">Save</button>
+            </form>
+          </details>
+          {%- elif e.break_id and day == today and not day_locked -%}
+          <details class="details-edit">
+            <summary class="small muted">✎ edit</summary>
+            <form method="post" action="/breaks/{{ e.break_id }}/edit" style="margin-top:6px;display:flex;gap:6px;align-items:flex-start">
+              <textarea name="details" rows="2" style="flex:1;min-width:180px" placeholder="Optional note">{{ e.break_notes }}</textarea>
               <button class="small">Save</button>
             </form>
           </details>
@@ -331,8 +339,8 @@
 
 <script src="/static/combo.js?v={{ static_version }}"></script>
 <script>
-initCombo(document.getElementById('combo-project'), {{ projects|tojson }});
-initCombo(document.getElementById('combo-task'), {{ tasks|tojson }});
+initCombo(document.getElementById('combo-project'), {{ projects|tojson }}, {{ reopen_project_id|tojson }});
+initCombo(document.getElementById('combo-task'), {{ tasks|tojson }}, {{ reopen_task_type_id|tojson }});
 {% if not active_timer %}
 // only present when no timer is currently running (see the Start Timer
 // form further up the page — it's replaced by a Stop/Cancel widget

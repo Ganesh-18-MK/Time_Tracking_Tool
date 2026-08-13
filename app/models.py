@@ -377,6 +377,16 @@ class BreakEntry(Base):
     end_minute: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # None while running
     started_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     ended_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    # Optional employee note (Ganesh, 2026-08-14) — the auto-added "General /
+    # Break" row on Today (see app/routes/employee.py's _BreakLogRow) only
+    # ever showed the fixed break_type; this is editable the same way a
+    # TaskEntry's details are, via /breaks/{id}/edit. Nullable, not just
+    # default="", since app/db.py's additive-migration guard never backfills
+    # existing rows on a live database (adds the column as NULL) — every
+    # read site treats `details or ""`/`if details` so a pre-existing break
+    # row with no note reads identically to a brand-new one with a blank
+    # note; no dedicated ensure_* backfill needed.
+    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True, default="")
 
     employee = relationship("Employee")
 

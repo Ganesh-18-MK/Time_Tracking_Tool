@@ -117,6 +117,16 @@
       if (!d.contains(e.target)) d.removeAttribute("open");
     });
   });
+
+  // Flash banners (e.g. "Break ended — ...") are rendered once on page
+  // load and would otherwise sit there until the next navigation. Fade
+  // each one out and remove it 5s after the page loads.
+  document.querySelectorAll(".flash").forEach(function (el) {
+    setTimeout(function () {
+      el.classList.add("fade-out");
+      setTimeout(function () { el.remove(); }, 400);
+    }, 5000);
+  });
 </script>
 {% block scripts %}{% endblock %}
 </body>

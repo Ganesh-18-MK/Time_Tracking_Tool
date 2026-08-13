@@ -3,6 +3,7 @@ import datetime as dt
 import os
 from types import SimpleNamespace
 from typing import Optional
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse
@@ -32,6 +33,7 @@ from app.validation import (
     earliest_allowed_date,
     entry_details_edit_error,
     gap_flags,
+    suggest_non_overlapping_start,
     validate_entry,
 )
 
@@ -87,13 +89,23 @@ class _BreakLogRow:
     break row for free, without templates needing to know this class
     exists. Project/Task are fixed labels, not real Project/TaskType rows —
     nothing pickable in the Add row/timer dropdowns changes, and no report
-    ever attributes break time to an actual client/employer."""
+    ever attributes break time to an actual client/employer.
+
+    `details` (Ganesh, 2026-08-14 — employees asked for the same in-place
+    ✎ edit TaskEntry rows get) is the break_type plus the employee's own
+    optional note, e.g. "Personal — stepped out for a call"; `break_id`
+    (BreakEntry.id, separate from the always-None `id` above) and
+    `break_notes` (the raw note only, no "Personal — " prefix) exist so
+    today.html can point its edit control at POST /breaks/{break_id}/edit
+    with just the note pre-filled, not the combined display string."""
 
     def __init__(self, b: m.BreakEntry):
         self.id = None
+        self.break_id = b.id
         self.start_minute = b.start_minute
         self.end_minute = b.end_minute
-        self.details = b.break_type
+        self.break_notes = b.details or ""
+        self.details = b.break_type + (f" — {self.break_notes}" if self.break_notes else "")
         self.project = SimpleNamespace(name="General")
         self.task_type = SimpleNamespace(name="Break")
 
@@ -261,6 +273,11 @@ def _combo_items(objs, assigned_ids: set) -> list:
 def today_page(
     request: Request,
     date: Optional[str] = None,
+    reopen_project_id: Optional[str] = None,
+    reopen_task_type_id: Optional[str] = None,
+    reopen_details: Optional[str] = None,
+    reopen_start: Optional[str] = None,
+    reopen_end: Optional[str] = None,
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -281,7 +298,17 @@ def today_page(
     last_end = max((e.end_minute for e in ctx["entries"]), default=None)
     ctx.update(
         {
-            "suggest_start": f"{last_end // 60:02d}:{last_end % 60:02d}" if last_end else "",
+            # A sticky reopen (Ganesh, 2026-08-14 — see add_entry()'s
+            # _reopen()) wins over the plain "start right after my last
+            # row" default: it's what the employee already typed, possibly
+            # nudged past whatever it conflicted with.
+            "suggest_start": reopen_start or (
+                f"{last_end // 60:02d}:{last_end % 60:02d}" if last_end else ""
+            ),
+            "reopen_project_id": reopen_project_id,
+            "reopen_task_type_id": reopen_task_type_id,
+            "reopen_details": reopen_details,
+            "reopen_end": reopen_end,
             "user": user,
             "day": day,
             "today": today_local(),
@@ -313,12 +340,32 @@ def add_entry(
 ):
     cfg = engine.get_config(db)
     day = dt.date.fromisoformat(date)
+
+    # Sticky row on failure (Ganesh, 2026-08-14) — a failed Add Row used to
+    # reset the whole form (project/task/details/times all cleared),
+    # forcing the employee to retype everything just to fix one field.
+    # `_reopen()` carries whatever was submitted back through the redirect
+    # as query params; today_page() reads them as the Add Row form's
+    # values instead of the normal blank/suggest_start-only defaults.
+    def _reopen(start_value: str) -> RedirectResponse:
+        params = urlencode(
+            {
+                "date": day.isoformat(),
+                "reopen_project_id": project_id or "",
+                "reopen_task_type_id": task_type_id or "",
+                "reopen_details": details,
+                "reopen_start": start_value,
+                "reopen_end": end_time,
+            }
+        )
+        return RedirectResponse(f"/today?{params}", status_code=303)
+
     try:
         start_minute = parse_hhmm(start_time)
         end_minute = parse_hhmm(end_time)
     except (ValueError, IndexError):
         flash(request, "Enter valid start and end times.", "err")
-        return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
+        return _reopen(start_time)
     try:
         validate_entry(
             db, user, day, project_id, task_type_id, details, start_minute, end_minute, cfg
@@ -338,6 +385,17 @@ def add_entry(
     except EntryError as e:
         for err in e.errors:
             flash(request, err, "err")
+        # When the failure was (also) a time conflict, nudge Start to the
+        # earliest minute that clears it — touching a conflicting row's own
+        # end is allowed, so no "+1 minute" fudge is needed. Any other
+        # failure (details too short, project unapproved, etc.) leaves
+        # Start exactly as typed; suggest_non_overlapping_start() returns
+        # None when nothing actually overlapped.
+        suggested = suggest_non_overlapping_start(db, user, day, start_minute, end_minute)
+        corrected_start = (
+            f"{suggested // 60:02d}:{suggested % 60:02d}" if suggested is not None else start_time
+        )
+        return _reopen(corrected_start)
     return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
 
 
@@ -405,6 +463,47 @@ def edit_entry_details(
     db.commit()
     audit(db, user.name, "entry_details_edited", "TaskEntry", str(entry.id), {"date": day.isoformat()})
     flash(request, "Details updated.", "ok")
+    return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
+
+
+@router.post("/breaks/{break_id}/edit")
+def edit_break_details(
+    break_id: int,
+    request: Request,
+    details: str = Form(""),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Mirrors edit_entry_details() above, for the optional note on the
+    auto-added 'General / Break' row (Ganesh, 2026-08-14 — employees asked
+    for the same in-place edit a real task row's Details gets). Same
+    ownership/today-only/day-lock rules via the shared
+    entry_details_edit_error() guard. Unlike a TaskEntry's details, this
+    has no minimum length: a break's note is optional context, not the
+    only record of what happened, so clearing it back to blank is a valid
+    edit, not an error."""
+    brk = db.get(m.BreakEntry, break_id)
+    if brk is None or (brk.employee_id != user.id and not user.is_admin):
+        return RedirectResponse("/today", status_code=303)
+    if brk.end_minute is None:
+        # Still an open/running break — today.html only ever renders this
+        # edit control for a completed break's display row, but a direct
+        # POST could still reach here, so guard server-side too.
+        return RedirectResponse("/today", status_code=303)
+    day = brk.date
+    sub = db.execute(
+        select(m.DaySubmission).where(
+            m.DaySubmission.employee_id == brk.employee_id, m.DaySubmission.date == day
+        )
+    ).scalar_one_or_none()
+    err = entry_details_edit_error(brk, user, today_local(), sub)
+    if err:
+        flash(request, err, "err")
+        return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
+    brk.details = (details or "").strip()
+    db.commit()
+    audit(db, user.name, "break_details_edited", "BreakEntry", str(brk.id), {"date": day.isoformat()})
+    flash(request, "Break note updated.", "ok")
     return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
 
 

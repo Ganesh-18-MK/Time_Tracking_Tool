@@ -10,12 +10,16 @@
  *     <div class="combo-menu" hidden></div>
  *   </div>
  *
- * initCombo(rootEl, items) where items is [{id, name}, ...]. The hidden
- * input is what actually gets submitted; the text input is just for
- * typing/filtering and never carries the real value on its own.
+ * initCombo(rootEl, items, preselectId) where items is [{id, name}, ...].
+ * The hidden input is what actually gets submitted; the text input is just
+ * for typing/filtering and never carries the real value on its own.
+ * preselectId (optional — string/number, or null/undefined for none) is
+ * matched loosely against item.id (Ganesh, 2026-08-14: a failed Add Row
+ * submission re-shows the form with whatever Project/Task was already
+ * picked, instead of resetting to blank — see today.html's reopen_* vars).
  */
 (function () {
-  function initCombo(root, items) {
+  function initCombo(root, items, preselectId) {
     const input = root.querySelector(".combo-input");
     const hidden = root.querySelector('input[type="hidden"]');
     const menu = root.querySelector(".combo-menu");
@@ -103,6 +107,11 @@
         menu.hidden = true;
       }, 120);
     });
+
+    if (preselectId !== undefined && preselectId !== null && preselectId !== "") {
+      const pre = items.find((it) => String(it.id) === String(preselectId));
+      if (pre) select(pre);
+    }
 
     const form = root.closest("form");
     if (form) {

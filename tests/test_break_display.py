@@ -50,10 +50,10 @@ def _entry(s, emp, start, end, details="did work"):
     return e
 
 
-def _break(s, emp, start, end, break_type=m.BREAK_PERSONAL):
+def _break(s, emp, start, end, break_type=m.BREAK_PERSONAL, details=None):
     b = m.BreakEntry(
         employee_id=emp.id, date=TODAY, break_type=break_type,
-        start_minute=start, end_minute=end,
+        start_minute=start, end_minute=end, details=details,
     )
     s.add(b)
     s.commit()
@@ -85,6 +85,44 @@ class TestBreakLogRow:
         b = _break(s, emp, 600, 645)
         row = _BreakLogRow(b)
         assert row.duration_minutes == 45
+
+    def test_break_id_is_the_real_breakentry_id_for_the_edit_route(self, db):
+        """Ganesh, 2026-08-14: separate from the always-None `id` above —
+        today.html's edit control posts to /breaks/{break_id}/edit."""
+        s, emp = db
+        b = _break(s, emp, 600, 630)
+        row = _BreakLogRow(b)
+        assert row.break_id == b.id
+        assert row.break_id is not None
+
+    def test_no_note_yet_details_is_just_the_break_type(self, db):
+        s, emp = db
+        b = _break(s, emp, 600, 630, break_type=m.BREAK_PERSONAL)
+        row = _BreakLogRow(b)
+        assert row.details == "Personal"
+        assert row.break_notes == ""
+
+    def test_with_a_note_details_combines_type_and_note(self, db):
+        s, emp = db
+        b = _break(s, emp, 600, 630, break_type=m.BREAK_LUNCH_DINNER, details="quick call with vendor")
+        row = _BreakLogRow(b)
+        assert row.details == "Lunch/Dinner — quick call with vendor"
+        # the edit textarea prefills with just the raw note, not the
+        # "Type — " prefix, so saving again doesn't double it up
+        assert row.break_notes == "quick call with vendor"
+
+    def test_null_details_from_a_pre_migration_row_reads_as_blank(self, db):
+        """app/db.py's additive-migration guard never backfills existing
+        rows, so a break logged before this column existed has details=NULL
+        on a live database, not "" — must read identically to a brand-new
+        break with no note (see BreakEntry's docstring)."""
+        s, emp = db
+        b = _break(s, emp, 600, 630, break_type=m.BREAK_PERSONAL)
+        b.details = None
+        s.commit()
+        row = _BreakLogRow(b)
+        assert row.details == "Personal"
+        assert row.break_notes == ""
 
 
 class TestMergeEntriesAndBreaks:
