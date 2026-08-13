@@ -1,6 +1,7 @@
 """Employee screens: Today (log + submit) and My Month (PRD §7)."""
 import datetime as dt
 import os
+from types import SimpleNamespace
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -16,6 +17,7 @@ from app.util import (
     FormError,
     audit,
     clamp_break_end,
+    fmt_time,
     now_local,
     overtime_minutes,
     parse_date_field,
@@ -67,6 +69,49 @@ def _allowed_dates(db: Session, emp: m.Employee, cfg) -> list:
         days.append(d)
         d += dt.timedelta(days=1)
     return days
+
+
+class _BreakLogRow:
+    """Read-only stand-in for a TaskEntry, built from a completed BreakEntry
+    so a break shows up in the task log (Today) / entries view (My Month)
+    without actually becoming a TaskEntry (Ganesh, 2026-08-14 — employees had
+    been manually adding a 'Break' row themselves using whatever real client
+    Project they'd last picked, which reads oddly on a report and, worse,
+    quietly counted break time toward the day's logged total even though
+    BreakEntry/target math already treats break time as separate from work
+    — see BreakEntry's docstring and _day_context's break_excess comment).
+
+    `id` is deliberately None — every place that would edit/delete/flag a
+    real logged row (today.html's ✎ edit and ✕ controls, gap_flags' dict
+    lookup) keys off entry.id, so `None` makes those a no-op/hidden for a
+    break row for free, without templates needing to know this class
+    exists. Project/Task are fixed labels, not real Project/TaskType rows —
+    nothing pickable in the Add row/timer dropdowns changes, and no report
+    ever attributes break time to an actual client/employer."""
+
+    def __init__(self, b: m.BreakEntry):
+        self.id = None
+        self.start_minute = b.start_minute
+        self.end_minute = b.end_minute
+        self.details = b.break_type
+        self.project = SimpleNamespace(name="General")
+        self.task_type = SimpleNamespace(name="Break")
+
+    @property
+    def duration_minutes(self) -> int:
+        return self.end_minute - self.start_minute
+
+
+def _merge_entries_and_breaks(entries, breaks) -> list:
+    """Combine real TaskEntry rows with completed BreakEntry rows into one
+    chronological, display-only list (see _BreakLogRow above for why).
+    Callers keep using the original `entries`/`breaks` lists, unchanged, for
+    every accounting purpose (day total, target, gap_flags, compensation,
+    overtime, strikes) — this merged list exists purely for what the
+    employee sees in the task log table / My Month's per-day expand."""
+    rows = list(entries) + [_BreakLogRow(b) for b in breaks if b.end_minute is not None]
+    rows.sort(key=lambda r: r.start_minute)
+    return rows
 
 
 def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
@@ -153,6 +198,7 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
 
     return {
         "entries": entries,
+        "display_entries": _merge_entries_and_breaks(entries, completed_breaks),
         "total": total,
         "sub": sub,
         "target": target,
@@ -420,7 +466,12 @@ def end_break(
         active.end_minute = clamp_break_end(active.start_minute, now.hour * 60 + now.minute)
         active.ended_at = dt.datetime.utcnow()
         db.commit()
-        flash(request, f"Break ended — {active.duration_minutes} min.", "ok")
+        flash(
+            request,
+            f"Break ended — {fmt_time(active.start_minute)}–{fmt_time(active.end_minute)} "
+            f"({active.duration_minutes} min).",
+            "ok",
+        )
     return RedirectResponse("/today", status_code=303)
 
 
@@ -699,13 +750,34 @@ def my_month(
     # day's rows outside today, but they should still be able to see what
     # they logged. One query for the whole month, grouped by date, so the
     # ledger table below can expand each row in place with no extra route.
-    entries_by_date = {}
+    task_entries_by_date = {}
     for e in db.execute(
         select(m.TaskEntry)
         .where(m.TaskEntry.employee_id == user.id, m.TaskEntry.date.between(first, last))
         .order_by(m.TaskEntry.date, m.TaskEntry.start_minute)
     ).scalars():
-        entries_by_date.setdefault(e.date, []).append(e)
+        task_entries_by_date.setdefault(e.date, []).append(e)
+
+    # completed breaks merge into the same per-day view as General/Break
+    # rows (Ganesh, 2026-08-14) — see _BreakLogRow's docstring; same
+    # display-only merge Today's task log uses, so a day's "View" here
+    # matches what was actually on Today for that date.
+    breaks_by_date = {}
+    for b in db.execute(
+        select(m.BreakEntry)
+        .where(
+            m.BreakEntry.employee_id == user.id,
+            m.BreakEntry.date.between(first, last),
+            m.BreakEntry.end_minute.isnot(None),
+        )
+        .order_by(m.BreakEntry.date, m.BreakEntry.start_minute)
+    ).scalars():
+        breaks_by_date.setdefault(b.date, []).append(b)
+
+    entries_by_date = {
+        d: _merge_entries_and_breaks(task_entries_by_date.get(d, []), breaks_by_date.get(d, []))
+        for d in set(task_entries_by_date) | set(breaks_by_date)
+    }
 
     return render(
         request,

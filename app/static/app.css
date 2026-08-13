@@ -7,20 +7,42 @@
   --ok: #1e7d3f; --ok-bg: #d9f0e0; --warn: #8a6d00; --warn-bg: #fdf0c2;
   --bad: #b3261e; --bad-bg: #fadcda; --leave: #6e4b2c; --leave-bg: #ecdfc9;
   --hol-bg: #e9e4d8; --pending-bg: #f1ede1;
+  /* Shared content width (Ganesh's manager, 2026-08-14: header spanned
+     edge-to-edge while the page content below sat in a much narrower
+     1280px column, so the logo/nav never lined up with the cards and wide
+     monitors were mostly empty space). One variable, reused by
+     .topbar-inner/.flashes/main below, so the header and page content
+     always share the same left/right edges. A first pass capped this at
+     1600px, which still left a visible ~160px margin on each side on a
+     1920px-wide screen — confirmed with Ganesh that margin was still the
+     complaint, so this is uncapped now: full browser width, gutter is
+     just the 18px padding each side (same padding value already used
+     everywhere else in the app, e.g. .card/.topbar-inner). */
+  --content-width: 100%;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--ink);
+/* Sticky footer (Ganesh, 2026-08-14): body is a flex column spanning the
+   full viewport height; main is the one item allowed to grow, so a short
+   page (few cards, nothing logged yet) still pins the footer to the
+   bottom of the screen instead of leaving it stranded right under the
+   content with a wall of blank space below it. On a page with enough
+   content to need scrolling, this has no effect — footer just follows
+   naturally after main, same as it would without any of this. */
+html { height: 100%; }
+body { margin: 0; min-height: 100%; display: flex; flex-direction: column;
+  background: var(--bg); color: var(--ink);
   font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-main { max-width: 1280px; margin: 18px auto 60px; padding: 0 18px; }
+main { max-width: var(--content-width); flex: 1 0 auto; margin: 18px auto 24px; padding: 0 18px; width: 100%; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 h1 { font-size: 21px; margin: 6px 0 14px; }
 h2 { font-size: 16px; margin: 22px 0 8px; }
 h3 { font-size: 14px; margin: 16px 0 6px; }
 
-.topbar { display: flex; align-items: center; gap: 22px; background: var(--bg); color: var(--brand-dark);
-  padding: 8px 18px; flex-wrap: wrap; border-bottom: 1px solid var(--line);
+.topbar { background: var(--bg); color: var(--brand-dark); border-bottom: 1px solid var(--line);
   box-shadow: 0 1px 0 rgba(7, 41, 38, .04); }
+.topbar-inner { display: flex; align-items: center; gap: 22px; flex-wrap: wrap;
+  max-width: var(--content-width); margin: 0 auto; padding: 8px 18px; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: .2px; }
 .brand img { height: 34px; width: auto; display: block; }
 .brand span { font-weight: 500; color: var(--muted); }
@@ -46,9 +68,14 @@ h3 { font-size: 14px; margin: 16px 0 6px; }
 em.poc { font-style: normal; font-size: 10px; background: var(--accent-light); color: var(--brand-dark);
   border-radius: 4px; padding: 2px 5px; margin-left: 8px; vertical-align: 2px; }
 
-.flashes { max-width: 1280px; margin: 12px auto 0; padding: 0 18px; }
+.flashes { max-width: var(--content-width); margin: 12px auto 0; padding: 0 18px; }
 .flash { padding: 8px 12px; border-radius: 8px; margin-bottom: 6px; }
 .flash.ok { background: var(--ok-bg); color: var(--ok); }
+.sitefooter { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center;
+  gap: 12px; flex-wrap: wrap; max-width: var(--content-width); margin: 0 auto; padding: 14px 18px;
+  border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.sitefooter a { color: var(--muted); }
+.sitefooter a:hover { color: var(--accent); }
 .flash.err { background: var(--bad-bg); color: var(--bad); }
 
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
@@ -193,6 +220,24 @@ tr.hide-dept { display: none !important; }
 
 .gapflag { color: var(--warn); font-size: 11px; }
 .lockbanner { background: var(--leave-bg); color: var(--leave); border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; }
+/* Today page quickbar (Ganesh's manager, 2026-08-14) — Punch In/Out and
+   Break used to each get a full-width card; now they're compact controls
+   next to the page title instead of "a full tab" of their own. Same
+   status/timer info as before, just condensed — full context (target
+   hours, break allowance, why a button's disabled) moves into a `title`
+   tooltip instead of always-visible paragraph text. */
+.quickbar { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+.quickbar .qitem { display: flex; align-items: center; gap: 7px; }
+.quickbar .qtimer { font-weight: 700; font-size: 13px; min-width: 56px; }
+.quickbar select { font-size: 12px; padding: 4px 6px; border-radius: 6px; }
+/* Today page (manager, 2026-08-14) — "extra spaces" feedback after the
+   quickbar redesign above: the default .card margin (16px) and h2 top
+   margin (22px) add up fast across a shorter stack of smaller cards.
+   Scoped to .today-page only — every other screen keeps the normal
+   spacing, this isn't a site-wide density change. */
+.today-page .card { padding: 12px 16px; margin-bottom: 10px; }
+.today-page .card > h2:first-child { margin: 0 0 8px; }
+.today-page .totalbar { margin: 6px 0; }
 .totalbar { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
 .totalbar .big { font-size: 19px; font-weight: 700; }
 hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }

@@ -21,6 +21,7 @@ from app.util import (
     fmt_time,
     mask_tail,
     month_label,
+    today_local,
 )
 
 # Feature flag (Ganesh, 2026-08-06): Ticketing System code is finished and
@@ -73,6 +74,12 @@ templates.env.filters["tojson"] = tojson_filter
 # fresh fetch after every restart, so a CSS/JS edit that "isn't showing up"
 # is never actually a stale-browser-cache mystery.
 templates.env.globals["static_version"] = str(int(time.time()))
+# Footer copyright year (Ganesh, 2026-08-14). Computed once at process
+# start like static_version above, not per-request — a running server
+# happening to still be up at midnight on New Year's Eve is an acceptable
+# edge case for a footer credit line. BUSINESS_TZ via today_local(), same
+# as every other "what date is it" question in this app.
+templates.env.globals["footer_year"] = today_local().year
 templates.env.globals["month_label"] = month_label
 templates.env.globals["STATUS_LABELS"] = STATUS_LABELS
 templates.env.globals["STATUS_NAMES"] = STATUS_NAMES

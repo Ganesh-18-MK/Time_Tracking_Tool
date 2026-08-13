@@ -2,7 +2,141 @@
 {% set active_nav = 'today' %}
 {% block title %}Today · MK Timekeeping{% endblock %}
 {% block content %}
-<h1>Task log — {{ day.strftime('%A') }}, {{ day|mdy }}{% if day == today %} (today){% endif %}</h1>
+{% set day_locked = sub and sub.locked %}
+{# .today-page tightens vertical spacing (manager, 2026-08-14: "extra
+   spaces" between the now-shorter stack of cards) — scoped to this page
+   only, see the matching rules in app.css, so Dashboard/Roster/etc. keep
+   their normal .card/h2 spacing. #}
+<div class="today-page">
+
+<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px 16px">
+  <h1 style="margin-bottom:0">Task log — {{ day.strftime('%A') }}, {{ day|mdy }}{% if day == today %} (today){% endif %}</h1>
+
+  {% if day == today %}
+  {# Punch In/Out + Break, compact (manager's redesign, 2026-08-14) — was
+     two full cards, now small controls next to the title. Every timer/
+     gating rule below is unchanged from before; only the markup shrank. #}
+  <div class="quickbar">
+    <div class="qitem">
+      {% if active_punch %}
+        <span class="qtimer" id="punchtimer" style="color:{{ 'var(--bad)' if punch_remaining < 0 else 'var(--ok)' }}">0:00:00</span>
+        <form method="post" action="/punch/out" class="inline">
+          <button class="small" title="{% if not day_locked %}Submit today's task log below first — Punch Out needs it locked.{% else %}End today's punch session.{% endif %}">Punch Out</button>
+        </form>
+      {% else %}
+        <span class="small muted" title="{% if completed_punches %}Punched {{ completed_punch_minutes|hm }} of {{ target|hm }} target so far today{% if punch_overtime %}, {{ punch_overtime|hm }} overtime{% endif %}{% else %}Today's target is {{ target|hm }}{% endif %}. A personal countdown only — it doesn't log work, add rows below for that.">
+          {% if completed_punches %}{{ completed_punch_minutes|hm }}/{{ target|hm }}{% if punch_overtime %} +{{ punch_overtime|hm }}{% endif %}{% else %}not punched in{% endif %}
+        </span>
+        <form method="post" action="/punch/in" class="inline">
+          <button class="small">Punch In</button>
+        </form>
+      {% endif %}
+    </div>
+
+    <div class="qitem">
+      {% if active_break %}
+        <span class="qtimer" id="breaktimer">00:00</span>
+        <span class="small muted">{{ active_break.break_type }}</span>
+        <form method="post" action="/break/end" class="inline">
+          <button class="small">End Break</button>
+        </form>
+      {% else %}
+        <form method="post" action="/break/start" class="inline">
+          <select name="break_type" title="{{ max_break_minutes }} min allowed/day{% if completed_breaks %} — {{ total_break_minutes|hm }} taken so far{% endif %}">
+            <option value="Personal">Personal</option>
+            <option value="Lunch/Dinner">Lunch/Dinner</option>
+          </select>
+          <button class="small">Start Break</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+{% if day == today and active_punch %}
+<span id="overtimeBanner" class="gapflag" style="display:{{ '' if punch_remaining < 0 else 'none' }}">
+  ⏱ Target reached — now tracking overtime.
+</span>
+<script>
+(function () {
+  // Same epoch-based approach as the break timer below — see its comment
+  // for why .isoformat()+"Z" is correct regardless of server/browser
+  // timezone. remainingAtLoad is computed server-side (already includes
+  // any break-excess extension applied so far) and the client only ticks
+  // it down in real time; a fresh page load (e.g. right after ending a
+  // break) is what picks up a newly-extended target.
+  const startEpoch = new Date("{{ active_punch.punched_in_at.isoformat() }}Z").getTime();
+  const remainingAtLoad = {{ punch_remaining }} * 60;
+  // A break isn't work — the countdown must not tick through it (Ganesh,
+  // 2026-08-01: "whenever we are taking a break the punch in timer should
+  // stop... then again punch timer should continue"). completedBreakSec is
+  // every break already ended today, known at page load, subtracted from
+  // elapsed so resuming after a break doesn't "catch up" and count that
+  // time as work. breakStartEpoch is set only while a break is currently
+  // running — the timer freezes at that instant instead of advancing
+  // through it; ending the break reloads the page, which recomputes
+  // everything server-side fresh.
+  const completedBreakSec = {{ total_break_minutes }} * 60;
+  const breakStartEpoch = {% if active_break %}new Date("{{ active_break.started_at.isoformat() }}Z").getTime(){% else %}null{% endif %};
+  const el = document.getElementById('punchtimer');
+  const banner = document.getElementById('overtimeBanner');
+  let overtimeShown = {{ 'true' if punch_remaining < 0 else 'false' }};
+  function tick() {
+    const refEpoch = breakStartEpoch !== null ? breakStartEpoch : Date.now();
+    const rawElapsedSec = Math.max(0, Math.floor((refEpoch - startEpoch) / 1000));
+    const elapsedSec = Math.max(0, rawElapsedSec - completedBreakSec);
+    const remain = remainingAtLoad - elapsedSec;
+    const over = remain < 0;
+    const abs = Math.abs(remain);
+    const h = Math.floor(abs / 3600), mi = Math.floor((abs % 3600) / 60), s = abs % 60;
+    el.textContent = (over ? '+' : '') + h + ':' + String(mi).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    el.style.color = over ? 'var(--bad)' : 'var(--ok)';
+    el.title = (over ? "overtime — past today's target" : "time left to reach today's target") +
+      " ({{ target|hm }}{% if break_excess %}, includes {{ break_excess|hm }} break-allowance extension{% endif %})" +
+      (breakStartEpoch !== null ? " — paused for your break" : "");
+    // banner shows once, the moment overtime starts — not re-hidden if they
+    // somehow dip back under (can't happen with a monotonic clock, but
+    // stays a one-way flag rather than toggling every tick regardless)
+    if (over && !overtimeShown) {
+      overtimeShown = true;
+      banner.style.display = '';
+    }
+  }
+  tick();
+  setInterval(tick, 1000);
+})();
+</script>
+{% endif %}
+
+{% if day == today and active_break %}
+<script>
+(function () {
+  // started_at is a full-precision UTC timestamp (unlike start_minute,
+  // which only stores whole minutes and would lose up to 59 seconds).
+  // Appending 'Z' tells the browser to parse it as UTC; Date arithmetic is
+  // epoch-based from there, so this is correct regardless of the
+  // server/browser timezone and immune to the midnight-wraparound edge
+  // case the old hour/minute reconstruction needed to special-case.
+  const startEpoch = new Date("{{ active_break.started_at.isoformat() }}Z").getTime();
+  const el = document.getElementById('breaktimer');
+  function tick() {
+    const elapsedSec = Math.max(0, Math.floor((Date.now() - startEpoch) / 1000));
+    const h = Math.floor(elapsedSec / 3600), mi = Math.floor((elapsedSec % 3600) / 60), s = elapsedSec % 60;
+    el.textContent = (h ? h + ':' : '') + String(mi).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+  }
+  tick();
+  setInterval(tick, 1000);
+})();
+</script>
+{% endif %}
+
+{% if day == today and break_excess %}
+<div class="gapflag" style="margin:2px 0 8px">
+  ⚠ {{ break_excess|hm }} over your break allowance — today's target is extended by that much
+  (work {{ break_excess|hm }} extra to stay on track).
+</div>
+{% endif %}
 
 <div class="card">
   <form method="get" action="/today" class="formrow">
@@ -28,201 +162,10 @@
   make your corrections and <strong>resubmit</strong> below.</div>
 {% endif %}
 
-{% if day == today %}
-<div class="card">
-  {% if active_punch %}
-  <div class="lockbanner" id="overtimeBanner"
-       style="background:var(--warn-bg);color:var(--warn);{{ '' if punch_remaining < 0 else 'display:none' }}">
-    ⏱ Target reached — now tracking overtime.
-  </div>
-  <div class="totalbar">
-    <span class="big" id="punchtimer" style="color:{{ 'var(--bad)' if punch_remaining < 0 else 'var(--ok)' }}">0:00:00</span>
-    <span class="muted" id="punchlabel">
-      {{ 'overtime — past today\'s target' if punch_remaining < 0 else "time left to reach today's target" }}
-      ({{ target|hm }}{% if break_excess %}, includes {{ break_excess|hm }} break-allowance extension{% endif %})
-    </span>
-    <form method="post" action="/punch/out" class="inline">
-      <button>Punch Out</button>
-    </form>
-  </div>
-  {% if not (sub and sub.locked) %}
-  <div class="muted small">Submit today's task log below before punching out.</div>
-  {% endif %}
-  <script>
-  (function () {
-    // Same epoch-based approach as the break timer just below — see its
-    // comment for why .isoformat()+"Z" is correct regardless of server/
-    // browser timezone. remainingAtLoad is computed server-side (already
-    // includes any break-excess extension applied so far) and the client
-    // only ticks it down in real time; a fresh page load (e.g. right after
-    // ending a break) is what picks up a newly-extended target.
-    const startEpoch = new Date("{{ active_punch.punched_in_at.isoformat() }}Z").getTime();
-    const remainingAtLoad = {{ punch_remaining }} * 60;
-    // A break isn't work — the countdown must not tick through it (Ganesh,
-    // 2026-08-01: "whenever we are taking a break the punch in timer
-    // should stop... then again punch timer should continue").
-    // completedBreakSec is every break already ended today, known at page
-    // load, subtracted from elapsed so resuming after a break doesn't
-    // "catch up" and count that time as work. breakStartEpoch is set only
-    // while a break is currently running — the timer freezes at that
-    // instant (elapsed pinned to breakStart - punchStart) instead of
-    // advancing through it; ending the break reloads the page, which
-    // recomputes everything server-side fresh.
-    const completedBreakSec = {{ total_break_minutes }} * 60;
-    const breakStartEpoch = {% if active_break %}new Date("{{ active_break.started_at.isoformat() }}Z").getTime(){% else %}null{% endif %};
-    const el = document.getElementById('punchtimer');
-    const label = document.getElementById('punchlabel');
-    const banner = document.getElementById('overtimeBanner');
-    const targetText = "({{ target|hm }}{% if break_excess %}, includes {{ break_excess|hm }} break-allowance extension{% endif %})";
-    let overtimeShown = {{ 'true' if punch_remaining < 0 else 'false' }};
-    function tick() {
-      const refEpoch = breakStartEpoch !== null ? breakStartEpoch : Date.now();
-      const rawElapsedSec = Math.max(0, Math.floor((refEpoch - startEpoch) / 1000));
-      const elapsedSec = Math.max(0, rawElapsedSec - completedBreakSec);
-      const remain = remainingAtLoad - elapsedSec;
-      const over = remain < 0;
-      const abs = Math.abs(remain);
-      const h = Math.floor(abs / 3600), mi = Math.floor((abs % 3600) / 60), s = abs % 60;
-      el.textContent = (over ? '+' : '') + h + ':' + String(mi).padStart(2, '0') + ':' + String(s).padStart(2, '0');
-      el.style.color = over ? 'var(--bad)' : 'var(--ok)';
-      const pausedNote = breakStartEpoch !== null ? " — paused for your break" : "";
-      label.textContent = (over ? "overtime — past today's target " : "time left to reach today's target ") + targetText + pausedNote;
-      // banner shows once, the moment overtime starts — not re-hidden if
-      // they somehow dip back under (can't happen with a monotonic clock,
-      // but stays a one-way flag rather than toggling every tick regardless)
-      if (over && !overtimeShown) {
-        overtimeShown = true;
-        banner.style.display = '';
-      }
-    }
-    tick();
-    setInterval(tick, 1000);
-  })();
-  </script>
-  {% else %}
-  <div class="totalbar">
-    <span class="muted">
-      {% if completed_punches %}
-        Punched {{ completed_punch_minutes|hm }} of {{ target|hm }} target so far today
-        {% if punch_overtime %}<span style="color:var(--warn)">— {{ punch_overtime|hm }} overtime</span>{% endif %}
-      {% else %}Not punched in yet — today's target is {{ target|hm }}{% endif %}
-    </span>
-    <form method="post" action="/punch/in" class="inline">
-      <button>Punch In</button>
-    </form>
-  </div>
-  {% endif %}
-  <p class="small muted" style="margin:6px 0 0">A personal timer only — it doesn't log your work.
-  Add rows below for each task as usual; that's what your hours and compliance status come from.</p>
-</div>
-
-<div class="card">
-  {% if active_break %}
-  <div class="totalbar">
-    <span class="big" id="breaktimer">00:00</span>
-    <span class="muted">{{ active_break.break_type }} break — started {{ active_break.start_minute|clock }}</span>
-    <form method="post" action="/break/end" class="inline">
-      <button>End Break</button>
-    </form>
-  </div>
-  <script>
-  (function () {
-    // started_at is a full-precision UTC timestamp (unlike start_minute,
-    // which only stores whole minutes and would lose up to 59 seconds).
-    // Appending 'Z' tells the browser to parse it as UTC; Date arithmetic
-    // is epoch-based from there, so this is correct regardless of the
-    // server/browser timezone and immune to the midnight-wraparound edge
-    // case the old hour/minute reconstruction needed to special-case.
-    const startEpoch = new Date("{{ active_break.started_at.isoformat() }}Z").getTime();
-    const el = document.getElementById('breaktimer');
-    function tick() {
-      const elapsedSec = Math.max(0, Math.floor((Date.now() - startEpoch) / 1000));
-      const h = Math.floor(elapsedSec / 3600), mi = Math.floor((elapsedSec % 3600) / 60), s = elapsedSec % 60;
-      el.textContent = (h ? h + ':' : '') + String(mi).padStart(2, '0') + ':' + String(s).padStart(2, '0');
-    }
-    tick();
-    setInterval(tick, 1000);
-  })();
-  </script>
-  {% else %}
-  <div class="totalbar">
-    <span class="muted">
-      {% if completed_breaks %}
-        Breaks today: {{ total_break_minutes|hm }} of {{ max_break_minutes }} min allowed
-        ({% for b in completed_breaks %}{{ b.break_type }} {{ b.start_minute|clock }}–{{ b.end_minute|clock }}{% if not loop.last %}, {% endif %}{% endfor %})
-      {% else %}No breaks logged yet today — {{ max_break_minutes }} min allowed{% endif %}
-    </span>
-    <form method="post" action="/break/start" class="inline">
-      <select name="break_type">
-        <option value="Personal">Personal</option>
-        <option value="Lunch/Dinner">Lunch/Dinner</option>
-      </select>
-      <button>Start Break</button>
-    </form>
-  </div>
-  {% if break_excess %}
-  <div class="gapflag" style="margin-top:6px">
-    ⚠ {{ break_excess|hm }} over your break allowance — today's target is extended by that much
-    (work {{ break_excess|hm }} extra to stay on track).
-  </div>
-  {% endif %}
-  {% endif %}
-</div>
-{% endif %}
-
-<div class="card">
-  <table>
-    <thead>
-      <tr><th>Start</th><th>End</th><th>Duration</th><th>Project/Employer</th><th>Task</th><th>Details</th><th></th></tr>
-    </thead>
-    <tbody>
-      {% for e in entries %}
-      <tr>
-        <td class="nowrap">{{ e.start_minute|clock }}
-          {% if flags.get(e.id) %}<div class="gapflag">⚠ {{ flags[e.id]|hm }} gap before</div>{% endif %}
-        </td>
-        <td class="nowrap">{{ e.end_minute|clock }}</td>
-        <td class="nowrap"><strong>{{ e.duration_minutes|hm }}</strong></td>
-        <td>{{ e.project.name }}</td>
-        <td>{{ e.task_type.name }}</td>
-        <td style="white-space:pre-wrap">{{ e.details }}{%- if day == today and not (sub and sub.locked) -%}
-          <details class="details-edit">
-            <summary class="small muted">✎ edit</summary>
-            <form method="post" action="/entries/{{ e.id }}/edit" style="margin-top:6px;display:flex;gap:6px;align-items:flex-start">
-              <textarea name="details" rows="2" style="flex:1;min-width:180px">{{ e.details }}</textarea>
-              <button class="small">Save</button>
-            </form>
-          </details>
-          {%- endif %}</td>
-        <td>
-          {% if not (sub and sub.locked) %}
-          <form method="post" action="/entries/{{ e.id }}/delete" class="inline"
-                onsubmit="return confirm('Delete this row?')">
-            <button class="small secondary">✕</button>
-          </form>
-          {% endif %}
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="7" class="muted">No rows yet — add your first task below.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-
-  <div class="totalbar">
-    <span class="big">{{ total|hm }}</span>
-    <span class="muted">of {{ target|hm }} target{% if leave_min %} (reduced by {{ leave_min|hm }} approved leave){% endif %}{% if break_excess %} (extended by {{ break_excess|hm }} — over break allowance){% endif %} — computed, never typed</span>
-    {% if not (sub and sub.locked) and entries %}
-    <form method="post" action="/submit-day" class="inline"
-          onsubmit="return confirm('Submit and lock this day? Edits after submission need an admin unlock.')">
-      <input type="hidden" name="date" value="{{ day.isoformat() }}">
-      <button>{{ 'Resubmit Day' if sub else 'Submit Day' }}</button>
-    </form>
-    {% endif %}
-  </div>
-</div>
-
-{% if not (sub and sub.locked) %}
+{% if not day_locked %}
+{# Auto time capture + Add row (manager's redesign, 2026-08-14) — both
+   "ways to add a task" now sit above the logged-time table, instead of
+   below it. #}
 <div class="card">
   <h2>Auto time capture</h2>
   {% if active_timer %}
@@ -314,7 +257,61 @@
   <div class="muted small">Rules: no overlaps · can't log over a logged break · no rows past midnight (split across days) ·
     max {{ (max_row_minutes // 60) }}h per row — break long work down · unexplained gaps over {{ gap_minutes }} min get flagged, not blocked (logged break time doesn't count against you).</div>
 </div>
+{% endif %}
 
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>Start</th><th>End</th><th>Duration</th><th>Project/Employer</th><th>Task</th><th>Details</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for e in display_entries %}
+      <tr{% if not e.id %} class="muted"{% endif %}>
+        <td class="nowrap">{{ e.start_minute|clock }}
+          {% if flags.get(e.id) %}<div class="gapflag">⚠ {{ flags[e.id]|hm }} gap before</div>{% endif %}
+        </td>
+        <td class="nowrap">{{ e.end_minute|clock }}</td>
+        <td class="nowrap"><strong>{{ e.duration_minutes|hm }}</strong></td>
+        <td>{{ e.project.name }}</td>
+        <td>{{ e.task_type.name }}</td>
+        <td style="white-space:pre-wrap">{{ e.details }}{%- if e.id and day == today and not day_locked -%}
+          <details class="details-edit">
+            <summary class="small muted">✎ edit</summary>
+            <form method="post" action="/entries/{{ e.id }}/edit" style="margin-top:6px;display:flex;gap:6px;align-items:flex-start">
+              <textarea name="details" rows="2" style="flex:1;min-width:180px">{{ e.details }}</textarea>
+              <button class="small">Save</button>
+            </form>
+          </details>
+          {%- endif %}</td>
+        <td>
+          {% if e.id and not day_locked %}
+          <form method="post" action="/entries/{{ e.id }}/delete" class="inline"
+                onsubmit="return confirm('Delete this row?')">
+            <button class="small secondary">✕</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="muted">No rows yet — add your first task above.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="totalbar">
+    <span class="big">{{ total|hm }}</span>
+    <span class="muted">of {{ target|hm }} target{% if leave_min %} (reduced by {{ leave_min|hm }} approved leave){% endif %}{% if break_excess %} (extended by {{ break_excess|hm }} — over break allowance){% endif %} — computed, never typed</span>
+    {% if not day_locked and entries %}
+    <form method="post" action="/submit-day" class="inline"
+          onsubmit="return confirm('Submit and lock this day? Edits after submission need an admin unlock.')">
+      <input type="hidden" name="date" value="{{ day.isoformat() }}">
+      <button>{{ 'Resubmit Day' if sub else 'Submit Day' }}</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{% if not day_locked %}
 <details class="card">
   <summary style="cursor:pointer;font-weight:600">Don't see your project or task? Suggest a new one</summary>
   <form method="post" action="/suggestions" class="formrow" style="margin-top:10px">
@@ -361,4 +358,6 @@ initCombo(document.getElementById('combo-timer-task'), {{ tasks|tojson }});
 })();
 </script>
 {% endif %}
+
+</div>
 {% endblock %}

@@ -9,6 +9,7 @@
 </head>
 <body>
 <header class="topbar">
+ <div class="topbar-inner">
   <div class="brand">
     <img src="/static/brand/logo-mark.png" alt="Law Offices of Mary Kennedy">
     <span>Timekeeping &amp; Compliance</span><em class="poc">POC</em>
@@ -87,6 +88,7 @@
     <form method="post" action="/logout"><button class="linklike">Sign out</button></form>
   </div>
   {% endif %}
+ </div>
 </header>
 
 {% if flashes %}
@@ -98,6 +100,14 @@
 <main>
 {% block content %}{% endblock %}
 </main>
+
+<footer class="sitefooter">
+  <span>&copy; {{ footer_year }} Law Offices of Mary Kennedy &mdash; MK Timekeeping &amp; Compliance (POC)</span>
+  {% if user %}
+  <a href="{{ '/admin/support' if (user.is_admin and active_nav not in employee_zone) else '/support' }}">Support</a>
+  {% endif %}
+</footer>
+
 <script src="/static/tablefilter.js?v={{ static_version }}"></script>
 <script src="/static/msfilter.js?v={{ static_version }}"></script>
 <script>
