@@ -68,10 +68,16 @@ def login_employee(
 ):
     if AUTH_MODE == "dev":
         return RedirectResponse("/login", status_code=303)
+    ip = rate_limit.client_ip(request)
+    ip_wait = rate_limit.seconds_until_ip_unlock("login", ip)
+    if ip_wait:
+        flash(request, _lockout_message(ip_wait), "err")
+        return RedirectResponse("/login/employee", status_code=303)
     wait = rate_limit.seconds_until_unlock("login", email)
     if wait:
         flash(request, _lockout_message(wait), "err")
         return RedirectResponse("/login/employee", status_code=303)
+    rate_limit.record_ip_hit("login", ip)
     emp = authenticate(db, email, password)
     if emp is None:
         rate_limit.record_failure("login", email)
@@ -105,10 +111,16 @@ def login_admin(
 ):
     if AUTH_MODE == "dev":
         return RedirectResponse("/login", status_code=303)
+    ip = rate_limit.client_ip(request)
+    ip_wait = rate_limit.seconds_until_ip_unlock("login", ip)
+    if ip_wait:
+        flash(request, _lockout_message(ip_wait), "err")
+        return RedirectResponse("/login/admin", status_code=303)
     wait = rate_limit.seconds_until_unlock("login", email)
     if wait:
         flash(request, _lockout_message(wait), "err")
         return RedirectResponse("/login/admin", status_code=303)
+    rate_limit.record_ip_hit("login", ip)
     emp = authenticate(db, email, password)
     if emp is None or not emp.is_admin:
         # deliberately identical whether the email doesn't exist, the
@@ -151,10 +163,16 @@ def signup(
     confirm: str = Form(...),
     db: Session = Depends(get_db),
 ):
+    ip = rate_limit.client_ip(request)
+    ip_wait = rate_limit.seconds_until_ip_unlock("signup", ip)
+    if ip_wait:
+        flash(request, _lockout_message(ip_wait), "err")
+        return RedirectResponse("/signup", status_code=303)
     wait = rate_limit.seconds_until_unlock("signup", email)
     if wait:
         flash(request, _lockout_message(wait), "err")
         return RedirectResponse("/signup", status_code=303)
+    rate_limit.record_ip_hit("signup", ip)
     emp = find_by_email(db, email)
     if emp is None:
         # counted against the lockout too — repeated "not on roster"

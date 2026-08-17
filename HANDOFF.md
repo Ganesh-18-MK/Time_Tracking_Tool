@@ -65,7 +65,7 @@ docs/PRD.md          ← the spec. HANDOFF (this file) + README are the map.
 - Two part-timers' daily targets were only hinted at in the sheets (`Part Time` dept, free-text "4 Hours 19 min") — set real targets in Roster → Edit when HR confirms.
 - `unlock_log` from PRD §8 is realized as audit-log entries + an `unlock_count` on the submission (simpler, same information).
 - Today counts as Partial the moment someone submits a short day (Srividhya demo). If the team dislikes intraday strike movement, gate `strikes_in` on `date < today` — one line in `engine.py`.
-- No CSRF tokens / rate limiting — fine behind dev auth on localhost, revisit with Entra.
+- Rate limiting exists (`app/rate_limit.py`): per-email failure lockout, plus a per-IP attempt throttle added 2026-08-17. Both in-memory/process-local — see the module docstring for why that's an acceptable trade-off today and what to reach for if it stops being one (multi-instance Cloud Run, mainly). No CSRF tokens yet — still worth revisiting now that prod auth is real self-signup passwords, not just dev localhost.
 
 ## Suggested next steps, in order
 
