@@ -497,7 +497,26 @@ def build_existing_employees_workbook(db) -> Workbook:
     """The update-oriented download — every active employee, one row each,
     Employee ID first so it survives round-tripping through Excel. Every
     other column is pre-filled with the CURRENT value so the admin can see
-    what they're changing; re-uploading unchanged is a safe no-op."""
+    what they're changing; re-uploading unchanged is a safe no-op.
+
+    Two extra columns — Current Address, Permanent Address — are appended
+    after TEMPLATE_HEADERS, reference-only (Ganesh, 2026-08-20). They pull
+    from EmployeePersonalDetails (the self-service Profile table an
+    employee fills in themselves — see its docstring in app/models.py),
+    NOT from Employee, so this function is the only place in this module
+    that reads a second table. Deliberately NOT added to TEMPLATE_HEADERS:
+    that constant is shared with build_sample_workbook() (the blank
+    onboarding template — a brand-new hire has no EmployeePersonalDetails
+    row yet, so an address column there would always be empty) and with
+    read_upload_rows()/process_upload() (which only ever look up columns
+    that appear in TEMPLATE_HEADERS by name — see read_upload_rows()'s
+    dict comprehension). That means these two trailing columns are safely
+    inert on re-upload: present for an admin to *read*, silently ignored
+    by the parser, never written back to the database. If address ever
+    needs to become admin-editable via bulk upload instead of reference
+    only, that's a deliberate follow-up, not a side effect of this change
+    — it would mean teaching process_upload() to touch a second table.
+    """
     emps = list(
         db.execute(
             select(m.Employee)
@@ -511,13 +530,28 @@ def build_existing_employees_workbook(db) -> Workbook:
         row.id: row.employee_code
         for row in db.execute(select(m.Employee.id, m.Employee.employee_code)).all()
     }
+    # employee_id -> (current_address, permanent_address); most employees
+    # may not have filled in their Profile yet, so this is a lookup with
+    # missing keys, not a guaranteed one-row-per-employee join.
+    addr_by_emp_id = {
+        row.employee_id: (row.current_address or "", row.permanent_address or "")
+        for row in db.execute(
+            select(
+                m.EmployeePersonalDetails.employee_id,
+                m.EmployeePersonalDetails.current_address,
+                m.EmployeePersonalDetails.permanent_address,
+            )
+        ).all()
+    }
     wb = Workbook()
     ws = wb.active
     ws.title = "Employees"
-    ws.append(TEMPLATE_HEADERS)
+    headers = TEMPLATE_HEADERS + ["Current Address", "Permanent Address"]
+    ws.append(headers)
     for c in ws[1]:
         c.font = Font(bold=True)
     for e in emps:
+        current_addr, permanent_addr = addr_by_emp_id.get(e.id, ("", ""))
         ws.append([
             e.employee_code or "", e.name, e.department, e.designation,
             round(e.daily_target_minutes / 60, 2), workdays_to_letters(e.work_days),
@@ -529,7 +563,10 @@ def build_existing_employees_workbook(db) -> Workbook:
             ],
             (code_by_id.get(e.reports_to_id) or "") if e.reports_to_id else "",
             "",
+            current_addr, permanent_addr,
         ])
-    for col, width in zip(COL_LETTERS, COL_WIDTHS):
+    col_letters = COL_LETTERS + "OP"
+    col_widths = COL_WIDTHS + [34, 34]
+    for col, width in zip(col_letters, col_widths):
         ws.column_dimensions[col].width = width
     return wb

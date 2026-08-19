@@ -427,6 +427,65 @@ class TestExistingEmployeesWorkbook:
         rows, _ = read_upload_rows(wb)
         assert rows == []
 
+    def test_address_columns_present_and_filled_from_personal_details(self, db):
+        # Address lives on EmployeePersonalDetails (self-service Profile),
+        # not on Employee itself — added 2026-08-20 (Ganesh) so an admin can
+        # see it on the roster download without opening each person's
+        # profile individually.
+        emp = m.Employee(name="Jane Doe", employee_code="LOMK001")
+        db.add(emp)
+        db.flush()
+        db.add(m.EmployeePersonalDetails(
+            employee_id=emp.id,
+            current_address="123 Current St, Bengaluru",
+            permanent_address="456 Permanent Rd, Chennai",
+        ))
+        db.commit()
+        wb = build_existing_employees_workbook(db)
+        ws = wb.active
+        header = [c.value for c in ws[1]]
+        assert "Current Address" in header and "Permanent Address" in header
+        data_row = list(ws.iter_rows(min_row=2, max_row=2, values_only=True))[0]
+        by_header = dict(zip(header, data_row))
+        assert by_header["Current Address"] == "123 Current St, Bengaluru"
+        assert by_header["Permanent Address"] == "456 Permanent Rd, Chennai"
+
+    def test_address_columns_blank_when_no_profile_filled_in(self, db):
+        # Most employees won't have filled in their Profile yet — no
+        # EmployeePersonalDetails row at all, not just blank fields on one.
+        db.add(m.Employee(name="No Profile Yet", employee_code="LOMK001"))
+        db.commit()
+        wb = build_existing_employees_workbook(db)
+        ws = wb.active
+        header = [c.value for c in ws[1]]
+        data_row = list(ws.iter_rows(min_row=2, max_row=2, values_only=True))[0]
+        by_header = dict(zip(header, data_row))
+        assert by_header["Current Address"] == ""
+        assert by_header["Permanent Address"] == ""
+
+    def test_address_columns_are_inert_on_reupload(self, db):
+        # The whole point of "reference only": these columns must not
+        # change what read_upload_rows()/parse_row() see, so re-uploading
+        # the download unmodified still behaves exactly as it did before
+        # address was added.
+        emp = m.Employee(
+            name="Jane Doe", department="Accounts", designation="Associate",
+            daily_target_minutes=450, work_days="0,1,2,3,4", employee_code="LOMK001",
+        )
+        db.add(emp)
+        db.flush()
+        db.add(m.EmployeePersonalDetails(employee_id=emp.id, current_address="Somewhere"))
+        db.commit()
+        wb = build_existing_employees_workbook(db)
+        rows, error = read_upload_rows(wb)
+        assert error is None
+        assert "Current Address" not in rows[0]
+        assert "Permanent Address" not in rows[0]
+        result = parse_row(rows[0], {"LOMK001": emp.id})
+        assert result["mode"] == "update"
+        assert result["error"] is None
+        assert "current_address" not in result["fields"]
+
 
 @pytest.fixture()
 def db():
