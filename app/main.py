@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -58,6 +59,16 @@ app.add_middleware(
     # http://localhost working.
     https_only=AUTH_MODE != "dev",
 )
+# Ganesh, 2026-08-21 (performance pass, "will it work with 100 concurrent
+# users"): compresses every text response (HTML pages, the CSS/JS under
+# /static, XLSX/CSV exports) over minimum_size bytes before it goes over
+# the wire. This is the single biggest, lowest-risk win available for
+# "slow loading" — Reports pages in particular render large HTML tables —
+# and it's pure transport-layer plumbing: no route, query, or template
+# logic changes, so there's no compliance-math risk and no pytest/
+# verify_strikes re-run needed (see CLAUDE.md's rule — that only applies
+# to engine.py/validation.py/legacy/import_legacy.py).
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 # Avatar directory may live outside app/static entirely (see

@@ -91,6 +91,38 @@
  </div>
 </header>
 
+{% if show_profile_reminder and active_nav in employee_zone %}
+{# Mandatory-but-dismissible profile-completion popup (Ganesh, 2026-08-21,
+   including for new hires) — see app/templating.py _needs_profile_reminder
+   for what counts as "incomplete" and why this reappears every login
+   until it doesn't. employee_zone is the same list the nav above already
+   defines (only set when `user` is truthy, which show_profile_reminder
+   already implies — see _needs_profile_reminder). #}
+<div class="modal-overlay" id="profileReminderOverlay">
+  <div class="modal-box">
+    <h2 style="margin-top:0">Finish setting up your profile</h2>
+    <p class="small muted">
+      {% if user.personal_details is none and user.bank_details is none %}
+      Your Personal Details and Employment Details cards on Profile are both still empty.
+      {% elif user.personal_details is none %}
+      Your Personal Details card on Profile is still empty.
+      {% else %}
+      Your Employment Details card on Profile is still empty.
+      {% endif %}
+      HR needs this on file — it only takes a couple of minutes.
+    </p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+      {% if user.personal_details is none %}<a class="btn" href="/profile/personal-details">Fill in Personal Details</a>{% endif %}
+      {% if user.bank_details is none %}<a class="btn" href="/profile/employment-details">Fill in Employment Details</a>{% endif %}
+    </div>
+    <form method="post" action="/profile/reminder/dismiss" style="margin-top:12px">
+      <input type="hidden" name="return_to" value="{{ request.url.path }}">
+      <button type="submit" class="small secondary">Remind me later</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
 {% if flashes %}
 <div class="flashes">
   {% for f in flashes %}<div class="flash {{ f.kind }}">{{ f.msg }}</div>{% endfor %}
@@ -110,6 +142,7 @@
 
 <script src="/static/tablefilter.js?v={{ static_version }}"></script>
 <script src="/static/msfilter.js?v={{ static_version }}"></script>
+<script src="/static/mdy_datepicker.js?v={{ static_version }}"></script>
 <script>
   // Close any open nav dropdown (e.g. Reports) when clicking outside it.
   document.addEventListener("click", function (e) {

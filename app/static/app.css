@@ -259,3 +259,39 @@ details > summary { cursor: pointer; color: var(--accent); }
   white-space: normal; }
 .details-edit summary { font-size: 12px; list-style: none; }
 .details-edit summary::-webkit-details-marker { display: none; }
+
+/* Mandatory (but dismissible-for-the-session) profile-completion popup
+   (Ganesh, 2026-08-21) — see base.html/app/templating.py
+   _needs_profile_reminder. Reuses .card's look for the box itself rather
+   than inventing a second visual language for "a card in a modal". */
+.modal-overlay { position: fixed; inset: 0; background: rgba(7, 41, 38, .45);
+  display: flex; align-items: center; justify-content: center; z-index: 100; padding: 18px; }
+.modal-box { background: var(--card); border-radius: 10px; padding: 20px 22px;
+  max-width: 440px; width: 100%; box-shadow: 0 12px 32px rgba(0, 0, 0, .25); }
+.modal-box .btn { display: inline-block; }
+
+/* MM/DD/YYYY date picker (Ganesh, 2026-08-21) — see
+   app/static/mdy_datepicker.js for why every <input type="date"> gets
+   progressively enhanced with this instead of relying on the native
+   widget's browser/OS-locale-dependent display. */
+.mdy-wrap { position: relative; display: inline-flex; align-items: center; gap: 4px; }
+.mdy-text { width: 108px; }
+.mdy-text.mdy-invalid { border-color: var(--bad); outline: 2px solid var(--bad-bg); }
+.mdy-cal-btn { background: #fff; border: 1px solid #d3cbb8; border-radius: 7px;
+  padding: 5px 7px; color: var(--muted); line-height: 0; cursor: pointer; }
+.mdy-cal-btn:hover { color: var(--accent); border-color: var(--accent-light); }
+.mdy-cal { position: absolute; top: 100%; left: 0; margin-top: 4px; z-index: 60;
+  background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(7, 41, 38, .16); padding: 8px; width: 224px; }
+.mdy-cal-head { display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+.mdy-cal-nav { background: none; border: 0; color: var(--ink); padding: 2px 8px;
+  font-size: 14px; cursor: pointer; border-radius: 6px; }
+.mdy-cal-nav:hover { background: var(--accent-light); }
+.mdy-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.mdy-cal-dow { font-size: 10px; color: var(--muted); text-align: center; padding: 2px 0; }
+.mdy-cal-day { background: none; border: 0; border-radius: 6px; padding: 5px 0;
+  font-size: 12px; cursor: pointer; color: var(--ink); }
+.mdy-cal-day:hover { background: var(--accent-light); }
+.mdy-cal-day.today { font-weight: 700; color: var(--accent-dark); }
+.mdy-cal-day.sel { background: var(--accent); color: var(--accent-ink); }

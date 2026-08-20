@@ -11,6 +11,7 @@ from app.util import today_local
 from app.validation import (
     EntryError,
     earliest_allowed_date,
+    earliest_gap_window,
     entry_details_edit_error,
     gap_flags,
     suggest_non_overlapping_start,
@@ -340,6 +341,62 @@ class TestGapFlags:
                         details="b", start_minute=620, end_minute=680)
         assert gap_flags([a, b], 15) == {2: 20}
         assert gap_flags([a, b], 15, []) == {2: 20}
+
+
+class TestEarliestGapWindow:
+    """earliest_gap_window() — feeds Today's Add Row auto-prefill (Ganesh,
+    2026-08-21): an unexplained gap between two logged rows now scopes the
+    Add Row form to that window automatically instead of only showing the
+    ⚠ warning label. Always paired with gap_flags()'s own output for the
+    same entries, same as today_page() calls it."""
+
+    def test_no_entries_no_window(self):
+        assert earliest_gap_window([], {}) is None
+
+    def test_no_flagged_gap_returns_none(self):
+        a = m.TaskEntry(id=1, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                        details="a", start_minute=540, end_minute=600)
+        b = m.TaskEntry(id=2, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                        details="b", start_minute=615, end_minute=680)
+        assert earliest_gap_window([a, b], gap_flags([a, b], 15)) is None
+
+    def test_flagged_gap_returns_prev_end_to_cur_start(self):
+        a = m.TaskEntry(id=1, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                        details="a", start_minute=540, end_minute=600)
+        b = m.TaskEntry(id=2, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                        details="b", start_minute=720, end_minute=780)
+        flags = gap_flags([a, b], 15)
+        assert earliest_gap_window([a, b], flags) == (600, 720)
+
+    def test_picks_the_earliest_gap_when_several_exist(self):
+        a = m.TaskEntry(id=1, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                        details="a", start_minute=540, end_minute=600)   # 9:00-10:00
+        b = m.TaskEntry(id=2, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                        details="b", start_minute=660, end_minute=720)   # 11:00-12:00 (gap before: 60min)
+        c = m.TaskEntry(id=3, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                        details="c", start_minute=800, end_minute=860)   # 13:20-14:20 (gap before: 80min)
+        flags = gap_flags([a, b, c], 15)
+        assert flags == {2: 60, 3: 80}
+        # earliest by position in the day, not by size of the gap
+        assert earliest_gap_window([a, b, c], flags) == (600, 660)
+
+    def test_unordered_input_list_still_finds_the_right_window(self):
+        # entries aren't guaranteed to arrive already sorted — gap_flags()
+        # itself sorts internally, and so must this.
+        a = m.TaskEntry(id=1, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                        details="a", start_minute=540, end_minute=600)
+        b = m.TaskEntry(id=2, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                        details="b", start_minute=720, end_minute=780)
+        flags = gap_flags([a, b], 15)
+        assert earliest_gap_window([b, a], flags) == (600, 720)
+
+    def test_right_open_trailing_gap_is_not_a_window(self):
+        # nothing logged yet after the last row isn't "between two rows" —
+        # gap_flags() itself never flags this (there's no `cur` row to
+        # flag), so this is really just confirming the None default holds.
+        a = m.TaskEntry(id=1, employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                        details="a", start_minute=540, end_minute=600)
+        assert earliest_gap_window([a], gap_flags([a], 15)) is None
 
 
 class TestEntryDetailsEditGuard:

@@ -54,6 +54,28 @@
   {% endif %}
 </div>
 
+{% if edit_notices %}
+{# An admin rewrote one of this employee's own Project/Task suggestions
+   (Ganesh, 2026-08-21) — see app/routes/employee.py's
+   _pending_edit_notices()/dismiss_edit_notice() and
+   app/routes/admin.py's suggestion_edit(). One card per still-unseen
+   edit; "Got it" marks that specific one as seen (employee_notified_at)
+   without touching any others still pending. #}
+{% for n in edit_notices %}
+<div class="card" style="border-left:3px solid var(--accent);margin-bottom:10px">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+    <div class="small">
+      An admin {{ 'renamed' if n.edited_by else 'updated' }} your suggested {{ n.kind }}
+      {% if n.original_name and n.original_name != n.name %}"<strong>{{ n.original_name }}</strong>" to "<strong>{{ n.name }}</strong>"{% else %}"<strong>{{ n.name }}</strong>"{% endif %}{% if n.edited_by %} — {{ n.edited_by }}{% endif %}.
+    </div>
+    <form method="post" action="/suggestions/edit-notice/{{ n.kind }}/{{ n.id }}/dismiss" class="inline">
+      <button class="small secondary">Got it</button>
+    </form>
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+
 {% if day == today and active_punch %}
 <span id="overtimeBanner" class="gapflag" style="display:{{ '' if punch_remaining < 0 else 'none' }}">
   ⏱ Target reached — now tracking overtime.
@@ -135,6 +157,27 @@
 <div class="gapflag" style="margin:2px 0 8px">
   ⚠ {{ break_excess|hm }} over your break allowance — today's target is extended by that much
   (work {{ break_excess|hm }} extra to stay on track).
+</div>
+{% endif %}
+
+{% if day == today and show_overtime_prompt %}
+{# Immediate overtime prompt (Ganesh, 2026-08-21): fires off logged Task
+   Entry minutes for today crossing today's target — see today_page()'s
+   over_allocation_minutes/show_overtime_prompt. One click posts straight
+   to the existing pre-approval queue (/overtime/request, same route the
+   Overtime page's own form uses) with today as both start and end date;
+   the request then shows up on /overtime exactly like a normal one, and
+   this banner won't show again today once it's on file (requested or
+   approved either one). #}
+<div class="gapflag" style="margin:2px 0 8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+  <span>⚠ {{ over_allocation_minutes|hm }} over today's target ({{ total|hm }} logged of {{ target|hm }}). Extra hours need pre-approval on file.</span>
+  <form method="post" action="/overtime/request" class="inline">
+    <input type="hidden" name="start_date" value="{{ today.isoformat() }}">
+    <input type="hidden" name="end_date" value="{{ today.isoformat() }}">
+    <input type="hidden" name="note" value="Auto-prompted from Today — over allocation by {{ over_allocation_minutes|hm }}.">
+    <button class="small">Request overtime for today</button>
+  </form>
+  <a class="small" href="/overtime">or fill in a reason first →</a>
 </div>
 {% endif %}
 
@@ -220,8 +263,14 @@
     timer auto-stops and logs whatever's already running.</p>
 </div>
 
-<div class="card">
+<div class="card" id="addrowcard">
   <h2>Add row</h2>
+  {% if gap_prefill_active %}
+  <div class="gapflag" style="margin-bottom:8px">
+    ⚠ Gap found between {{ gap_prefill_start_min|clock }} and {{ gap_prefill_end_min|clock }} — filled in below. Add what you were doing then before logging anything else.
+  </div>
+  <script>document.getElementById("addrowcard").scrollIntoView({behavior: "smooth", block: "center"});</script>
+  {% endif %}
   <form method="post" action="/entries" class="formrow" id="addrow">
     <input type="hidden" name="date" value="{{ day.isoformat() }}">
     <div class="combo" id="combo-project" data-placeholder="a project">

@@ -15,6 +15,7 @@ from app.util import (
     ensure_list_status_backfill,
     flags_to_role,
     mask_tail,
+    normalize_title_case,
     now_local,
     overtime_minutes,
     punch_out_error,
@@ -102,6 +103,39 @@ class TestMaskTail:
 
     def test_custom_keep_length(self):
         assert mask_tail("ABCDE1234F", keep=2) == "••••••••4F"
+
+
+class TestNormalizeTitleCase:
+    """Auto-capitalization for employee/lead-suggested Project/TaskType
+    names (Ganesh, 2026-08-21) — see app/routes/employee.py
+    suggest_list_item()."""
+
+    def test_lowercase_words_get_capitalized(self):
+        assert normalize_title_case("leads console") == "Leads Console"
+
+    def test_single_word(self):
+        assert normalize_title_case("acme") == "Acme"
+
+    def test_already_capitalized_is_unchanged(self):
+        assert normalize_title_case("Leads Console") == "Leads Console"
+
+    def test_deliberate_internal_capitalization_is_preserved(self):
+        # a blind .title() call would mangle these into Iphone/Mcdonald/Hr —
+        # any word that already has an uppercase letter anywhere is left
+        # exactly as typed instead.
+        assert normalize_title_case("iPhone support") == "iPhone Support"
+        assert normalize_title_case("McDonald project") == "McDonald Project"
+        assert normalize_title_case("HR onboarding") == "HR Onboarding"
+
+    def test_collapses_repeated_whitespace_and_trims(self):
+        assert normalize_title_case("  leads   console  ") == "Leads Console"
+
+    def test_blank_and_none(self):
+        assert normalize_title_case("") == ""
+        assert normalize_title_case(None) == ""
+
+    def test_mixed_case_word_left_alone(self):
+        assert normalize_title_case("QuickBooks") == "QuickBooks"
 
     def test_whitespace_only_reads_as_not_added_yet(self):
         assert mask_tail("   ") == "Not added yet"

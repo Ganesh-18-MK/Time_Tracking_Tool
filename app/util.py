@@ -373,6 +373,27 @@ def mask_tail(value: Optional[str], keep: int = 4) -> str:
     return "•" * (len(text) - keep) + text[-keep:]
 
 
+def normalize_title_case(name: str) -> str:
+    """'leads console' -> 'Leads Console'. Used on employee/lead-suggested
+    Project/TaskType names (Ganesh, 2026-08-21) so two people suggesting the
+    same thing with different casing ('leads console' vs 'Leads console')
+    land as one consistently-capitalized entry instead of two near-duplicate
+    rows sitting in the same pending-approval queue.
+
+    Collapses repeated whitespace and trims. Each whitespace-separated word
+    gets its first letter capitalized -- EXCEPT a word that already contains
+    an uppercase letter anywhere in it ('iPhone', 'McDonald', 'HR',
+    'QuickBooks'), which is left exactly as typed. That's deliberate: a
+    plain blind .title() call would mangle those into 'Iphone'/'Mcdonald'/
+    'Hr'/'Quickbooks', which is worse than not normalizing at all. Only
+    words typed in all-lowercase get capitalized."""
+    words = (name or "").strip().split()
+    out = []
+    for w in words:
+        out.append(w if w != w.lower() else w[:1].upper() + w[1:])
+    return " ".join(out)
+
+
 def punch_remaining_minutes(target_minutes: int, completed_punch_minutes: int) -> int:
     """Countdown-to-target remaining minutes for the Punch In/Out widget on
     Today, computed fresh server-side on every page load; the browser just

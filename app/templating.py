@@ -190,6 +190,39 @@ def _admin_nav_badges(db, user) -> dict:
     }
 
 
+def _needs_profile_reminder(request, user) -> bool:
+    """Mandatory-but-not-blocking profile-completion popup (Ganesh,
+    2026-08-21, including for new hires — nothing here checks start_date,
+    so it applies the same to someone who joined today as someone who's
+    been here two years and never got around to it). 'Incomplete' means
+    either self-service card on Profile hasn't been saved even once yet —
+    see app/models.py Employee.personal_details/bank_details, both None
+    until the employee submits app/routes/employee.py's
+    personal_details_save()/employment_details_save() at least once. Not
+    field-by-field: the two cards themselves are the unit of
+    'complete enough', same granularity Profile already presents them at.
+
+    'Once per login, reappears until complete': shows on every page in the
+    employee zone (see base.html) until the employee clicks 'Remind me
+    later' (sets profile_reminder_dismissed in the session — see
+    dismiss_profile_reminder() below), and comes back on their NEXT login
+    because auth.py's logout clears the whole session. A session that's
+    never explicitly logged out of (browser left open, cookie not yet
+    expired) will keep the dismissal instead of re-nagging mid-session —
+    that's the intended trade-off, not a bug.
+
+    Relies on `user` still being attached to the request's live SQLAlchemy
+    session so personal_details/bank_details can lazy-load here — true for
+    every real request (FastAPI caches Depends(get_db) per request, and
+    the session isn't closed until the response is fully sent), so this
+    needs no separate `db` argument."""
+    if user is None or getattr(user, "id", None) is None:
+        return False
+    if request.session.get("profile_reminder_dismissed"):
+        return False
+    return user.personal_details is None or user.bank_details is None
+
+
 def render(request, name: str, ctx: dict, db=None, status_code: int = 200):
     ctx = dict(ctx)
     ctx["request"] = request
@@ -200,6 +233,7 @@ def render(request, name: str, ctx: dict, db=None, status_code: int = 200):
     user = ctx.get("user")
     if db is not None and user is not None and getattr(user, "is_admin", False):
         ctx["nav_badges"] = _admin_nav_badges(db, user)
+    ctx["show_profile_reminder"] = _needs_profile_reminder(request, user)
     if _REQUEST_FIRST:
         return templates.TemplateResponse(request, name, ctx, status_code=status_code)
     return templates.TemplateResponse(name, ctx, status_code=status_code)

@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse, StreamingResponse
 from openpyxl import load_workbook
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app import bulk_upload, compensation, engine, holiday_bulk_upload, leave_bulk_upload, lists_bulk_upload, models as m
@@ -1047,6 +1047,65 @@ def suggestion_approve(
     db.commit()
     audit(db, admin.name, f"suggestion_approve_{kind}", kind, item.name, {})
     flash(request, f"Approved '{item.name}' — now visible to everyone.", "ok")
+    return RedirectResponse("/admin/suggestions", status_code=303)
+
+
+@router.post("/suggestions/{kind}/{item_id}/edit")
+def suggestion_edit(
+    kind: str,
+    item_id: int,
+    request: Request,
+    name: str = Form(...),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Admin rewrites a still-pending suggestion's name before approving/
+    rejecting it (Ganesh, 2026-08-21) — e.g. fixing a typo, matching how
+    an existing client's name is normally written, or just tightening the
+    wording. Deliberately doesn't run the name through
+    normalize_title_case() the way the employee's own original submission
+    did (see app/routes/employee.py suggest_list_item()) — an admin
+    typing a specific name is trusted to have typed it the way they want
+    it, not auto-corrected out from under them.
+
+    Only ever touches a still-PENDING row (same scope as Approve/Reject —
+    _suggestion_or_forbidden() below also 403s a department-scoped admin
+    editing outside their own team). Editing an already-approved/rejected
+    suggestion isn't offered here; the Suggestions page itself only ever
+    lists pending ones, so there's nothing to click Edit on once a
+    decision's been made.
+
+    employee_notified_at is reset to NULL on every save (even a second or
+    third edit of the same row) so each rewrite gets its own fresh banner
+    on the employee's Today page — see app/routes/employee.py's
+    _pending_edit_notices()."""
+    item = _suggestion_or_forbidden(db, admin, kind, item_id)
+    if item is None:
+        return RedirectResponse("/admin/suggestions", status_code=303)
+    if item.status != m.LIST_PENDING:
+        flash(request, "That suggestion has already been decided — nothing to edit.", "err")
+        return RedirectResponse("/admin/suggestions", status_code=303)
+    new_name = name.strip()
+    if not new_name:
+        flash(request, "Enter a name.", "err")
+        return RedirectResponse("/admin/suggestions", status_code=303)
+    model = m.Project if kind == "project" else m.TaskType
+    existing = db.execute(
+        select(model).where(func.lower(model.name) == new_name.lower(), model.id != item.id)
+    ).scalar_one_or_none()
+    if existing is not None:
+        flash(request, f"'{existing.name}' already exists — pick a different name.", "err")
+        return RedirectResponse("/admin/suggestions", status_code=303)
+    old_name = item.name
+    if item.original_name is None:
+        item.original_name = old_name  # only ever captured once — see docstring above
+    item.name = new_name
+    item.edited_by = admin.name
+    item.edited_at = dt.datetime.utcnow()
+    item.employee_notified_at = None  # re-arm the Today-page banner for this edit
+    db.commit()
+    audit(db, admin.name, f"suggestion_edit_{kind}", kind, item.name, {"from": old_name, "to": new_name})
+    flash(request, f"'{old_name}' renamed to '{new_name}'. {item.created_by.name if item.created_by else 'The submitter'} will see this on their Today page.", "ok")
     return RedirectResponse("/admin/suggestions", status_code=303)
 
 

@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import compensation, engine, models as m
@@ -19,6 +19,7 @@ from app.util import (
     audit,
     clamp_break_end,
     fmt_time,
+    normalize_title_case,
     now_local,
     overtime_minutes,
     parse_date_field,
@@ -31,6 +32,7 @@ from app.util import (
 from app.validation import (
     EntryError,
     earliest_allowed_date,
+    earliest_gap_window,
     entry_details_edit_error,
     gap_flags,
     suggest_non_overlapping_start,
@@ -258,6 +260,37 @@ def _visible_projects_and_tasks(db: Session, user: m.Employee):
     return projects, tasks
 
 
+def _pending_edit_notices(db: Session, user: m.Employee) -> list:
+    """Suggestions this employee submitted that an admin has since rewritten
+    (Ganesh, 2026-08-21 — see app/routes/admin.py suggestion_edit()) and
+    that haven't been shown to them yet. Each item is a plain dict — kind
+    ("project"/"task"), the row's id (for the dismiss POST), its current
+    name, original_name (what the employee themselves typed, captured once
+    on the first edit), and who made the change. Ordered oldest-edit-first
+    so if an admin has rewritten more than one of an employee's
+    suggestions, they see them in the order the edits happened."""
+    notices = []
+    for kind, model in (("project", m.Project), ("task", m.TaskType)):
+        rows = db.execute(
+            select(model).where(
+                model.created_by_employee_id == user.id,
+                model.edited_at.isnot(None),
+                model.employee_notified_at.is_(None),
+            ).order_by(model.edited_at)
+        ).scalars()
+        for row in rows:
+            notices.append(
+                {
+                    "kind": kind,
+                    "id": row.id,
+                    "name": row.name,
+                    "original_name": row.original_name,
+                    "edited_by": row.edited_by,
+                }
+            )
+    return notices
+
+
 def _combo_items(objs, assigned_ids: set) -> list:
     """ORM rows -> plain {id, name} dicts for the searchable-combo widget
     (see today.html/combo.js), with whatever this employee is assigned to
@@ -282,7 +315,8 @@ def today_page(
     db: Session = Depends(get_db),
 ):
     cfg = engine.get_config(db)
-    day = dt.date.fromisoformat(date) if date else today_local()
+    today = today_local()
+    day = dt.date.fromisoformat(date) if date else today
     projects, tasks = _visible_projects_and_tasks(db, user)
     assigned_project_ids = {
         row[0] for row in db.execute(
@@ -296,22 +330,90 @@ def today_page(
     }
     ctx = _day_context(db, user, day, cfg)
     last_end = max((e.end_minute for e in ctx["entries"]), default=None)
+
+    # Suggestion-edit notices (Ganesh, 2026-08-21) — see
+    # _pending_edit_notices() above. Shown on the "today" view only (same
+    # "right now" convention as the other Today banners below) rather than
+    # while browsing a past day via the date dropdown.
+    edit_notices = _pending_edit_notices(db, user) if day == today else []
+
+    # Gap auto-prefill (Ganesh, 2026-08-21): previously an unexplained 15+
+    # min gap between two already-logged rows only showed the ⚠ warning
+    # label on the later row (see today.html's flags.get(e.id) below) —
+    # the employee still had to notice it, then manually retype the right
+    # start/end times into Add Row themselves. Now the Add Row form is
+    # pre-scoped to the EARLIEST still-unexplained gap automatically: Start
+    # becomes the end of the row right before the gap, End becomes the
+    # start of the row right after it. ctx["entries"] is already ordered
+    # by start_minute (see _day_context's query), so the first flagged
+    # entry walking forward is the earliest gap. Only the gap strictly
+    # *between* two logged rows is handled here — the common "haven't
+    # logged anything since my last row yet" case is a different,
+    # right-open situation already covered by suggest_start/last_end below
+    # (nothing to "fill in" there yet, since there's no second row to be
+    # a gap *before*).
+    #
+    # Deliberately skipped when a failed Add Row submission is already
+    # being reopened (reopen_start present, from add_entry()'s _reopen())
+    # — the employee's own just-typed, possibly-corrected values always
+    # win over an auto-suggestion.
+    gap_prefill_start = None
+    gap_prefill_end = None
+    if day == today and ctx["flags"] and not reopen_start:
+        window = earliest_gap_window(ctx["entries"], ctx["flags"])
+        if window is not None:
+            gap_prefill_start, gap_prefill_end = window
+
+    # Immediate overtime prompt (Ganesh, 2026-08-21): fires off total logged
+    # Task Entry minutes for *today* crossing today's target (ctx["total"]/
+    # ctx["target"], both already leave/break-excess-adjusted by
+    # _day_context above) — not the separate Punch Clock live timer, which
+    # only tracks employees actively using Punch In/Out (see punch_overtime
+    # above). Only ever computed for day == today, same "right now only"
+    # convention as Start Break/Punch In. Suppressed once a request already
+    # covers today (requested OR approved) so saving a second row a minute
+    # later doesn't re-nag — see the one-click form in today.html that
+    # posts straight to the existing /overtime/request route.
+    show_overtime_prompt = False
+    over_allocation_minutes = 0
+    if day == today:
+        over_allocation_minutes = max(0, ctx["total"] - ctx["target"])
+        if over_allocation_minutes > 0:
+            already_requested = db.execute(
+                select(m.OvertimeApproval.id).where(
+                    m.OvertimeApproval.employee_id == user.id,
+                    m.OvertimeApproval.start_date <= today,
+                    m.OvertimeApproval.end_date >= today,
+                    m.OvertimeApproval.status.in_((m.OT_REQUESTED, m.OT_APPROVED)),
+                )
+            ).first()
+            show_overtime_prompt = already_requested is None
+
     ctx.update(
         {
-            # A sticky reopen (Ganesh, 2026-08-14 — see add_entry()'s
-            # _reopen()) wins over the plain "start right after my last
-            # row" default: it's what the employee already typed, possibly
-            # nudged past whatever it conflicted with.
+            "over_allocation_minutes": over_allocation_minutes,
+            "show_overtime_prompt": show_overtime_prompt,
+            "edit_notices": edit_notices,
+            "gap_prefill_active": gap_prefill_start is not None,
+            "gap_prefill_start_min": gap_prefill_start,
+            "gap_prefill_end_min": gap_prefill_end,
+            # Priority order: a sticky reopen (Ganesh, 2026-08-14 — see
+            # add_entry()'s _reopen()) — the employee's own just-typed
+            # values — wins over an auto-detected gap, which in turn wins
+            # over the plain "start right after my last row" default.
             "suggest_start": reopen_start or (
-                f"{last_end // 60:02d}:{last_end % 60:02d}" if last_end else ""
+                f"{gap_prefill_start // 60:02d}:{gap_prefill_start % 60:02d}" if gap_prefill_start is not None
+                else (f"{last_end // 60:02d}:{last_end % 60:02d}" if last_end else "")
             ),
             "reopen_project_id": reopen_project_id,
             "reopen_task_type_id": reopen_task_type_id,
             "reopen_details": reopen_details,
-            "reopen_end": reopen_end,
+            "reopen_end": reopen_end or (
+                f"{gap_prefill_end // 60:02d}:{gap_prefill_end % 60:02d}" if gap_prefill_end is not None else None
+            ),
             "user": user,
             "day": day,
-            "today": today_local(),
+            "today": today,
             "allowed_dates": _allowed_dates(db, user, cfg),
             # plain dicts, not ORM objects — the template feeds these straight
             # into the searchable-combo widget via |tojson. Assigned ones
@@ -1032,6 +1134,19 @@ def request_overtime(
     if end < start:
         flash(request, "End date is before start date.", "err")
         return RedirectResponse("/overtime", status_code=303)
+    # Backdating block (Ganesh, 2026-08-21): this is a *pre-approval*
+    # request per the module docstring above ("awaits lead/admin review —
+    # doesn't block logging time or Punch In/Out either way"), so a
+    # request for a date that's already in the past isn't really
+    # "pre" anything anymore — it's asking for permission after the fact.
+    # today_local() (not dt.date.today()), same as every other
+    # what-day-is-it check in this app — see CLAUDE.md's BUSINESS_TZ hard
+    # rule. Only blocks the employee's own self-service request; an admin
+    # recording overtime on someone's behalf goes through
+    # app/routes/admin.py, which isn't touched by this check.
+    if start < today_local():
+        flash(request, "Overtime requests can't be backdated — submit one for today or a future date.", "err")
+        return RedirectResponse("/overtime", status_code=303)
     ot = m.OvertimeApproval(
         employee_id=user.id, start_date=start, end_date=end,
         note=note.strip(), requested_by=user.name,
@@ -1119,8 +1234,17 @@ def suggest_list_item(
     lead/admin approves it (see app/routes/admin.py suggestions_page /
     suggestion_approve). Ganesh, 2026-08-11: this used to be usable by the
     submitter right away; removed after an admin reported unreviewed
-    suggestions ending up on real logged time before review."""
-    name = name.strip()
+    suggestions ending up on real logged time before review.
+
+    Ganesh, 2026-08-21: the name is auto-normalized via
+    normalize_title_case() before either the dedupe check or the save --
+    'leads console' becomes 'Leads Console'. The dedupe check itself is
+    case-insensitive (func.lower on both sides) so 'Leads Console' and
+    someone later typing 'leads console' collide into the same pending
+    row instead of creating two near-duplicate suggestions, even though
+    Project.name/TaskType.name's own unique constraint is case-sensitive
+    at the database level."""
+    name = normalize_title_case(name)
     if not name:
         flash(request, "Enter a name before suggesting it.", "err")
         return RedirectResponse("/today", status_code=303)
@@ -1128,14 +1252,40 @@ def suggest_list_item(
     if model is None:
         flash(request, "Unknown suggestion type.", "err")
         return RedirectResponse("/today", status_code=303)
-    existing = db.execute(select(model).where(model.name == name)).scalar_one_or_none()
+    existing = db.execute(
+        select(model).where(func.lower(model.name) == name.lower())
+    ).scalar_one_or_none()
     if existing is not None:
-        flash(request, f"'{name}' already exists — pick it from the list instead of suggesting it again.", "err")
+        flash(request, f"'{existing.name}' already exists — pick it from the list instead of suggesting it again.", "err")
         return RedirectResponse("/today", status_code=303)
     db.add(model(name=name, active=True, status=m.LIST_PENDING, created_by_employee_id=user.id))
     db.commit()
     label = "Project" if kind == "project" else "Task"
     flash(request, f"{label} '{name}' suggested — a team lead will review it before it's usable.", "ok")
+    return RedirectResponse("/today", status_code=303)
+
+
+@router.post("/suggestions/edit-notice/{kind}/{item_id}/dismiss")
+def dismiss_edit_notice(
+    kind: str,
+    item_id: int,
+    request: Request,
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """'Got it' on the "an admin rewrote your suggestion" banner (Ganesh,
+    2026-08-21 — see _pending_edit_notices() and today.html). Ownership-
+    checked (created_by_employee_id must be this employee) same as
+    cancel_leave_request/cancel_overtime_request's own pattern, so one
+    employee can't silently dismiss a notice meant for someone else via a
+    guessed id. Silently no-ops (no error flash) if the row's already been
+    dismissed or doesn't belong to them — this is a low-stakes UI
+    preference, not something worth interrupting them over."""
+    model = {"project": m.Project, "task": m.TaskType}.get(kind)
+    item = db.get(model, item_id) if model else None
+    if item is not None and item.created_by_employee_id == user.id:
+        item.employee_notified_at = dt.datetime.utcnow()
+        db.commit()
     return RedirectResponse("/today", status_code=303)
 
 
@@ -1170,6 +1320,28 @@ def profile_page(
         request, "profile.html",
         {"user": user, "pd": user.personal_details, "bd": user.bank_details, "locations": m.LOCATIONS},
     )
+
+
+@router.post("/profile/reminder/dismiss")
+def dismiss_profile_reminder(
+    request: Request,
+    return_to: str = Form("/today"),
+    user: m.Employee = Depends(current_user),
+):
+    """'Remind me later' on the mandatory profile-completion popup (see
+    app/templating.py's _needs_profile_reminder/render — Ganesh,
+    2026-08-21). Only silences it for the rest of this login; logging out
+    clears the session (app/routes/auth.py logout()), so it's back the
+    next time this employee signs in, same as the 'once per login'
+    requirement. No db write on purpose — this is a per-session UI
+    preference, not data worth persisting or auditing."""
+    request.session["profile_reminder_dismissed"] = True
+    # return_to keeps them on whatever employee-zone page they were on
+    # instead of always bouncing to Today — only ever a same-app relative
+    # path posted from base.html's own modal, never user-typed input.
+    if not return_to.startswith("/"):
+        return_to = "/today"
+    return RedirectResponse(return_to, status_code=303)
 
 
 @router.post("/profile/photo")

@@ -270,6 +270,27 @@ def gap_flags(
     return flags
 
 
+def earliest_gap_window(entries: List[m.TaskEntry], flags: dict) -> Optional[tuple]:
+    """(gap_start_minute, gap_end_minute) for the earliest still-unexplained
+    gap in `entries`, per gap_flags()'s own `flags` output for the same
+    entries — or None if there isn't one. Used by
+    app/routes/employee.py's today_page() to auto-scope the Add Row form
+    to that window (Ganesh, 2026-08-21) instead of only showing the ⚠
+    warning label and leaving the employee to notice it and retype the
+    right times themselves.
+
+    Deliberately only the earliest gap, and only the gap strictly
+    *between* two already-logged rows — not "nothing logged yet since my
+    last row", which is a different, right-open situation already handled
+    by today_page()'s own suggest_start/last_end default (there's no
+    second row for that to be "a gap before")."""
+    ordered = sorted(entries, key=lambda e: e.start_minute)
+    for i, e in enumerate(ordered):
+        if i > 0 and flags.get(e.id):
+            return ordered[i - 1].end_minute, e.start_minute
+    return None
+
+
 def fmt_minute(minute: int) -> str:
     h, mi = divmod(minute, 60)
     suffix = "AM"

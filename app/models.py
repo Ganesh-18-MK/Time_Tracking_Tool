@@ -270,6 +270,22 @@ class Project(Base):
     reviewed_by: Mapped[str] = mapped_column(String(120), default="")
     reviewed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
     review_note: Mapped[str] = mapped_column(Text, default="")
+    # Admin can rewrite a still-pending suggestion's name before deciding
+    # (Ganesh, 2026-08-21) — see app/routes/admin.py's suggestion_edit().
+    # original_name is only ever set the FIRST time this row is edited (a
+    # second edit doesn't overwrite it), so it always shows what the
+    # employee actually typed, however many times an admin has since
+    # rewritten it. employee_notified_at is reset to NULL on every edit
+    # (even a second/third one) so each rewrite gets its own banner on the
+    # employee's Today page (app/routes/employee.py) — see
+    # _pending_edit_notices() there. All nullable/blank-default so the
+    # existing additive-only column migration (app/db.py) handles this
+    # with no separate backfill step needed, same reasoning as
+    # Employee.is_developer's docstring.
+    edited_by: Mapped[str] = mapped_column(String(120), default="")
+    edited_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    original_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    employee_notified_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
 
     created_by = relationship("Employee", foreign_keys=[created_by_employee_id])
 
@@ -285,6 +301,11 @@ class TaskType(Base):
     reviewed_by: Mapped[str] = mapped_column(String(120), default="")
     reviewed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
     review_note: Mapped[str] = mapped_column(Text, default="")
+    # Same as Project's matching fields above — see that docstring.
+    edited_by: Mapped[str] = mapped_column(String(120), default="")
+    edited_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    original_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    employee_notified_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
 
     created_by = relationship("Employee", foreign_keys=[created_by_employee_id])
 

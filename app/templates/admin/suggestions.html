@@ -27,6 +27,14 @@
                 onsubmit="return confirm('Reject &quot;{{ p.name }}&quot;? It stops being usable, including for whoever suggested it.')">
             <button class="small secondary">Reject</button>
           </form>
+          <details class="details-edit inline">
+            <summary class="small muted">✎ edit</summary>
+            <form method="post" action="/admin/suggestions/project/{{ p.id }}/edit" style="margin-top:6px;display:flex;gap:6px;align-items:flex-start">
+              <input name="name" value="{{ p.name }}" style="min-width:180px" required>
+              <button class="small">Save</button>
+            </form>
+            <div class="small muted" style="margin-top:4px">{{ p.created_by.name if p.created_by else 'The submitter' }} will be notified on Today when this is saved.</div>
+          </details>
         </td>
       </tr>
       {% endfor %}
@@ -55,6 +63,14 @@
                 onsubmit="return confirm('Reject &quot;{{ t.name }}&quot;? It stops being usable, including for whoever suggested it.')">
             <button class="small secondary">Reject</button>
           </form>
+          <details class="details-edit inline">
+            <summary class="small muted">✎ edit</summary>
+            <form method="post" action="/admin/suggestions/task/{{ t.id }}/edit" style="margin-top:6px;display:flex;gap:6px;align-items:flex-start">
+              <input name="name" value="{{ t.name }}" style="min-width:180px" required>
+              <button class="small">Save</button>
+            </form>
+            <div class="small muted" style="margin-top:4px">{{ t.created_by.name if t.created_by else 'The submitter' }} will be notified on Today when this is saved.</div>
+          </details>
         </td>
       </tr>
       {% endfor %}
