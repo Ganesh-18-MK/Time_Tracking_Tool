@@ -291,6 +291,44 @@ def earliest_gap_window(entries: List[m.TaskEntry], flags: dict) -> Optional[tup
     return None
 
 
+def all_gap_windows(
+    entries: List[m.TaskEntry], gap_minutes: int, breaks: Optional[List[m.BreakEntry]] = None
+) -> List[dict]:
+    """Every currently-unexplained gap in `entries` — not just the earliest
+    one (see earliest_gap_window() above, which today_page()'s Add Row
+    auto-prefill still uses on its own). Added (Ganesh, 2026-08-22) so
+    today.html can show each gap as its own fillable placeholder row in
+    the task log table, not just a single banner for the first gap.
+
+    Deliberately a standalone function rather than a change to gap_flags()
+    itself — same gap/break-overlap math, recomputed here rather than
+    refactored out of gap_flags(), specifically so gap_flags() and
+    earliest_gap_window() (both already relied on elsewhere) stay
+    byte-for-byte unchanged. If the definition of "what counts as a gap"
+    ever changes, update the covered-break-overlap logic in both this
+    function and gap_flags() together — they must agree.
+
+    Returns a list of {"start", "end", "minutes"} dicts (minutes since
+    midnight for start/end, "minutes" is the remaining unexplained
+    duration after netting out overlapping breaks), ordered chronologically."""
+    windows = []
+    ordered = sorted(entries, key=lambda e: e.start_minute)
+    for prev, cur in zip(ordered, ordered[1:]):
+        gap = cur.start_minute - prev.end_minute
+        if gap <= 0:
+            continue
+        covered = 0
+        for b in breaks or ():
+            b_end = b.end_minute if b.end_minute is not None else cur.start_minute
+            overlap = min(cur.start_minute, b_end) - max(prev.end_minute, b.start_minute)
+            if overlap > 0:
+                covered += overlap
+        remaining = gap - min(covered, gap)
+        if remaining > gap_minutes:
+            windows.append({"start": prev.end_minute, "end": cur.start_minute, "minutes": remaining})
+    return windows
+
+
 def fmt_minute(minute: int) -> str:
     h, mi = divmod(minute, 60)
     suffix = "AM"

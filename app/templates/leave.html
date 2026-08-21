@@ -4,6 +4,89 @@
 {% block content %}
 <h1>Leave</h1>
 
+{% if LEAVE_MANAGEMENT_V2_ENABLED %}
+<div class="card">
+  <h2 style="margin-top:0">Your leave balance</h2>
+  <div class="kpis">
+    {% for t in leave_types %}
+    {% set b = balance_v2[t] %}
+    <div class="kpi{% if b['remaining'] is not none and b['remaining'] < 0 %} badk{% endif %}">
+      <span class="n">{{ b['remaining']|hm }}</span>
+      <span class="l">{{ t }}{% if b['entitlement'] is not none %} left of {{ b['entitlement']|hm }}{% endif %}</span>
+    </div>
+    {% endfor %}
+  </div>
+  <table style="margin-top:10px">
+    <thead><tr><th>Type</th><th>Used</th><th>Pending</th><th>Remaining</th></tr></thead>
+    <tbody>
+      {% for t in leave_types %}
+      {% set b = balance_v2[t] %}
+      <tr>
+        <td>{{ t }}</td>
+        <td>{{ b['used']|hm }}</td>
+        <td>{{ b['pending']|hm }}</td>
+        <td>{{ b['remaining']|hm }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="small muted" style="margin:10px 0 0">Planned Time is earned automatically each month based on your tenure;
+    Special Paid Time is granted by management. Used and Pending are shown separately — a pending request
+    is held out of Remaining the moment it's submitted, before it's even approved.
+    {% if is_probation_active %}<br><strong>You're still in your waiting period — Planned Time isn't available yet.
+    Every other leave type is.</strong>{% endif %}</p>
+</div>
+
+<div class="card">
+  <h2>Request leave</h2>
+  <form method="post" action="/leave/request" class="formrow" id="leave-request-form">
+    <div><label>From</label><input type="date" name="start_date" required></div>
+    <div><label>To (blank = one day)</label><input type="date" name="end_date"></div>
+    <div>
+      <label>Type</label>
+      <select name="type" id="leave-type-select">
+        {% for t in leave_types %}{% if t != 'Special Paid Time' %}<option>{{ t }}</option>{% endif %}{% endfor %}
+      </select>
+    </div>
+    <div id="leave-relation-field" style="display:none">
+      <label>Relationship</label>
+      <select name="relation">{% for r in BEREAVEMENT_RELATIONS %}<option>{{ r }}</option>{% endfor %}</select>
+    </div>
+    <div>
+      <label>Duration</label>
+      <select name="duration" id="leave-duration-select">
+        <option value="full">Full Day ({{ full_day_minutes|hm }})</option>
+        <option value="half">Half Day ({{ half_day_minutes|hm }})</option>
+        <option value="custom">Custom</option>
+      </select>
+    </div>
+    <div id="leave-hours-field" style="display:none">
+      <label>Custom hours</label>
+      <input name="hours" style="width:110px" placeholder="e.g. 2.5">
+    </div>
+    <div style="flex:1"><label>Note</label><input name="note" style="width:100%"></div>
+    <div><button>Submit request</button></div>
+  </form>
+  <p class="small muted">Your admin reviews every request before it counts — approved leave reduces
+    that day's target automatically; pending requests don't affect your status yet. Planned Time requests
+    need advance notice (longer for longer requests) and aren't available during your waiting period.</p>
+</div>
+<script>
+(function() {
+  var typeSel = document.getElementById('leave-type-select');
+  var relField = document.getElementById('leave-relation-field');
+  var durSel = document.getElementById('leave-duration-select');
+  var hoursField = document.getElementById('leave-hours-field');
+  function sync() {
+    relField.style.display = (typeSel.value === 'Bereavement Time') ? '' : 'none';
+    hoursField.style.display = (durSel.value === 'custom') ? '' : 'none';
+  }
+  typeSel.addEventListener('change', sync);
+  durSel.addEventListener('change', sync);
+  sync();
+})();
+</script>
+{% else %}
 <div class="card">
   <h2 style="margin-top:0">Your leave balance — {{ balance_year }}</h2>
   <div class="kpis">
@@ -33,6 +116,7 @@
   <p class="small muted">Your admin reviews every request before it counts — approved leave reduces
     that day's target automatically; pending requests don't affect your status yet.</p>
 </div>
+{% endif %}
 
 <div class="card">
   <h2>Your requests</h2>
@@ -42,10 +126,13 @@
       {% for lv in records %}
       <tr>
         <td class="nowrap">{{ lv.start_date|mdy }}{% if lv.end_date != lv.start_date %} → {{ lv.end_date|mdy }}{% endif %}</td>
-        <td>{{ lv.type }}</td>
+        <td>{{ lv.type }}{% if lv.relation %} <span class="muted">({{ lv.relation }})</span>{% endif %}</td>
         <td>{{ 'full day' if lv.minutes_per_day is none else lv.minutes_per_day|hm }}</td>
         <td class="small">{{ lv.note }}
           {% if lv.status != 'requested' and lv.review_note %}<div class="muted">Admin: {{ lv.review_note }}</div>{% endif %}
+          {% if lv.status == 'approved' and lv.approved_minutes_per_day is not none and lv.approved_minutes_per_day != lv.minutes_per_day %}
+          <div class="muted">Approved for {{ lv.approved_minutes_per_day|hm }}/day (partial).</div>
+          {% endif %}
         </td>
         <td>
           {% if lv.status == 'approved' %}<span class="badge b-complete">approved</span>

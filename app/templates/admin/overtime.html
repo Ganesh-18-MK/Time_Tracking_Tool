@@ -8,6 +8,126 @@
   worked and how much of it was pre-approved.</p>
 
 <div class="card">
+  <details {{ 'open' if link_target }}>
+    <summary><h2 style="display:inline">Compensation links</h2> <span class="muted small">— click to view</span></summary>
+    <p class="small muted" style="margin:6px 0 10px">Every manual shortfall/surplus link across
+      {% if emps %}your team{% else %}the org{% endif %} — the same rows Person Detail shows one employee at a
+      time, gathered here so you don't have to open each person separately. Removing a link is still Person
+      Detail-only (that's also where you see the day status it affects); creating one can be done right below.</p>
+    {% if comp_links %}
+    <table>
+      <thead><tr><th>Employee</th><th>Shortfall</th><th>Made up on</th><th>Status</th><th>Note</th><th>Linked by</th></tr></thead>
+      <tbody>
+        {% for lk, sdates in comp_links %}
+        <tr>
+          <td><a href="/admin/person/{{ lk.employee_id }}">{{ lk.employee.name }}</a></td>
+          <td class="nowrap">{{ lk.shortfall_date|mdy }}</td>
+          <td>{% for s in sdates %}{{ s|mdy }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+          <td>
+            {# An employee-requested match (status='requested') hasn't been
+               evaluated yet — engine.evaluate_link() only runs from
+               approve_complink(), never at request time — so showing
+               fully/partial here (which reads lk.fully_compensated, still
+               False/unset) would misleadingly imply it's already in effect.
+               Ganesh, 2026-08-22: admin wasn't being notified of these at
+               all (no nav badge counted them) and this table made a still-
+               pending request look identical to an already-approved link. #}
+            {% if lk.status == 'requested' %}
+            <span class="badge b-pending">pending approval</span>
+            <a href="/admin/overtime" class="small">review ↓</a>
+            {% elif lk.status == 'rejected' %}
+            <span class="badge b-missing">rejected</span>
+            {% elif lk.fully_compensated %}
+            <span class="badge b-complete">fully</span>
+            {% else %}
+            <span class="badge b-partial">partial</span>
+            {% endif %}
+          </td>
+          <td class="small">{{ lk.note }}</td>
+          <td class="small muted">{{ lk.linked_by }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="muted small">No compensation links yet.</p>{% endif %}
+
+    <h3>Link a shortfall to make-up day(s)</h3>
+    <form method="get" action="/admin/overtime" class="formrow">
+      <input type="hidden" name="ym" value="{{ ym }}">
+      <div>
+        <label>Employee</label>
+        <select name="employee_id" onchange="this.form.submit()">
+          <option value="">— choose —</option>
+          {% for e in emps %}
+          <option value="{{ e.id }}" {{ 'selected' if link_target and link_target.id == e.id }}>{{ e.name }}{% if e.department %} ({{ e.department }}){% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </form>
+
+    {% if link_target %}
+      <p class="small muted" style="margin:10px 0 6px">{{ link_target.name }} — {{ month_label(year, month) }}
+        (use ← prev / next → below to pick a different month before linking).</p>
+      <form method="post" action="/admin/person/{{ link_target.id }}/complink" class="formrow">
+        <input type="hidden" name="ym" value="{{ ym }}">
+        <input type="hidden" name="return_to" value="overtime">
+        <div>
+          <label>Shortfall day</label>
+          <select name="shortfall_date" required>
+            <option value="">— choose —</option>
+            {% for r in link_shortfalls %}
+            <option value="{{ r.date.isoformat() }}">{{ r.date|mdy }} ({{ r.variance_minutes|hm_signed }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div style="flex:1 1 260px">
+          <label>Surplus day(s) — tick all that apply, they add up (this month only)</label>
+          {% if link_surpluses %}
+          <div>
+            {% for s in link_surpluses %}
+            <label style="display:inline-block;margin:2px 10px 2px 0">
+              <input type="checkbox" name="surplus_dates" value="{{ s.date.isoformat() }}">
+              {{ s.date|mdy }} ({{ s.variance_minutes|hm_signed }})
+            </label>
+            {% endfor %}
+          </div>
+          {% else %}<p class="muted small" style="margin:4px 0">No surplus days for {{ link_target.name }} this month yet.</p>{% endif %}
+        </div>
+        <div><label>Note</label><input name="note"></div>
+        <div><button class="small" {% if not link_shortfalls %}disabled title="No shortfall days for {{ link_target.name }} this month"{% endif %}>Link</button></div>
+      </form>
+    {% endif %}
+  </details>
+</div>
+
+<div class="card">
+  <h2>Who worked overtime — {{ month_label(year, month) }}</h2>
+  <p class="small muted" style="margin:-4px 0 10px">From completed Punch In/Out vs. each day's target — same figures
+    Reports → Attendance computes. "Approved" only counts overtime on days inside one of that employee's approved
+    date ranges above; the rest is worked but not (yet) pre-approved.</p>
+  <p style="margin:0 0 10px">
+    <a class="btn secondary small" href="/admin/overtime?ym={{ prev_ym }}{% if link_target %}&employee_id={{ link_target.id }}{% endif %}">← prev</a>
+    <a class="btn secondary small" href="/admin/overtime?ym={{ next_ym }}{% if link_target %}&employee_id={{ link_target.id }}{% endif %}">next →</a>
+  </p>
+  {% if overtime_rows %}
+  <table>
+    <thead><tr><th>Employee</th><th>Department</th><th>Overtime worked</th><th>Approved</th><th>Not yet approved</th></tr></thead>
+    <tbody>
+      {% for r in overtime_rows %}
+      <tr>
+        <td><a href="/admin/person/{{ r.employee.id }}">{{ r.employee.name }}</a></td>
+        <td>{{ r.department }}</td>
+        <td class="nowrap"><strong>{{ r.overtime_minutes|hm }}</strong></td>
+        <td class="nowrap">{{ r.approved_overtime_minutes|hm if r.approved_overtime_minutes else '—' }}</td>
+        <td class="nowrap">{{ (r.overtime_minutes - r.approved_overtime_minutes)|hm if r.overtime_minutes > r.approved_overtime_minutes else '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted small">No overtime worked this month yet.</p>{% endif %}
+</div>
+
+<div class="card">
   <h2>Grant overtime directly</h2>
   <p class="small muted" style="margin:-4px 0 10px">For approving ahead of a known busy period, or reviewing after
     the fact — no employee request needed either way. Start/end can be in the past.</p>
@@ -29,7 +149,7 @@
 
 {% if pending %}
 <div class="card">
-  <h2>Pending requests ({{ pending|length }})</h2>
+  <h2>Pending overtime requests ({{ pending|length }})</h2>
   <table>
     <thead><tr><th>Employee</th><th>Dates</th><th>Note</th><th>Decision</th></tr></thead>
     <tbody>
@@ -52,6 +172,42 @@
       {% endfor %}
     </tbody>
   </table>
+</div>
+{% endif %}
+
+{% if pending_matches %}
+<div class="card">
+  {# Overtime ↔ Missed Hours match requests (Ganesh, 2026-08-22 — moved
+     here from Leave Management: these are overtime decisions, not leave
+     ones). Same CompensationLink rows/routes as before, just relocated —
+     see overtime_page()'s pending_matches, super-admin only. #}
+  <h2>Overtime ↔ Missed Hours match requests ({{ pending_matches|length }})</h2>
+  <table>
+    <thead><tr><th>Employee</th><th>Missed day</th><th>Matched against</th><th>Note</th><th>Decision</th></tr></thead>
+    <tbody>
+      {% for lk, surplus_dates in pending_matches %}
+      <tr>
+        <td><a href="/admin/person/{{ lk.employee_id }}">{{ lk.employee.name }}</a></td>
+        <td class="nowrap">{{ lk.shortfall_date|mdy }}</td>
+        <td class="small">{{ surplus_dates|map('mdy')|join(', ') }}</td>
+        <td class="small">{{ lk.note }}</td>
+        <td class="nowrap">
+          <form method="post" action="/admin/complink/{{ lk.id }}/approve" style="display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap;max-width:260px">
+            <input name="review_note" placeholder="Note (optional)" style="flex:1;min-width:120px">
+            <button class="small">Approve</button>
+          </form>
+          <form method="post" action="/admin/complink/{{ lk.id }}/reject" class="inline">
+            <input type="hidden" name="review_note" value="">
+            <button type="button" class="small secondary"
+              onclick="const n=prompt('Reason for declining (optional):'); if(n!==null){this.previousElementSibling.value=n; this.form.submit();}">Reject</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="small muted" style="margin:8px 0 0">Approving re-checks that every matched day falls inside the
+    compensation window (~21 days, or the same calendar month as the missed day) before it takes effect.</p>
 </div>
 {% endif %}
 
@@ -79,9 +235,10 @@
 </div>
 
 <div class="card">
-  <h2>Pending requests</h2>
-  <p class="small muted" style="margin:-4px 0 10px">Requests not yet approved or rejected — same list as
-  "Pending requests" above, searchable here. Use the Approve/Reject buttons above to act on one.</p>
+  <h2>Pending overtime requests</h2>
+  <p class="small muted" style="margin:-4px 0 10px">Overtime pre-approval requests not yet approved or rejected —
+  same list as "Pending overtime requests" above, searchable here. Use the Approve/Reject buttons above to act on
+  one. (Missed Hours match requests are a separate card further up — this search doesn't include those.)</p>
   <div class="searchbar">
     <input type="search" data-filter-table="overtime-pending-table" placeholder="Search pending overtime…">
   </div>

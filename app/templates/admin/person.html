@@ -40,166 +40,179 @@
   </div>
 </div>
 
+<div class="card">
+  <h2>Day statuses</h2>
+  <table>
+    <thead><tr><th>Date</th><th>Status</th><th>Act/Target</th><th>Var</th><th>Notes</th><th></th></tr></thead>
+    <tbody>
+      {% for r in statuses %}
+      {% set eff = r.effective_status(comp_erases) %}
+      <tr>
+        <td class="nowrap">{{ r.date.strftime('%a') }} {{ r.date|mdy }}</td>
+        <td><span class="badge b-{{ eff }}">{{ STATUS_NAMES.get(eff) }}</span>
+          {% if r.override_status %}<span class="mark" title="{{ r.override_reason }} — {{ r.override_by }}">⚑</span>{% endif %}
+          {% if r.compensated %}<span class="mark">↺</span>{% endif %}
+        </td>
+        <td class="nowrap">{{ r.actual_minutes|hm }} / {{ r.target_minutes|hm }}</td>
+        <td class="nowrap">{{ r.variance_minutes|hm_signed if r.variance_minutes is not none else '—' }}</td>
+        <td class="small muted">
+          {% if r.source == 'imported' %}legacy{% if r.imported_token %}: “{{ r.imported_token }}”{% endif %}{% endif %}
+          {% if r.override_status %}<div>⚑ was {{ STATUS_NAMES.get(r.status) }} — {{ r.override_reason }} ({{ r.override_by }})</div>{% endif %}
+        </td>
+        <td>
+          <details>
+            <summary class="small">override</summary>
+            <form method="post" action="/admin/person/{{ emp.id }}/override" class="formrow" style="margin-top:6px">
+              <input type="hidden" name="date" value="{{ r.date.isoformat() }}">
+              <input type="hidden" name="ym" value="{{ ym }}">
+              <div>
+                <label>Status</label>
+                <select name="status">
+                  <option value="">(clear override)</option>
+                  {% for s in STATUSES %}<option value="{{ s }}" {{ 'selected' if r.override_status == s }}>{{ STATUS_NAMES.get(s) }}</option>{% endfor %}
+                </select>
+              </div>
+              <div style="flex:1"><label>Reason (required)</label>
+                <input name="reason" placeholder="Why — this changes the strike count" style="width:100%"></div>
+              <div><button class="small">Apply</button></div>
+            </form>
+          </details>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if comp.days %}
+<div class="card">
+  <h2 style="margin-top:0">Punch Clock compensation (automatic)</h2>
+  <p class="small muted" style="margin:-4px 0 10px">Separate from the manual Compensation links below —
+  this comes from Punch In/Out shortfall vs. overtime and updates on its own, no admin action needed.</p>
+  <table>
+    <thead><tr><th>Date</th><th>Target</th><th>Punched</th><th>Shortfall</th><th>Overtime</th></tr></thead>
+    <tbody>
+      {% for d in comp.days|reverse %}
+      <tr>
+        <td class="nowrap">{{ d.date.strftime('%a') }} {{ d.date|mdy }}</td>
+        <td>{{ d.target|hm }}</td>
+        <td>{{ d.punched|hm }}</td>
+        <td>{{ d.shortfall|hm if d.shortfall else '—' }}</td>
+        <td>{{ d.overtime|hm if d.overtime else '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Compensation links</h2>
+  {% if links %}
+  <table>
+    <thead><tr><th>Shortfall</th><th>Made up on</th><th>Status</th><th>Note</th><th></th></tr></thead>
+    <tbody>
+    {% for lk, sdates in links %}
+    <tr>
+      <td class="nowrap">{{ lk.shortfall_date|mdy }}</td>
+      <td>{% for s in sdates %}{{ s|mdy }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+      <td>
+        {# Same status-aware badge as Overtime Management's identical table
+           (Ganesh, 2026-08-22) — a 'requested' link hasn't been through
+           engine.evaluate_link() yet, so fully/partial would be showing a
+           coverage result that doesn't exist yet. #}
+        {% if lk.status == 'requested' %}
+        <span class="badge b-pending">pending approval</span>
+        <a href="/admin/overtime" class="small">review →</a>
+        {% elif lk.status == 'rejected' %}
+        <span class="badge b-missing">rejected</span>
+        {% elif lk.fully_compensated %}
+        <span class="badge b-complete">fully</span>
+        {% else %}
+        <span class="badge b-partial">partial</span>
+        {% endif %}
+      </td>
+      <td class="small">{{ lk.note }} <span class="muted">— {{ lk.linked_by }}</span></td>
+      <td><form method="post" action="/admin/complink/{{ lk.id }}/delete" class="inline">
+        <input type="hidden" name="ym" value="{{ ym }}">
+        <button class="small secondary" onclick="return confirm('Remove link?')">✕</button></form></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted small">None yet.</p>{% endif %}
+
+  <h3>Link a shortfall to make-up day(s)</h3>
+  <form method="post" action="/admin/person/{{ emp.id }}/complink" class="formrow">
+    <input type="hidden" name="ym" value="{{ ym }}">
+    <div>
+      <label>Shortfall day</label>
+      <select name="shortfall_date" required>
+        <option value="">— choose —</option>
+        {% for r in shortfalls %}
+        <option value="{{ r.date.isoformat() }}">{{ r.date|mdy }} ({{ r.variance_minutes|hm_signed }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="flex:1 1 260px">
+      <label>Surplus day(s) — tick all that apply, they add up (this month only)</label>
+      {% if surpluses %}
+      <div>
+        {% for s in surpluses %}
+        <label style="display:inline-block;margin:2px 10px 2px 0">
+          <input type="checkbox" name="surplus_dates" value="{{ s.date.isoformat() }}">
+          {{ s.date|mdy }} ({{ s.variance_minutes|hm_signed }})
+        </label>
+        {% endfor %}
+      </div>
+      {% else %}<p class="muted small" style="margin:4px 0">No surplus days this month yet.</p>{% endif %}
+    </div>
+    <div><label>Note</label><input name="note"></div>
+    <div><button class="small">Link</button></div>
+  </form>
+</div>
+
 <div class="cols">
   <div class="card">
-    <h2>Day statuses</h2>
+    <h2>Leave history</h2>
     <table>
-      <thead><tr><th>Date</th><th>Status</th><th>Act/Target</th><th>Var</th><th>Notes</th><th></th></tr></thead>
+      <thead><tr><th>When</th><th>Type</th><th>Hours</th><th>Note</th></tr></thead>
       <tbody>
-        {% for r in statuses %}
-        {% set eff = r.effective_status(comp_erases) %}
+        {% for lv in leaves[:20] %}
         <tr>
-          <td class="nowrap">{{ r.date.strftime('%a') }} {{ r.date|mdy }}</td>
-          <td><span class="badge b-{{ eff }}">{{ STATUS_NAMES.get(eff) }}</span>
-            {% if r.override_status %}<span class="mark" title="{{ r.override_reason }} — {{ r.override_by }}">⚑</span>{% endif %}
-            {% if r.compensated %}<span class="mark">↺</span>{% endif %}
-          </td>
-          <td class="nowrap">{{ r.actual_minutes|hm }} / {{ r.target_minutes|hm }}</td>
-          <td class="nowrap">{{ r.variance_minutes|hm_signed if r.variance_minutes is not none else '—' }}</td>
-          <td class="small muted">
-            {% if r.source == 'imported' %}legacy{% if r.imported_token %}: “{{ r.imported_token }}”{% endif %}{% endif %}
-            {% if r.override_status %}<div>⚑ was {{ STATUS_NAMES.get(r.status) }} — {{ r.override_reason }} ({{ r.override_by }})</div>{% endif %}
-          </td>
-          <td>
-            <details>
-              <summary class="small">override</summary>
-              <form method="post" action="/admin/person/{{ emp.id }}/override" class="formrow" style="margin-top:6px">
-                <input type="hidden" name="date" value="{{ r.date.isoformat() }}">
-                <input type="hidden" name="ym" value="{{ ym }}">
-                <div>
-                  <label>Status</label>
-                  <select name="status">
-                    <option value="">(clear override)</option>
-                    {% for s in STATUSES %}<option value="{{ s }}" {{ 'selected' if r.override_status == s }}>{{ STATUS_NAMES.get(s) }}</option>{% endfor %}
-                  </select>
-                </div>
-                <div style="flex:1"><label>Reason (required)</label>
-                  <input name="reason" placeholder="Why — this changes the strike count" style="width:100%"></div>
-                <div><button class="small">Apply</button></div>
-              </form>
-            </details>
-          </td>
+          <td class="nowrap">{{ lv.start_date|mdy }}{% if lv.end_date != lv.start_date %} → {{ lv.end_date|mdy }}{% endif %}</td>
+          <td>{{ lv.type }}</td>
+          <td>{{ 'full day' if lv.minutes_per_day is none else lv.minutes_per_day|hm }}</td>
+          <td class="small">{{ lv.note }}{% if lv.imported %} <span class="muted">(legacy)</span>{% endif %}</td>
         </tr>
+        {% else %}
+        <tr><td colspan="4" class="muted">No leave records.</td></tr>
         {% endfor %}
       </tbody>
     </table>
+    <p class="small"><a href="/admin/leave">Add leave →</a></p>
   </div>
 
-  <div style="flex:1 1 420px">
-    {% if comp.days %}
-    <div class="card">
-      <h2 style="margin-top:0">Punch Clock compensation (automatic)</h2>
-      <p class="small muted" style="margin:-4px 0 10px">Separate from the manual Compensation links below —
-      this comes from Punch In/Out shortfall vs. overtime and updates on its own, no admin action needed.</p>
-      <table>
-        <thead><tr><th>Date</th><th>Target</th><th>Punched</th><th>Shortfall</th><th>Overtime</th></tr></thead>
-        <tbody>
-          {% for d in comp.days|reverse %}
-          <tr>
-            <td class="nowrap">{{ d.date.strftime('%a') }} {{ d.date|mdy }}</td>
-            <td>{{ d.target|hm }}</td>
-            <td>{{ d.punched|hm }}</td>
-            <td>{{ d.shortfall|hm if d.shortfall else '—' }}</td>
-            <td>{{ d.overtime|hm if d.overtime else '—' }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% endif %}
-
-    <div class="card">
-      <h2>Compensation links</h2>
-      {% if links %}
-      <table>
-        <thead><tr><th>Shortfall</th><th>Made up on</th><th>Covered</th><th>Note</th><th></th></tr></thead>
-        <tbody>
-        {% for lk, sdates in links %}
+  <div class="card">
+    <h2>Breaks ({{ month_label(year, month) }})</h2>
+    <p class="small muted">Allowance: {{ max_break_minutes }} min/day — time over it extends that day's target.</p>
+    <table>
+      <thead><tr><th>Date</th><th>Type</th><th>When</th><th>Duration</th></tr></thead>
+      <tbody>
+        {% for b in breaks[:40] %}
         <tr>
-          <td class="nowrap">{{ lk.shortfall_date|mdy }}</td>
-          <td>{% for s in sdates %}{{ s|mdy }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
-          <td>{% if lk.fully_compensated %}<span class="badge b-complete">fully</span>{% else %}<span class="badge b-partial">partial</span>{% endif %}</td>
-          <td class="small">{{ lk.note }} <span class="muted">— {{ lk.linked_by }}</span></td>
-          <td><form method="post" action="/admin/complink/{{ lk.id }}/delete" class="inline">
-            <input type="hidden" name="ym" value="{{ ym }}">
-            <button class="small secondary" onclick="return confirm('Remove link?')">✕</button></form></td>
+          <td class="nowrap">{{ b.date|mdy }}</td>
+          <td>{{ b.break_type }}</td>
+          <td class="nowrap">
+            {{ b.start_minute|clock }}–{{ b.end_minute|clock if b.end_minute is not none else 'in progress' }}
+          </td>
+          <td>{{ b.duration_minutes|hm if b.duration_minutes is not none else '—' }}</td>
         </tr>
+        {% else %}
+        <tr><td colspan="4" class="muted">No breaks logged.</td></tr>
         {% endfor %}
-        </tbody>
-      </table>
-      {% else %}<p class="muted small">None yet.</p>{% endif %}
-
-      <h3>Link a shortfall to make-up day(s)</h3>
-      <form method="post" action="/admin/person/{{ emp.id }}/complink" class="formrow">
-        <input type="hidden" name="ym" value="{{ ym }}">
-        <div>
-          <label>Shortfall day</label>
-          <select name="shortfall_date" required>
-            <option value="">— choose —</option>
-            {% for r in shortfalls %}
-            <option value="{{ r.date.isoformat() }}">{{ r.date|mdy }} ({{ r.variance_minutes|hm_signed }})</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div style="flex:1 1 260px">
-          <label>Surplus day(s) — tick all that apply, they add up (this month only)</label>
-          {% if surpluses %}
-          <div>
-            {% for s in surpluses %}
-            <label style="display:inline-block;margin:2px 10px 2px 0">
-              <input type="checkbox" name="surplus_dates" value="{{ s.date.isoformat() }}">
-              {{ s.date|mdy }} ({{ s.variance_minutes|hm_signed }})
-            </label>
-            {% endfor %}
-          </div>
-          {% else %}<p class="muted small" style="margin:4px 0">No surplus days this month yet.</p>{% endif %}
-        </div>
-        <div><label>Note</label><input name="note"></div>
-        <div><button class="small">Link</button></div>
-      </form>
-    </div>
-
-    <div class="card">
-      <h2>Leave history</h2>
-      <table>
-        <thead><tr><th>When</th><th>Type</th><th>Hours</th><th>Note</th></tr></thead>
-        <tbody>
-          {% for lv in leaves[:20] %}
-          <tr>
-            <td class="nowrap">{{ lv.start_date|mdy }}{% if lv.end_date != lv.start_date %} → {{ lv.end_date|mdy }}{% endif %}</td>
-            <td>{{ lv.type }}</td>
-            <td>{{ 'full day' if lv.minutes_per_day is none else lv.minutes_per_day|hm }}</td>
-            <td class="small">{{ lv.note }}{% if lv.imported %} <span class="muted">(legacy)</span>{% endif %}</td>
-          </tr>
-          {% else %}
-          <tr><td colspan="4" class="muted">No leave records.</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      <p class="small"><a href="/admin/leave">Add leave →</a></p>
-    </div>
-
-    <div class="card">
-      <h2>Breaks ({{ month_label(year, month) }})</h2>
-      <p class="small muted">Allowance: {{ max_break_minutes }} min/day — time over it extends that day's target.</p>
-      <table>
-        <thead><tr><th>Date</th><th>Type</th><th>When</th><th>Duration</th></tr></thead>
-        <tbody>
-          {% for b in breaks[:40] %}
-          <tr>
-            <td class="nowrap">{{ b.date|mdy }}</td>
-            <td>{{ b.break_type }}</td>
-            <td class="nowrap">
-              {{ b.start_minute|clock }}–{{ b.end_minute|clock if b.end_minute is not none else 'in progress' }}
-            </td>
-            <td>{{ b.duration_minutes|hm if b.duration_minutes is not none else '—' }}</td>
-          </tr>
-          {% else %}
-          <tr><td colspan="4" class="muted">No breaks logged.</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
+      </tbody>
+    </table>
   </div>
 </div>
 
@@ -228,7 +241,7 @@
   <table>
     <tbody>
       {% for e in items %}
-      <tr>
+      <tr class="{{ 'overtime-row' if e.is_overtime else '' }}" {% if e.is_overtime %}title="Logged after that day's target was already reached"{% endif %}>
         <td class="nowrap">{{ e.start_minute|clock }}–{{ e.end_minute|clock }}</td>
         <td class="nowrap"><strong>{{ e.duration_minutes|hm }}</strong></td>
         <td>{{ e.project.name }}</td>

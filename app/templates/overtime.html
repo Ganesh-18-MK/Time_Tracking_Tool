@@ -47,4 +47,66 @@
     </tbody>
   </table>
 </div>
+
+{% if LEAVE_MANAGEMENT_V2_ENABLED %}
+{# Overtime-for-Missed-Hours match request (Ganesh, 2026-08-22 — moved
+   here from /leave: it's an overtime decision, not a leave one, matching
+   the admin-side move of the same feature's decision card). See
+   my_overtime()'s match_shortfalls/match_surpluses/match_links. #}
+<div class="card">
+  <h2>Request an Overtime ↔ Missed Hours match</h2>
+  <p class="small muted">Missed part of a day but made it up with extra time on another day (within about
+    3 weeks, or the same calendar month)? Request a match here — an admin approves or declines it.</p>
+  {% if not match_shortfalls %}
+  <p class="small muted">No missed-hours days in the last 60 days to match.</p>
+  {% elif not match_surpluses %}
+  <p class="small muted">No overtime/surplus days in the last 60 days available to match against.</p>
+  {% else %}
+  <form method="post" action="/leave/match-request" class="formrow">
+    <div>
+      <label>Missed Hours day</label>
+      <select name="shortfall_date">
+        {% for r in match_shortfalls %}
+        <option value="{{ r.date.isoformat() }}">{{ r.date|mdy }} ({{ r.variance_minutes|hm_signed }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="flex:1">
+      <label>Overtime day(s) to match against</label>
+      <div class="formrow" style="gap:10px">
+        {% for r in match_surpluses %}
+        <label class="small" style="display:flex;align-items:center;gap:4px;font-weight:normal">
+          <input type="checkbox" name="surplus_dates" value="{{ r.date.isoformat() }}">
+          {{ r.date|mdy }} ({{ r.variance_minutes|hm_signed }})
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+    <div style="flex:1"><label>Note</label><input name="note" style="width:100%"></div>
+    <div><button>Request match</button></div>
+  </form>
+  {% endif %}
+
+  {% if match_links %}
+  <table style="margin-top:14px">
+    <thead><tr><th>Missed day</th><th>Matched against</th><th>Note</th><th>Status</th><th>Admin note</th></tr></thead>
+    <tbody>
+      {% for lk, surplus_dates in match_links %}
+      <tr>
+        <td class="nowrap">{{ lk.shortfall_date|mdy }}</td>
+        <td class="small">{{ surplus_dates|map('mdy')|join(', ') }}</td>
+        <td class="small">{{ lk.note }}</td>
+        <td>
+          {% if lk.status == 'approved' %}<span class="badge b-complete">approved</span>
+          {% elif lk.status == 'rejected' %}<span class="badge b-missing">rejected</span>
+          {% else %}<span class="badge b-partial">pending</span>{% endif %}
+        </td>
+        <td class="small muted">{{ lk.review_note or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endif %}
 {% endblock %}

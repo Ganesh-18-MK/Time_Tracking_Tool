@@ -11,15 +11,22 @@ from openpyxl import load_workbook
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app import bulk_upload, compensation, engine, holiday_bulk_upload, leave_bulk_upload, lists_bulk_upload, models as m
+from app import bulk_upload, compensation, engine, holiday_bulk_upload, leave_bulk_upload, lists_bulk_upload, models as m, reports
 from app.auth import Forbidden, admin_department_scope, led_by, require_admin, require_super_admin
 from app.db import get_db
-from app.templating import HOLIDAY_MANAGEMENT_ENABLED, TICKETING_ENABLED, flash, render
+from app.templating import (
+    HOLIDAY_MANAGEMENT_ENABLED,
+    LEAVE_MANAGEMENT_V2_ENABLED,
+    TICKETING_ENABLED,
+    flash,
+    render,
+)
 from app.util import (
     FormError,
     ROLE_EMPLOYEE,
     audit,
     next_employee_code,
+    overtime_row_flags,
     parse_date_field,
     parse_hours_field,
     parse_int_field,
@@ -217,6 +224,21 @@ def recompute(
     return RedirectResponse(f"/admin?ym={ym}", status_code=303)
 
 
+def _shortfalls_surpluses(statuses, comp_erases: bool):
+    """Which DayStatus rows in a month are shortfall days (candidates to
+    link FROM) vs. surplus days (candidates to link AS make-up) for a
+    Compensation Link. Pulled out of person() below (Ganesh, 2026-08-21) so
+    Overtime Management's own quick-link picker can compute the same thing
+    for whichever employee is selected there, without duplicating the
+    variance/status logic a second time — see person() and overtime_page()."""
+    shortfalls = [
+        r for r in statuses
+        if (r.variance_minutes or 0) < 0 and r.effective_status(comp_erases) in m.STRIKE_STATUSES
+    ]
+    surpluses = [r for r in statuses if (r.variance_minutes or 0) > 0]
+    return shortfalls, surpluses
+
+
 # --------------------------------------------------------------------------
 # Person detail: full log, ledger, leave history, overrides, comp links
 # --------------------------------------------------------------------------
@@ -271,6 +293,20 @@ def person(
     by_day = {}
     for e in entries:
         by_day.setdefault(e.date, []).append(e)
+    # Overtime-colored task log rows (Ganesh, 2026-08-21) — same treatment as
+    # Today's live view (see employee.py's _day_context), just driven by each
+    # day's already-computed DayStatus.target_minutes instead of a fresh
+    # leave/break recompute, since this route already ran recompute_employee
+    # above and target_minutes reflects the identical leave/break-adjusted
+    # target. Per-day entries here are still ascending by start_minute (the
+    # `entries` query orders by date desc, start_minute asc, and grouping
+    # preserves that order within each date), so util.overtime_row_flags()'s
+    # cumulative-sum assumption holds the same way it does on Today.
+    status_by_day = {s.date: s for s in statuses}
+    for day, items in by_day.items():
+        day_target = status_by_day[day].target_minutes if day in status_by_day else 0
+        for e, is_ot in zip(items, overtime_row_flags([x.duration_minutes for x in items], day_target)):
+            e.is_overtime = is_ot
     leaves = list(
         db.execute(
             select(m.LeaveRecord)
@@ -294,11 +330,7 @@ def person(
     )
     comp_erases = cfg.get("comp_erases_strike") == "1"
     strikes = engine.strikes_in(statuses, comp_erases)
-    shortfalls = [
-        r for r in statuses
-        if (r.variance_minutes or 0) < 0 and r.effective_status(comp_erases) in m.STRIKE_STATUSES
-    ]
-    surpluses = [r for r in statuses if (r.variance_minutes or 0) > 0]
+    shortfalls, surpluses = _shortfalls_surpluses(statuses, comp_erases)
     comp = compensation.monthly_summary(db, emp, year, month, today)
     (py, pm), (ny, nm) = prev_next_month(year, month)
     return render(
@@ -435,6 +467,17 @@ def override_day(
     return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
 
 
+def _complink_redirect(emp_id: int, ym: str, return_to: str) -> str:
+    """Where add_complink sends the admin back to. Defaults to Person Detail
+    (the original, still-used flow) — Overtime Management's quick-link form
+    (Ganesh, 2026-08-21) sets return_to=overtime so creating a link from
+    there doesn't bounce the admin to a page they didn't come from; it also
+    keeps the same employee selected so the result shows immediately."""
+    if return_to == "overtime":
+        return f"/admin/overtime?ym={ym}&employee_id={emp_id}"
+    return f"/admin/person/{emp_id}?ym={ym}"
+
+
 @router.post("/person/{emp_id}/complink")
 def add_complink(
     emp_id: int,
@@ -443,9 +486,11 @@ def add_complink(
     surplus_dates: list = Form([]),  # checkboxes, same convention as assignments_save's project_ids
     note: str = Form(""),
     ym: str = Form(""),
+    return_to: str = Form(""),
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
+    dest = _complink_redirect(emp_id, ym, return_to)
     try:
         shortfall = parse_date_field(shortfall_date, "Shortfall date")
         surplus = sorted({dt.date.fromisoformat(x.strip()).isoformat()
@@ -453,16 +498,16 @@ def add_complink(
     except (FormError, ValueError) as e:
         flash(request, e.message if isinstance(e, FormError)
               else "Surplus dates must be valid ISO dates.", "err")
-        return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+        return RedirectResponse(dest, status_code=303)
     if not surplus:
         flash(request, "Pick at least one surplus day.", "err")
-        return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+        return RedirectResponse(dest, status_code=303)
     # a surplus day backs at most one shortfall (keeps the math honest)
     taken = engine.surplus_links_by_date(db, emp_id)
     clash = [s for s in surplus if dt.date.fromisoformat(s) in taken]
     if clash:
         flash(request, f"Surplus day(s) already linked to another shortfall: {', '.join(clash)}", "err")
-        return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+        return RedirectResponse(dest, status_code=303)
     link = m.CompensationLink(
         employee_id=emp_id,
         shortfall_date=shortfall,
@@ -485,7 +530,7 @@ def add_complink(
            if link.fully_compensated else " — not yet fully covered (kept as-is)."),
         "ok",
     )
-    return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+    return RedirectResponse(dest, status_code=303)
 
 
 @router.post("/complink/{link_id}/delete")
@@ -512,6 +557,84 @@ def delete_complink(
               {"shortfall": link.shortfall_date.isoformat()})
         return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
     return RedirectResponse("/admin", status_code=303)
+
+
+# Requirement 9 (Overtime-for-Missed-Hours, employee-requested match,
+# Ganesh, 2026-08-21) — the employee submits the match via
+# POST /leave/match-request (app/routes/employee.py), which creates a
+# CompensationLink with status=LEAVE_REQUESTED, requested_by_employee=True.
+# These two routes are the admin decision on that request: approve (which
+# re-checks engine.compensation_window_ok for every surplus date, then runs
+# the same engine.evaluate_link the admin-direct add_complink path already
+# uses) or reject (no engine side effects — the day's compliance status is
+# untouched since it was never marked compensated).
+@router.post("/complink/{link_id}/approve")
+def approve_complink(
+    link_id: int,
+    request: Request,
+    review_note: str = Form(""),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    if not LEAVE_MANAGEMENT_V2_ENABLED:
+        raise HTTPException(status_code=404)
+    link = db.get(m.CompensationLink, link_id)
+    if link is None:
+        flash(request, "Match request not found.", "err")
+        return RedirectResponse("/admin/leave", status_code=303)
+    surplus_dates = [dt.date.fromisoformat(x) for x in json.loads(link.surplus_dates or "[]")]
+    bad = [s.isoformat() for s in surplus_dates if not engine.compensation_window_ok(link.shortfall_date, s)]
+    if bad:
+        flash(
+            request,
+            f"Can't approve — surplus day(s) fall outside the compensation window: {', '.join(bad)}",
+            "err",
+        )
+        return RedirectResponse("/admin/leave", status_code=303)
+    link.status = m.LEAVE_APPROVED
+    link.reviewed_by = admin.name
+    link.reviewed_at = dt.datetime.utcnow()
+    link.review_note = review_note.strip()
+    db.commit()
+    engine.evaluate_link(db, link)
+    audit(
+        db, admin.name, "approve_compensation_match", "CompensationLink", link.id,
+        {"shortfall": link.shortfall_date.isoformat(), "surplus": [s.isoformat() for s in surplus_dates],
+         "fully": link.fully_compensated, "review_note": review_note.strip()},
+    )
+    flash(
+        request,
+        "Match approved"
+        + (" — shortfall fully covered, day now reads Complete." if link.fully_compensated
+           else " — not yet fully covered (kept as-is)."),
+        "ok",
+    )
+    return RedirectResponse("/admin/leave", status_code=303)
+
+
+@router.post("/complink/{link_id}/reject")
+def reject_complink(
+    link_id: int,
+    request: Request,
+    review_note: str = Form(""),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    if not LEAVE_MANAGEMENT_V2_ENABLED:
+        raise HTTPException(status_code=404)
+    link = db.get(m.CompensationLink, link_id)
+    if link is None:
+        flash(request, "Match request not found.", "err")
+        return RedirectResponse("/admin/leave", status_code=303)
+    link.status = m.LEAVE_REJECTED
+    link.reviewed_by = admin.name
+    link.reviewed_at = dt.datetime.utcnow()
+    link.review_note = review_note.strip()
+    db.commit()
+    audit(db, admin.name, "reject_compensation_match", "CompensationLink", link.id,
+          {"shortfall": link.shortfall_date.isoformat(), "review_note": review_note.strip()})
+    flash(request, "Match request declined.", "ok")
+    return RedirectResponse("/admin/leave", status_code=303)
 
 
 # --------------------------------------------------------------------------
@@ -559,6 +682,7 @@ def _emp_from_form(
     db: Session, emp: m.Employee, name, email, department, designation, target_hours,
     work_days, start_date, active, tracked, role, dob="", phone="", country_code="",
     reports_to_id="", is_developer=False, location=None,
+    is_on_pip=None, probation_days="",
 ):
     emp.name = name.strip()
     # Work location / country (Ganesh, 2026-08-12) — admin-set here as an
@@ -625,6 +749,25 @@ def _emp_from_form(
         lead = db.get(m.Employee, rid)
         rid = rid if lead is not None and lead.is_admin else None
     emp.reports_to_id = rid or None
+    # Leave Management V2 (Ganesh, 2026-08-21) — same "guarded by the flag"
+    # convention as is_developer/TICKETING_ENABLED just above: while
+    # LEAVE_MANAGEMENT_V2_ENABLED is off, roster_edit.html doesn't render
+    # these fields at all, so is_on_pip stays None here and nothing is
+    # touched — leave whatever was already stored untouched rather than
+    # silently reset it every save.
+    if is_on_pip is not None:
+        emp.is_on_pip = bool(is_on_pip)
+        probation_days = (probation_days or "").strip()
+        if probation_days == "":
+            emp.probation_days = None  # explicit blank -> "use the company default"
+        else:
+            try:
+                pd = int(probation_days)
+            except ValueError:
+                raise FormError("Probation days must be a whole number (blank = use the company default).")
+            if pd < 0:
+                raise FormError("Probation days can't be negative.")
+            emp.probation_days = pd
 
 
 @router.post("/roster/add")
@@ -709,9 +852,14 @@ def roster_edit_page(
             .order_by(m.Employee.name)
         ).scalars()
     )
+    cfg = engine.get_config(db)
     return render(
         request, "admin/roster_edit.html",
-        {"user": admin, "emp": emp, "lead_choices": lead_choices, "locations": m.LOCATIONS}, db=db,
+        {
+            "user": admin, "emp": emp, "lead_choices": lead_choices, "locations": m.LOCATIONS,
+            "leave_probation_days_default": engine.cfg_int(cfg, "probation_days_default"),
+        },
+        db=db,
     )
 
 
@@ -735,6 +883,8 @@ def roster_edit(
     reports_to_id: str = Form(""),
     is_developer: str = Form(""),
     location: str = Form(m.DEFAULT_LOCATION),
+    is_on_pip: str = Form(""),
+    probation_days: str = Form(""),
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
@@ -746,7 +896,7 @@ def roster_edit(
         "target": emp.daily_target_minutes, "work_days": emp.work_days,
         "active": emp.active, "tracked": emp.tracked, "is_admin": emp.is_admin,
         "is_super_admin": emp.is_super_admin, "is_developer": emp.is_developer,
-        "location": emp.location,
+        "location": emp.location, "is_on_pip": emp.is_on_pip, "probation_days": emp.probation_days,
     }
     try:
         _emp_from_form(db, emp, name, email, department, designation, target_hours,
@@ -758,7 +908,13 @@ def roster_edit(
                        # exactly as it was (see _emp_from_form's own guard); without
                        # this, every roster edit would silently reset location back
                        # to India regardless of what it was set to.
-                       location if HOLIDAY_MANAGEMENT_ENABLED else None)
+                       location if HOLIDAY_MANAGEMENT_ENABLED else None,
+                       # Same guard, same reasoning, for Leave Management V2's
+                       # PIP/probation fields — is_on_pip=None (not "0"/"1")
+                       # while the flag is off means _emp_from_form leaves
+                       # both untouched instead of resetting them.
+                       (is_on_pip == "1") if LEAVE_MANAGEMENT_V2_ENABLED else None,
+                       probation_days)
     except FormError as e:
         flash(request, e.message, "err")
         return RedirectResponse("/admin/roster", status_code=303)
@@ -1002,6 +1158,36 @@ def _pending_suggestions(db: Session, admin: m.Employee):
     return projects, tasks
 
 
+def _approved_suggestions(db: Session, admin: m.Employee):
+    """Suggestions that already went through this same queue and were
+    approved (Ganesh, 2026-08-21 — the page previously only ever showed
+    pending rows, so once approved a suggestion effectively disappeared
+    from view). created_by_employee_id is not null is what distinguishes
+    an employee suggestion from a Project/TaskType an admin added directly
+    via Lists (those default straight to LIST_APPROVED with no submitter —
+    see Project/TaskType docstrings) — without that filter this would just
+    be "every active project/task," which is already what Lists shows."""
+    scope = admin_department_scope(admin)
+    projects = list(
+        db.execute(
+            select(m.Project)
+            .where(m.Project.status == m.LIST_APPROVED, m.Project.created_by_employee_id.isnot(None))
+            .order_by(m.Project.reviewed_at.desc())
+        ).scalars()
+    )
+    tasks = list(
+        db.execute(
+            select(m.TaskType)
+            .where(m.TaskType.status == m.LIST_APPROVED, m.TaskType.created_by_employee_id.isnot(None))
+            .order_by(m.TaskType.reviewed_at.desc())
+        ).scalars()
+    )
+    if scope is not None:
+        projects = [p for p in projects if p.created_by and (p.created_by.department or "—") == scope]
+        tasks = [t for t in tasks if t.created_by and (t.created_by.department or "—") == scope]
+    return projects[:100], tasks[:100]
+
+
 @router.get("/suggestions")
 def suggestions_page(
     request: Request,
@@ -1009,9 +1195,13 @@ def suggestions_page(
     db: Session = Depends(get_db),
 ):
     projects, tasks = _pending_suggestions(db, admin)
+    approved_projects, approved_tasks = _approved_suggestions(db, admin)
     return render(
         request, "admin/suggestions.html",
-        {"user": admin, "projects": projects, "tasks": tasks}, db=db,
+        {
+            "user": admin, "projects": projects, "tasks": tasks,
+            "approved_projects": approved_projects, "approved_tasks": approved_tasks,
+        }, db=db,
     )
 
 
@@ -1278,6 +1468,22 @@ def leave_page(
         # recent rows before the scoping filter ever sees them
         pending = [lv for lv in pending if lv.employee_id in scoped_ids]
         approved = [lv for lv in approved if lv.employee_id in scoped_ids][:100]
+    if LEAVE_MANAGEMENT_V2_ENABLED:
+        cfg = engine.get_config(db)
+        today = today_local()
+        balances_v2 = {e.id: engine.leave_balance_v2(db, e, today, cfg) for e in emps}
+        # Overtime ↔ Missed Hours match requests moved to Overtime
+        # Management (Ganesh, 2026-08-22 — see overtime_page()'s
+        # pending_matches) since they're overtime decisions, not leave
+        # ones; leave.html no longer renders that card.
+        return render(
+            request, "admin/leave.html",
+            {
+                "user": admin, "emps": emps, "pending": pending, "approved": approved,
+                "leave_types": m.LEAVE_TYPES_V2, "balances_v2": balances_v2,
+            },
+            db=db,
+        )
     balances = {e.id: engine.leave_balance(db, e) for e in emps}
     return render(
         request, "admin/leave.html",
@@ -1364,6 +1570,7 @@ def leave_approve(
     leave_id: int,
     request: Request,
     review_note: str = Form(""),
+    approved_hours: str = Form(""),  # V2 only — requirement 6, partial approval
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -1377,13 +1584,39 @@ def leave_approve(
         # approving/rejecting leave for someone outside their team even if
         # they craft the POST directly.
         raise Forbidden()
+    review_note = review_note.strip()
+    approved_minutes = None
+    if LEAVE_MANAGEMENT_V2_ENABLED:
+        requested_minutes = lv.minutes_per_day if lv.minutes_per_day is not None else (
+            emp.daily_target_minutes if emp is not None else None
+        )
+        if approved_hours.strip():
+            try:
+                approved_minutes = int(round(float(approved_hours) * 60))
+            except ValueError:
+                flash(request, "Hours approved must be a number.", "err")
+                return RedirectResponse("/admin/leave", status_code=303)
+            if approved_minutes < 0:
+                flash(request, "Hours approved can't be negative.", "err")
+                return RedirectResponse("/admin/leave", status_code=303)
+        else:
+            approved_minutes = requested_minutes
+        # Requirement 6: a note explaining why is strongly encouraged
+        # whenever the approved amount is less than what was requested —
+        # required, not just encouraged, so the "why partial" reason is
+        # never silently missing from the record.
+        if requested_minutes is not None and approved_minutes is not None and approved_minutes < requested_minutes and not review_note:
+            flash(request, "Approving fewer hours than requested needs a note explaining why.", "err")
+            return RedirectResponse("/admin/leave", status_code=303)
+        lv.approved_minutes_per_day = approved_minutes
     lv.status = m.LEAVE_APPROVED
     lv.reviewed_by = admin.name
     lv.reviewed_at = dt.datetime.utcnow()
-    lv.review_note = review_note.strip()
+    lv.review_note = review_note
     db.commit()
     audit(db, admin.name, "leave_approve", "LeaveRecord", lv.id,
-          {"employee": emp.name if emp else lv.employee_id, "range": f"{lv.start_date}..{lv.end_date}"})
+          {"employee": emp.name if emp else lv.employee_id, "range": f"{lv.start_date}..{lv.end_date}",
+           "approved_minutes_per_day": approved_minutes})
     if emp is not None:
         engine.recompute_employee(db, emp, lv.start_date, min(lv.end_date, today_local()))
     flash(request, f"Approved leave for {emp.name if emp else lv.employee_id}.", "ok")
@@ -1427,6 +1660,7 @@ def leave_add(
     type: str = Form("Other"),
     hours: str = Form(""),
     note: str = Form(""),
+    relation: str = Form(""),  # V2 only
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -1452,13 +1686,29 @@ def leave_add(
         except ValueError:
             flash(request, "Hours must be a number (leave blank for full day).", "err")
             return RedirectResponse("/admin/leave", status_code=303)
-    if type == "Other" and not note.strip():
-        flash(request, "'Other' leave needs a note (PRD §5).", "err")
-        return RedirectResponse("/admin/leave", status_code=303)
+
+    relation = relation.strip()
+    if LEAVE_MANAGEMENT_V2_ENABLED:
+        if type not in m.LEAVE_TYPES_V2:
+            flash(request, "Choose a valid leave type.", "err")
+            return RedirectResponse("/admin/leave", status_code=303)
+        if type == m.LEAVE_SPECIAL_PAID:
+            flash(request, "Special Paid Time is granted via 'Grant Special Paid Time', not recorded here.", "err")
+            return RedirectResponse("/admin/leave", status_code=303)
+        if type != m.LEAVE_BEREAVEMENT:
+            relation = ""
+    else:
+        relation = ""
+        if type == "Other" and not note.strip():
+            flash(request, "'Other' leave needs a note (PRD §5).", "err")
+            return RedirectResponse("/admin/leave", status_code=303)
+
     lv = m.LeaveRecord(
         employee_id=employee_id, start_date=start, end_date=end,
         type=type, minutes_per_day=minutes, note=note.strip(), entered_by=admin.name,
+        relation=relation or None,
         status=m.LEAVE_APPROVED,  # admin direct-entry is already-approved by definition
+        approved_minutes_per_day=minutes,  # already-approved: what was entered IS what's approved
     )
     db.add(lv)
     db.commit()
@@ -1492,6 +1742,76 @@ def leave_delete(
 
 
 # --------------------------------------------------------------------------
+# Special Paid Time — management grant (requirement 8, Leave Management V2,
+# 2026-08-21). A ledger (SpecialPaidGrant), not an approval queue: granting
+# the hours here IS the approval, same one-action-reason-required shape
+# Compensation Links already use (see docs/LEAVE_MANAGEMENT_PLAN.md §3).
+# SuperAdmin-only, same tier as Roster/bulk-upload/Settings — this hands
+# out real paid hours, not something a department-scoped admin should be
+# able to do for their own team unchecked.
+# --------------------------------------------------------------------------
+@router.get("/leave/special-paid")
+def special_paid_page(
+    request: Request,
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    if not LEAVE_MANAGEMENT_V2_ENABLED:
+        raise HTTPException(status_code=404)
+    emps = list(
+        db.execute(
+            select(m.Employee).where(m.Employee.active.is_(True)).order_by(m.Employee.name)
+        ).scalars()
+    )
+    grants = list(
+        db.execute(
+            select(m.SpecialPaidGrant).order_by(m.SpecialPaidGrant.granted_at.desc()).limit(200)
+        ).scalars()
+    )
+    return render(
+        request, "admin/leave_special_paid.html",
+        {"user": admin, "emps": emps, "grants": grants}, db=db,
+    )
+
+
+@router.post("/leave/special-paid")
+def special_paid_grant(
+    request: Request,
+    employee_id: int = Form(...),
+    hours: str = Form(...),
+    reason: str = Form(...),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    if not LEAVE_MANAGEMENT_V2_ENABLED:
+        raise HTTPException(status_code=404)
+    emp = db.get(m.Employee, employee_id)
+    if emp is None:
+        flash(request, "Choose a valid employee.", "err")
+        return RedirectResponse("/admin/leave/special-paid", status_code=303)
+    if not reason.strip():
+        flash(request, "A reason is required.", "err")
+        return RedirectResponse("/admin/leave/special-paid", status_code=303)
+    try:
+        minutes = int(round(float(hours) * 60))
+    except ValueError:
+        flash(request, "Hours must be a number.", "err")
+        return RedirectResponse("/admin/leave/special-paid", status_code=303)
+    if minutes <= 0:
+        flash(request, "Hours must be greater than zero.", "err")
+        return RedirectResponse("/admin/leave/special-paid", status_code=303)
+    grant = m.SpecialPaidGrant(
+        employee_id=employee_id, minutes=minutes, reason=reason.strip(), granted_by=admin.name,
+    )
+    db.add(grant)
+    db.commit()
+    audit(db, admin.name, "special_paid_grant", "SpecialPaidGrant", grant.id,
+          {"employee": emp.name, "minutes": minutes, "reason": reason.strip()})
+    flash(request, f"Granted {emp.name} {hours} hour(s) of Special Paid Time.", "ok")
+    return RedirectResponse("/admin/leave/special-paid", status_code=303)
+
+
+# --------------------------------------------------------------------------
 # Overtime Requests (Ganesh's manager, 2026-08-03) — same submit -> queue ->
 # act shape as Leave Requests just above, but scoped per-person via
 # app.auth.led_by() (Team Lead = whoever an employee's reports_to is, IF
@@ -1503,6 +1823,8 @@ def leave_delete(
 @router.get("/overtime")
 def overtime_page(
     request: Request,
+    ym: Optional[str] = None,
+    employee_id: Optional[int] = None,
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -1537,9 +1859,103 @@ def overtime_page(
         pending = [ot for ot in pending if ot.employee_id in scope]
         approved = [ot for ot in approved if ot.employee_id in scope][:100]
 
+    # Compensation links (Ganesh, 2026-08-21) — a quick org/team-scoped view
+    # of the same CompensationLink rows Person Detail already shows one
+    # employee at a time (see person() above), so a lead doesn't have to
+    # open each report separately to see who's been linked. The "pick an
+    # employee, see their shortfall/surplus days, link them" picker below
+    # (link_target/link_shortfalls/link_surpluses) reuses the exact same
+    # POST /admin/person/{id}/complink endpoint Person Detail's own form
+    # posts to, just with return_to=overtime so it redirects back here
+    # instead (see _complink_redirect() below) — so creating a link no
+    # longer requires leaving Overtime Management. This list itself stays
+    # read-only, though: removing a link is still Person Detail-only, since
+    # that's also where its knock-on effect on that day's status is shown.
+    cfg = engine.get_config(db)
+    links_q = select(m.CompensationLink).order_by(m.CompensationLink.shortfall_date.desc())
+    if scope is None:
+        links_q = links_q.limit(150)
+    comp_link_rows = list(db.execute(links_q).scalars())
+    if scope is not None:
+        comp_link_rows = [lk for lk in comp_link_rows if lk.employee_id in scope][:150]
+    # same (link, parsed-surplus-dates) shape person() builds above, so the
+    # template can reuse identical `{% for s in sdates %}{{ s|mdy }}` markup
+    comp_links = [
+        (lk, [dt.date.fromisoformat(x) for x in json.loads(lk.surplus_dates or "[]")])
+        for lk in comp_link_rows
+    ]
+
+    # Overtime actually worked vs. approved, for one month at a time
+    # (Ganesh, 2026-08-21) — reuses the exact same aggregation Reports ->
+    # Attendance already computes (reports.attendance_report's "summary"
+    # mode: overtime_minutes from completed Punch In/Out vs. approved_
+    # overtime_minutes, the portion covered by an OT_APPROVED date range
+    # above). This is a read-only at-a-glance table; Reports -> Attendance
+    # is still the place to filter by department/employee/date range.
+    year, month = parse_ym(ym)
+    first, last = engine.month_range(year, month)
+    today = today_local()
+    att = reports.attendance_report(db, first, min(last, today))
+    overtime_rows = [r for r in att["rows"] if r["overtime_minutes"] > 0]
+    if scope is not None:
+        overtime_rows = [r for r in overtime_rows if r["employee"].id in scope]
+    overtime_rows.sort(key=lambda r: r["overtime_minutes"], reverse=True)
+    (py, pm), (ny, nm) = prev_next_month(year, month)
+
+    # Employee picker for the Compensation links quick-link flow above
+    # (Ganesh, 2026-08-21) — only offers employees already in `emps` (this
+    # admin's own led_by() scope, or everyone for a Super Admin), same as
+    # the rest of this page. Shortfall/surplus candidates are this same
+    # employee's for whichever month is currently being viewed (`ym`),
+    # computed the identical way person() computes them — see
+    # _shortfalls_surpluses() above.
+    link_target = next((e for e in emps if e.id == employee_id), None) if employee_id else None
+    # Overtime ↔ Missed Hours match requests (Ganesh, 2026-08-22 — moved
+    # here from Leave Management, since these are overtime decisions, not
+    # leave ones; the underlying data/routes are unchanged). Super-admin
+    # only: approve_complink/reject_complink are both require_super_admin
+    # (unlike the OvertimeApproval pending/approved above, which a
+    # department-scoped Team Lead — `scope` non-None here — can act on via
+    # led_by()), so a Lead would just get a 403 clicking Approve/Reject on
+    # one of these. Not shown to them at all rather than shown-but-broken.
+    pending_matches = []
+    if LEAVE_MANAGEMENT_V2_ENABLED and scope is None:
+        pending_matches = list(
+            db.execute(
+                select(m.CompensationLink)
+                .where(
+                    m.CompensationLink.status == m.LEAVE_REQUESTED,
+                    m.CompensationLink.requested_by_employee.is_(True),
+                )
+                .order_by(m.CompensationLink.id)
+            ).scalars()
+        )
+        pending_matches = [
+            (c, [dt.date.fromisoformat(x) for x in json.loads(c.surplus_dates or "[]")])
+            for c in pending_matches
+        ]
+
+    link_shortfalls, link_surpluses = [], []
+    if link_target is not None:
+        if first <= today:
+            engine.recompute_employee(db, link_target, first, min(last, today), cfg)
+        target_statuses = list(
+            db.execute(
+                select(m.DayStatus)
+                .where(m.DayStatus.employee_id == link_target.id, m.DayStatus.date.between(first, last))
+            ).scalars()
+        )
+        link_shortfalls, link_surpluses = _shortfalls_surpluses(target_statuses, cfg.get("comp_erases_strike") == "1")
+
     return render(
         request, "admin/overtime.html",
-        {"user": admin, "emps": emps, "pending": pending, "approved": approved},
+        {
+            "user": admin, "emps": emps, "pending": pending, "approved": approved,
+            "comp_links": comp_links, "overtime_rows": overtime_rows, "pending_matches": pending_matches,
+            "link_target": link_target, "link_shortfalls": link_shortfalls, "link_surpluses": link_surpluses,
+            "year": year, "month": month, "ym": f"{year}-{month:02d}",
+            "prev_ym": f"{py}-{pm:02d}", "next_ym": f"{ny}-{nm:02d}",
+        },
         db=db,
     )
 

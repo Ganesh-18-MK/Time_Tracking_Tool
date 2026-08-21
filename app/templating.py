@@ -19,6 +19,7 @@ from app.util import (
     fmt_hm_signed,
     fmt_hours,
     fmt_time,
+    humanize_audit_action,
     mask_tail,
     month_label,
     today_local,
@@ -42,6 +43,28 @@ TICKETING_ENABLED = os.environ.get("TICKETING_ENABLED", "0") == "1"
 # app/routes/employee.py's holidays_page()/update_location() and
 # app/routes/admin.py's holiday_* routes for the matching guards.
 HOLIDAY_MANAGEMENT_ENABLED = os.environ.get("HOLIDAY_MANAGEMENT_ENABLED", "1") == "1"
+
+# Leave Management V2 (Ganesh, 2026-08-21) — default ON as of 2026-08-22.
+# This touches real pay-adjacent decisions (accrual, partial approval, PIP
+# forcing unpaid), and per CLAUDE.md a change to app/engine.py normally
+# needs a real `pytest tests/ -q` + `legacy.verify_strikes` run first.
+# pytest ran on Ganesh's machine: 468/469 passed, one pre-existing
+# SQLAlchemy-version-drift flake in test_util.py (unrelated to Leave V2 —
+# see feedback-timekeeping-dependency-drift) fixed the same day but not
+# yet re-confirmed green by a second run. verify_strikes could NOT run — his
+# checkout is missing the legacy .ods bundle/tms.db/import_report.json
+# entirely (deliberately git-ignored real HR data, tracked separately as
+# an open item to get from Steve — see the missing-legacy-data memory).
+# Ganesh explicitly chose to enable anyway rather than wait on that
+# bundle — this is a known, accepted gap, not an oversight; re-run
+# verify_strikes and treat any strike-count drift on a day with leave as
+# a signal to investigate leave_minutes_on()/leave_balance_v2() once the
+# bundle is finally in hand. Env var still works as an override either
+# direction — set LEAVE_MANAGEMENT_V2_ENABLED=0 to go back to the old 4
+# leave types without a code change. See app/routes/employee.py's
+# my_leave()/request_leave() and app/routes/admin.py's leave_page()/
+# leave_approve() for the guards this flag controls.
+LEAVE_MANAGEMENT_V2_ENABLED = os.environ.get("LEAVE_MANAGEMENT_V2_ENABLED", "1") == "1"
 
 templates = Jinja2Templates(
     directory=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
@@ -81,6 +104,7 @@ templates.env.globals["static_version"] = str(int(time.time()))
 # as every other "what date is it" question in this app.
 templates.env.globals["footer_year"] = today_local().year
 templates.env.globals["month_label"] = month_label
+templates.env.globals["humanize_audit_action"] = humanize_audit_action
 templates.env.globals["STATUS_LABELS"] = STATUS_LABELS
 templates.env.globals["STATUS_NAMES"] = STATUS_NAMES
 templates.env.globals["STATUSES"] = [m.COMPLETE, m.PARTIAL, m.MISSING, m.LEAVE, m.HOLIDAY, m.WEEKEND]
@@ -92,6 +116,10 @@ templates.env.globals["TICKET_PRIORITIES"] = list(m.TICKET_PRIORITIES)
 templates.env.globals["TICKET_STATUSES"] = list(m.TICKET_STATUSES)
 templates.env.globals["TICKETING_ENABLED"] = TICKETING_ENABLED
 templates.env.globals["HOLIDAY_MANAGEMENT_ENABLED"] = HOLIDAY_MANAGEMENT_ENABLED
+templates.env.globals["LEAVE_MANAGEMENT_V2_ENABLED"] = LEAVE_MANAGEMENT_V2_ENABLED
+templates.env.globals["LEAVE_TYPES_V2"] = list(m.LEAVE_TYPES_V2)
+templates.env.globals["LEAVE_DURATIONS"] = list(m.LEAVE_DURATIONS)
+templates.env.globals["BEREAVEMENT_RELATIONS"] = list(m.BEREAVEMENT_RELATIONS)
 
 
 def flash(request, message: str, kind: str = "ok") -> None:
@@ -136,6 +164,30 @@ def _admin_nav_badges(db, user) -> dict:
                 return 0
             q = q.where(m.OvertimeApproval.employee_id.in_(employee_ids))
         return db.execute(q).scalar() or 0
+
+    def _pending_complink_count() -> int:
+        # Overtime-for-Missed-Hours match requests awaiting a decision
+        # (Ganesh, 2026-08-22) — admin wasn't being notified of these
+        # anywhere before this (no nav badge counted them, and the
+        # Compensation links tables showed a still-pending request
+        # identically to an already-approved link; see the status-badge
+        # fix in those templates the same day). approve_complink/
+        # reject_complink are both require_super_admin (unlike
+        # pending_leave/pending_overtime above, which a department-scoped
+        # Team Lead can also act on), so this is only ever added into the
+        # super-admin badge below, never the department-scoped one.
+        # Folded into pending_overtime, not pending_leave — the decision
+        # card itself lives on Overtime Management (moved there from
+        # Leave Management the same day, see overtime_page()'s
+        # pending_matches), so the badge now matches where the action is.
+        if not LEAVE_MANAGEMENT_V2_ENABLED:
+            return 0
+        return db.execute(
+            select(func.count()).select_from(m.CompensationLink).where(
+                m.CompensationLink.status == m.LEAVE_REQUESTED,
+                m.CompensationLink.requested_by_employee.is_(True),
+            )
+        ).scalar() or 0
 
     def _pending_suggestions_count(dept=None) -> int:
         # dept=None -> org-wide (super admin); otherwise scoped to whichever
@@ -186,7 +238,7 @@ def _admin_nav_badges(db, user) -> dict:
     return {
         "pending_leave": pending_leave, "open_support": open_support,
         "pending_suggestions": _pending_suggestions_count(None),
-        "pending_overtime": _pending_overtime_count(None),
+        "pending_overtime": _pending_overtime_count(None) + _pending_complink_count(),
     }
 
 

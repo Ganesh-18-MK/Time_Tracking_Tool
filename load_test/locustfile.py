@@ -32,7 +32,7 @@ Every HttpUser here logs in exactly ONCE in on_start and keeps its
 session cookie for the rest of the run (Locust's HttpUser wraps a
 requests.Session, which persists cookies automatically) — both to behave
 like a real user and because app/rate_limit.py's per-IP throttle
-(IP_MAX_ATTEMPTS=30 per 10 minutes, see its own docstring) would
+(IP_MAX_ATTEMPTS=200 per 10 minutes, see its own docstring) would
 otherwise lock out this entire test after ~30 login POSTs, since every
 simulated user shares the one real IP the test happens to run from. If
 you see a wall of "Too many failed attempts" responses, that's the
@@ -54,6 +54,34 @@ LOADTEST_USER_COUNT = 60  # keep in sync with whatever you passed to seed_load_t
 # real project_id/task_type_id without scraping the Today page's HTML.
 _project_id = None
 _task_type_id = None
+
+
+def _assert_logged_in(resp, who: str) -> None:
+    """Raises a clear, specific error instead of on_start's raw
+    `if "login" in resp.url` crashing with a confusing
+    `TypeError: argument of type 'NoneType' is not a container` — that
+    TypeError is what a *connection failure* looks like (refused, reset,
+    timed out), because Locust hands back a placeholder response with
+    resp.url == None rather than raising. That's a completely different
+    problem from a lockout/bad-password redirect (resp.url is a real URL
+    containing "login"), so tell the two apart here and say which one it
+    was."""
+    if resp is None or getattr(resp, "url", None) is None:
+        raise RuntimeError(
+            f"{who}: no response at all (connection refused/reset/timed out) — "
+            "the target --host isn't reachable. Most likely the server process "
+            "isn't actually running (check its terminal for a crash, or "
+            "`lsof -i :<port>` for a stale/orphaned process still holding the "
+            "port from a previous run) — this is not the app being slow under "
+            "load, Locust never got as far as sending the login."
+        )
+    if "login" in resp.url:
+        raise RuntimeError(
+            f"{who}: login failed (ended up on {resp.url}) — did you run the "
+            "seed script and set AUTH_MODE=password on the target, or is this "
+            "the per-email/per-IP lockout in app/rate_limit.py? See "
+            "load_test/README.md's RATE_LIMIT_DISABLED section."
+        )
 
 
 @events.test_start.add_listener
@@ -104,13 +132,10 @@ class EmployeeUser(HttpUser):
             data={"email": self.email, "password": TEST_PASSWORD},
             name="/login/employee",
         )
-        if "login" in resp.url:
-            # Lockout, bad seed data, or AUTH_MODE isn't "password" on the
-            # target — fail loudly instead of quietly running 0 real requests.
-            raise RuntimeError(
-                f"Login failed for {self.email} (ended up on {resp.url}) — "
-                "did you run load_test/seed_load_test_users.py and set AUTH_MODE=password?"
-            )
+        # Fail loudly and specifically instead of quietly running 0 real
+        # requests, or crashing with a confusing TypeError on a connection
+        # failure (see _assert_logged_in's docstring).
+        _assert_logged_in(resp, f"EmployeeUser login for {self.email}")
         # Start each simulated day partway through the morning so repeated
         # Add Row calls have somewhere to go without immediately colliding
         # with each other within the same run.
@@ -161,11 +186,7 @@ class AdminUser(HttpUser):
             data={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
             name="/login/admin",
         )
-        if "login" in resp.url:
-            raise RuntimeError(
-                f"Admin login failed (ended up on {resp.url}) — did you run seed_test_credentials.py "
-                "and set AUTH_MODE=password?"
-            )
+        _assert_logged_in(resp, "AdminUser login")
 
     @task(3)
     def view_dashboard(self):

@@ -24,6 +24,7 @@
       <a href="/leave" class="{{ 'on' if active_nav == 'leave' }}">Leave</a>
       <a href="/overtime" class="{{ 'on' if active_nav == 'overtime' }}">Overtime</a>
       {% if HOLIDAY_MANAGEMENT_ENABLED %}<a href="/holidays" class="{{ 'on' if active_nav == 'holidays' }}">Holidays</a>{% endif %}
+      {% if user.is_developer %}<a href="/admin/reports/usage" class="{{ 'on' if active_nav == 'reports' }}">Usage Report</a>{% endif %}
       <a href="/support" class="{{ 'on' if active_nav == 'support' }}">Support</a>
       <a href="/profile" class="{{ 'on' if active_nav == 'profile' }}">Profile</a>
     {% elif active_nav in employee_zone %}
@@ -61,6 +62,7 @@
           <a href="/admin/reports/attendance">Attendance Reports</a>
           <a href="/admin/reports/strikes">Strike Reports</a>
           <a href="/admin/reports/time">Time by Project/Task</a>
+          <a href="/admin/reports/usage">Feature Usage Report</a>
           {% if user.is_super_admin %}
           <a href="/admin/audit">Audit Logs</a>
           {% endif %}

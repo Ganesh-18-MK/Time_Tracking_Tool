@@ -15,7 +15,7 @@ from openpyxl.styles import Font
 from sqlalchemy.orm import Session
 
 from app import models as m, reports
-from app.auth import admin_department_scope, require_admin
+from app.auth import admin_department_scope, require_admin, require_developer_or_admin
 from app.db import get_db
 from app.templating import render
 from app.util import fmt_date, month_label, xlsx_response
@@ -248,3 +248,69 @@ def reports_strikes_xlsx(
         for r in result["rows"]:
             ws.append([r["employee"].name, r["department"], r["strikes"]])
     return xlsx_response(wb, f"strikes_{start_date}_{end_date}.xlsx")
+
+
+# ---- Developer Usage Report (Ganesh, 2026-08-21) ------------------------------
+# Deliberately gated by require_developer_or_admin, not require_admin — a
+# plain-employee Developer with no admin flag can see this even though it
+# lives under /admin/reports/*, same URL family as the other 3 reports for
+# consistency. Org-wide, no department scoping (see
+# require_developer_or_admin's docstring) — adoption of a logging method
+# isn't a per-team question the way Attendance/Strikes are.
+@router.get("/usage")
+def reports_usage(
+    request: Request,
+    rng: str = Query(reports.DEFAULT_RANGE, alias="range"),
+    start: str = "",
+    end: str = "",
+    user: m.Employee = Depends(require_developer_or_admin),
+    db: Session = Depends(get_db),
+):
+    start_date, end_date = reports.resolve_date_range(rng, _parse_date(start), _parse_date(end))
+    result = reports.feature_usage_report(db, start_date, end_date)
+    return render(
+        request, "admin/reports_usage.html",
+        {
+            "user": user, "result": result, "range": rng, "start": start or "", "end": end or "",
+            "resolved_start": start_date, "resolved_end": end_date,
+            "range_presets": reports.RANGE_PRESETS,
+        },
+        db=db,
+    )
+
+
+@router.get("/usage.xlsx")
+def reports_usage_xlsx(
+    rng: str = Query(reports.DEFAULT_RANGE, alias="range"),
+    start: str = "",
+    end: str = "",
+    user: m.Employee = Depends(require_developer_or_admin),
+    db: Session = Depends(get_db),
+):
+    start_date, end_date = reports.resolve_date_range(rng, _parse_date(start), _parse_date(end))
+    result = reports.feature_usage_report(db, start_date, end_date)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Adoption summary"
+    ws.append(["Date range", f"{fmt_date(start_date)} to {fmt_date(end_date)}"])
+    ws.append(["Active tracked employees", result["total_employees"]])
+    ws["A1"].font = Font(bold=True)
+    ws["A2"].font = Font(bold=True)
+    ws.append([])
+    _header(ws, ["Method", "Employees who used it", "% adoption"])
+    for row in result["methods"]:
+        ws.append([row["label"], row["count"], row["pct"]])
+    ws.append(["Punch In/Out", result["punch"]["count"], result["punch"]["pct"]])
+    ws.append([])
+    ws2 = wb.create_sheet("By employee")
+    _header(
+        ws2,
+        ["Name", "Department"] + [m.ENTRY_METHOD_LABELS[k] for k in m.ENTRY_METHODS] + ["Punch In/Out"],
+    )
+    for r in result["employees"]:
+        ws2.append(
+            [r["employee"].name, r["employee"].department or "—"]
+            + ["Yes" if r["used"][k] else "" for k in m.ENTRY_METHODS]
+            + ["Yes" if r["punch"] else ""]
+        )
+    return xlsx_response(wb, f"feature_usage_{start_date}_{end_date}.xlsx")

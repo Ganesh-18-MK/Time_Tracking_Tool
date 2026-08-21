@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% set active_nav = 'admin_leave' %}
+{% block title %}Special Paid Time · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Grant Special Paid Time</h1>
+<p class="small muted">A reward or one-off exception, granted directly — no separate approval step, since
+  granting the hours here is the approval. <a href="/admin/leave">← Back to Leave entry</a></p>
+
+<div class="card">
+  <form method="post" action="/admin/leave/special-paid" class="formrow">
+    <div>
+      <label>Employee</label>
+      <select name="employee_id" required>
+        <option value="">— choose —</option>
+        {% for e in emps %}<option value="{{ e.id }}">{{ e.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div><label>Hours</label><input name="hours" style="width:110px" placeholder="e.g. 8" required></div>
+    <div style="flex:1"><label>Reason</label><input name="reason" style="width:100%" required></div>
+    <div><button>Grant</button></div>
+  </form>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Recent grants</h2>
+  <table>
+    <thead><tr><th>Employee</th><th>Hours</th><th>Reason</th><th>Granted by</th><th>When</th></tr></thead>
+    <tbody>
+      {% for g in grants %}
+      <tr>
+        <td><a href="/admin/person/{{ g.employee_id }}">{{ g.employee.name }}</a></td>
+        <td>{{ g.minutes|hm }}</td>
+        <td class="small">{{ g.reason }}</td>
+        <td class="small muted">{{ g.granted_by }}</td>
+        <td class="small nowrap">{{ g.granted_at|mdy_dt }} UTC</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">No grants yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

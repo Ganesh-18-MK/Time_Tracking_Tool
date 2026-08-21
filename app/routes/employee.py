@@ -1,5 +1,6 @@
 """Employee screens: Today (log + submit) and My Month (PRD §7)."""
 import datetime as dt
+import json
 import os
 from types import SimpleNamespace
 from typing import Optional
@@ -13,15 +14,17 @@ from sqlalchemy.orm import Session
 from app import compensation, engine, models as m
 from app.auth import current_user
 from app.db import get_db
-from app.templating import HOLIDAY_MANAGEMENT_ENABLED, flash, render
+from app.templating import HOLIDAY_MANAGEMENT_ENABLED, LEAVE_MANAGEMENT_V2_ENABLED, flash, render
 from app.util import (
     FormError,
     audit,
+    capitalize_first,
     clamp_break_end,
     fmt_time,
     normalize_title_case,
     now_local,
     overtime_minutes,
+    overtime_row_flags,
     parse_date_field,
     parse_hhmm,
     parse_int_field,
@@ -31,6 +34,7 @@ from app.util import (
 )
 from app.validation import (
     EntryError,
+    all_gap_windows,
     earliest_allowed_date,
     earliest_gap_window,
     entry_details_edit_error,
@@ -116,14 +120,54 @@ class _BreakLogRow:
         return self.end_minute - self.start_minute
 
 
-def _merge_entries_and_breaks(entries, breaks) -> list:
-    """Combine real TaskEntry rows with completed BreakEntry rows into one
-    chronological, display-only list (see _BreakLogRow above for why).
-    Callers keep using the original `entries`/`breaks` lists, unchanged, for
-    every accounting purpose (day total, target, gap_flags, compensation,
-    overtime, strikes) — this merged list exists purely for what the
-    employee sees in the task log table / My Month's per-day expand."""
-    rows = list(entries) + [_BreakLogRow(b) for b in breaks if b.end_minute is not None]
+class _GapLogRow:
+    """Read-only placeholder row for a still-unexplained gap between two
+    logged rows (Ganesh, 2026-08-22) — same `id = None` convention
+    _BreakLogRow uses above, so every place that keys off entry.id (edit/
+    delete controls, gap_flags' dict lookup, the overtime-row coloring
+    loop) treats this as a no-op for free, without templates needing to
+    know this class exists.
+
+    Only ever added to display_entries for the live "today, not yet
+    submitted" view (see _day_context's day_unlocked_today) — a past day,
+    or today once locked, shows the plain ⚠ warning label same as always
+    but no fillable row, since there's nowhere left to post an Add Row to.
+    today.html's "Fill" button on this row is pure client-side JS
+    (fillGapRow()) that pre-fills the existing Add Row form's Start/End
+    with this exact window and scrolls to it — the same mechanism the
+    single earliest-gap auto-prefill already used (see earliest_gap_window
+    above), just triggered per-gap instead of only for the first one.
+    Filling part of a gap and leaving the rest is exactly how "split a gap
+    into more than one entry" works here: whatever's left over just shows
+    up as a new, smaller gap row on the next page load — no separate
+    multi-segment UI needed."""
+
+    def __init__(self, window: dict):
+        self.id = None
+        self.is_gap = True
+        self.start_minute = window["start"]
+        self.end_minute = window["end"]
+
+    @property
+    def duration_minutes(self) -> int:
+        return self.end_minute - self.start_minute
+
+
+def _merge_entries_and_breaks(entries, breaks, gaps=None) -> list:
+    """Combine real TaskEntry rows with completed BreakEntry rows (and,
+    optionally, fillable gap placeholder rows — see _GapLogRow above) into
+    one chronological, display-only list. Callers keep using the original
+    `entries`/`breaks` lists, unchanged, for every accounting purpose (day
+    total, target, gap_flags, compensation, overtime, strikes) — this
+    merged list exists purely for what the employee sees in the task log
+    table / My Month's per-day expand. `gaps` defaults to None (existing
+    My Month call site is unaffected) — only today_page's live view passes
+    it, and only when day_unlocked_today (see _day_context)."""
+    rows = (
+        list(entries)
+        + [_BreakLogRow(b) for b in breaks if b.end_minute is not None]
+        + [_GapLogRow(g) for g in (gaps or ())]
+    )
     rows.sort(key=lambda r: r.start_minute)
     return rows
 
@@ -210,9 +254,64 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
     # with the rows on either side of it no longer flags the whole gap.
     flags = gap_flags(entries, engine.cfg_int(cfg, "gap_flag_minutes"), completed_breaks)
 
+    # Fillable gap placeholder rows (Ganesh, 2026-08-22) — every currently-
+    # unexplained gap (see all_gap_windows() in app/validation.py), not
+    # just the single earliest one gap_prefill_start/_end already surface
+    # in today_page(). Only computed/shown for the live, still-editable
+    # "today" view — a past day, or today once submitted and locked, has
+    # nowhere left to post a fill to, so it keeps the plain ⚠ warning label
+    # only (flags above), same as before this existed. See _GapLogRow.
+    day_unlocked_today = date == today_local() and not (sub is not None and sub.locked)
+    gap_windows = (
+        all_gap_windows(entries, engine.cfg_int(cfg, "gap_flag_minutes"), completed_breaks)
+        if day_unlocked_today else []
+    )
+
+    # Overtime-colored task log rows (Ganesh, 2026-08-21) — a row is styled
+    # differently once the running total of everything logged BEFORE it
+    # already reached the day's target, so hours worked past the (leave/
+    # break-adjusted) 8h target read visually distinct from the regular
+    # workday, without waiting for Submit Day or a separate report. The
+    # actual cumulative-sum math lives in util.overtime_row_flags() (pure,
+    # independently tested) — `entries` is already ordered by start_minute
+    # (see the query above), and `.is_overtime` is a transient Python
+    # attribute, not a mapped column, never persisted, set directly on the
+    # same TaskEntry objects `entries` and `display_entries` both point at.
+    # Only real TaskEntry rows count toward the running total (never break
+    # time — `target` itself is already break/leave-adjusted, see above).
+    for e, is_ot in zip(entries, overtime_row_flags([e.duration_minutes for e in entries], target)):
+        e.is_overtime = is_ot
+
+    # Task Planning "Today's Plan" (Ganesh, 2026-08-21) — the interactive
+    # Start/Pause/Resume/Stop card is always "today" only, same live/
+    # right-now convention as breaks/punch/Auto time capture above (see
+    # docs/TASK_PLANNING_TIMER_PLAN.md): a plan only ever carries the date
+    # it was added on, so there's nothing live to control on a past day.
+    # `past_plans` (Ganesh, 2026-08-22) is the read-only counterpart for
+    # browsing a past day via the date dropdown — same PlannedTask rows,
+    # no forms/buttons, just what was planned/done that day for context.
+    plans = []
+    past_plans = []
+    if date == today_local():
+        plans = list(
+            db.execute(
+                select(m.PlannedTask)
+                .where(m.PlannedTask.employee_id == emp.id, m.PlannedTask.date == date)
+                .order_by(m.PlannedTask.created_at)
+            ).scalars()
+        )
+    else:
+        past_plans = list(
+            db.execute(
+                select(m.PlannedTask)
+                .where(m.PlannedTask.employee_id == emp.id, m.PlannedTask.date == date)
+                .order_by(m.PlannedTask.created_at)
+            ).scalars()
+        )
+
     return {
         "entries": entries,
-        "display_entries": _merge_entries_and_breaks(entries, completed_breaks),
+        "display_entries": _merge_entries_and_breaks(entries, completed_breaks, gap_windows),
         "total": total,
         "sub": sub,
         "target": target,
@@ -229,6 +328,8 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
         "punch_remaining": punch_remaining,
         "punch_overtime": punch_overtime,
         "active_timer": active_timer,
+        "plans": plans,
+        "past_plans": past_plans,
     }
 
 
@@ -389,10 +490,24 @@ def today_page(
             ).first()
             show_overtime_prompt = already_requested is None
 
+    # Punch-out reminder popup (Ganesh, 2026-08-21): Punch Out is already
+    # blocked until Submit Day locks the day (see util.punch_out_error) —
+    # this is the other half of that, a nudge the moment it becomes
+    # possible. Fires only once Submit Day has actually happened AND
+    # there's still an open PunchSession sitting there (nothing to remind
+    # about if they never punched in at all today). No session-dismissal
+    # bookkeeping needed, unlike the profile-completion popup: punching out
+    # sets active_punch to None on the very next page load, which alone
+    # stops this from showing again — a "Not now" close button in the
+    # template is purely client-side (see today.html), safe to reappear on
+    # the next reload since the condition re-evaluates fresh every time.
+    show_punch_out_reminder = day == today and ctx["sub"] is not None and ctx["sub"].locked and ctx["active_punch"] is not None
+
     ctx.update(
         {
             "over_allocation_minutes": over_allocation_minutes,
             "show_overtime_prompt": show_overtime_prompt,
+            "show_punch_out_reminder": show_punch_out_reminder,
             "edit_notices": edit_notices,
             "gap_prefill_active": gap_prefill_start is not None,
             "gap_prefill_start_min": gap_prefill_start,
@@ -478,9 +593,10 @@ def add_entry(
                 date=day,
                 project_id=project_id,
                 task_type_id=task_type_id,
-                details=details.strip(),
+                details=capitalize_first(details.strip()),
                 start_minute=start_minute,
                 end_minute=end_minute,
+                entry_method=m.ENTRY_METHOD_MANUAL,
             )
         )
         db.commit()
@@ -561,7 +677,7 @@ def edit_entry_details(
     if len(cleaned) < min_chars:
         flash(request, f"Details must be at least {min_chars} characters.", "err")
         return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
-    entry.details = cleaned
+    entry.details = capitalize_first(cleaned)
     db.commit()
     audit(db, user.name, "entry_details_edited", "TaskEntry", str(entry.id), {"date": day.isoformat()})
     flash(request, "Details updated.", "ok")
@@ -683,7 +799,14 @@ def _finish_task_timer(db: Session, user: m.Employee, timer: m.ActiveTaskTimer, 
     auto-captured entry is never held to looser rules than a typed one.
     Returns (True, None) on success; on failure returns (False, message)
     and leaves the timer running/untouched so nothing is silently lost —
-    the employee can fix Details and try Stop again, or keep working."""
+    the employee can fix Details and try Stop again, or keep working.
+
+    entry_method (Ganesh, 2026-08-21, usage tracking) is set from
+    timer.planned_task_id: this one function is the single place both
+    Auto time capture's Stop AND every Plan Pause/Stop segment finish
+    through, so it's the one place that can tell them apart reliably —
+    plan-linked timers stamp ENTRY_METHOD_PLAN, ad-hoc ones stamp
+    ENTRY_METHOD_AUTO_TIMER."""
     now = now_local()
     end_minute = clamp_break_end(timer.start_minute, now.hour * 60 + now.minute)
     try:
@@ -695,12 +818,42 @@ def _finish_task_timer(db: Session, user: m.Employee, timer: m.ActiveTaskTimer, 
         return False, "; ".join(e.errors)
     db.add(m.TaskEntry(
         employee_id=user.id, date=timer.date, project_id=timer.project_id,
-        task_type_id=timer.task_type_id, details=timer.details.strip(),
+        task_type_id=timer.task_type_id, details=capitalize_first(timer.details.strip()),
         start_minute=timer.start_minute, end_minute=end_minute,
+        entry_method=m.ENTRY_METHOD_PLAN if timer.planned_task_id else m.ENTRY_METHOD_AUTO_TIMER,
     ))
     db.delete(timer)
     db.commit()
     return True, None
+
+
+def _stop_current_timer_if_any(db: Session, user: m.Employee, cfg: dict):
+    """Shared by start_task_timer below and /plan/{id}/start (Task
+    Planning, Ganesh, 2026-08-21): whatever timer is currently running —
+    ad-hoc or plan-linked — gets auto-finished into a real TaskEntry before
+    a new one starts, same "starting a new one auto-stops the old one"
+    rule Auto time capture already had (see ActiveTaskTimer docstring).
+    The only thing new here is that if the timer being auto-stopped was
+    linked to a PlannedTask (planned_task_id set), that plan goes back to
+    PLAN_PAUSED rather than being silently left `running` with no active
+    timer behind it — it wasn't explicitly Stopped, just interrupted, so
+    Resume should still be offered. Returns (ok, error) — same shape
+    _finish_task_timer already returns, just with this one extra side
+    effect layered on top; ad-hoc timers (planned_task_id is None) behave
+    exactly as before, zero extra writes."""
+    existing = db.execute(
+        select(m.ActiveTaskTimer).where(m.ActiveTaskTimer.employee_id == user.id)
+    ).scalar_one_or_none()
+    if existing is None:
+        return True, None
+    interrupted_plan_id = existing.planned_task_id
+    ok, error = _finish_task_timer(db, user, existing, cfg)
+    if ok and interrupted_plan_id is not None:
+        plan = db.get(m.PlannedTask, interrupted_plan_id)
+        if plan is not None and plan.status == m.PLAN_RUNNING:
+            plan.status = m.PLAN_PAUSED
+            db.commit()
+    return ok, error
 
 
 @router.post("/task-timer/start")
@@ -720,16 +873,12 @@ def start_task_timer(
     cfg = engine.get_config(db)
     today = today_local()
 
-    existing = db.execute(
-        select(m.ActiveTaskTimer).where(m.ActiveTaskTimer.employee_id == user.id)
-    ).scalar_one_or_none()
-    if existing is not None:
-        ok, error = _finish_task_timer(db, user, existing, cfg)
-        if not ok:
-            # can't silently drop the running timer's time — make the
-            # employee resolve it (e.g. add Details) before starting a new one
-            flash(request, f"Couldn't save the timer already running: {error}", "err")
-            return RedirectResponse("/today", status_code=303)
+    ok, error = _stop_current_timer_if_any(db, user, cfg)
+    if not ok:
+        # can't silently drop the running timer's time — make the
+        # employee resolve it (e.g. add Details) before starting a new one
+        flash(request, f"Couldn't save the timer already running: {error}", "err")
+        return RedirectResponse("/today", status_code=303)
 
     project = db.get(m.Project, project_id)
     task = db.get(m.TaskType, task_type_id)
@@ -766,10 +915,24 @@ def stop_task_timer(
     # if the employee wasn't sure what to type until the work was done
     if details.strip():
         active.details = details.strip()
+    # Captured before _finish_task_timer deletes `active` below (Ganesh,
+    # 2026-08-22) — today.html no longer offers this Stop&Log button for a
+    # plan-linked timer (see the Auto time capture card, which shows
+    # Pause/Stop posting straight to /plan/{id}/pause|stop instead), but
+    # this route is still reachable directly (stale form, direct POST), so
+    # it needs to keep PlannedTask.status in sync itself rather than
+    # relying on the UI alone — otherwise a plan whose segment got stopped
+    # here stayed stuck showing "running" with a dead timer behind it.
+    plan_id = active.planned_task_id
     ok, error = _finish_task_timer(db, user, active, cfg)
     if not ok:
         flash(request, error, "err")
         return RedirectResponse("/today", status_code=303)
+    if plan_id is not None:
+        plan = db.get(m.PlannedTask, plan_id)
+        if plan is not None and plan.status == m.PLAN_RUNNING:
+            plan.status = m.PLAN_DONE
+            db.commit()
     flash(request, "Timer stopped — entry logged.", "ok")
     return RedirectResponse("/today", status_code=303)
 
@@ -786,9 +949,255 @@ def cancel_task_timer(
         select(m.ActiveTaskTimer).where(m.ActiveTaskTimer.employee_id == user.id)
     ).scalar_one_or_none()
     if active is not None:
+        # Same reasoning as stop_task_timer above (Ganesh, 2026-08-22) — a
+        # plan-linked timer that gets discarded here (rather than through
+        # /plan/{id}/pause|stop) shouldn't leave that plan stuck showing
+        # "running" with nothing behind it; back to `paused` is the same
+        # state _stop_current_timer_if_any already puts an interrupted
+        # plan into elsewhere, so Resume is still offered.
+        plan_id = active.planned_task_id
         db.delete(active)
+        if plan_id is not None:
+            plan = db.get(m.PlannedTask, plan_id)
+            if plan is not None and plan.status == m.PLAN_RUNNING:
+                plan.status = m.PLAN_PAUSED
         db.commit()
         flash(request, "Timer cancelled — no entry was logged.", "ok")
+    return RedirectResponse("/today", status_code=303)
+
+
+# --------------------------------------------------------------------------
+# Task Planning: "Plan for the Day" + Start/Pause/Resume/Stop (Ganesh,
+# 2026-08-21, see docs/TASK_PLANNING_TIMER_PLAN.md for the fuller design
+# this narrows down to). Always "today" — same live, right-now convention
+# Auto time capture/Break/Punch already use (today.html only ever shows
+# this section when day == today); a PlannedTask never carries a date
+# other than the day it was actually worked. Every Start/Resume opens the
+# single shared ActiveTaskTimer (see _stop_current_timer_if_any above);
+# every Pause/Stop closes it into one ordinary TaskEntry via the existing
+# _finish_task_timer — nothing here bypasses validate_entry's overlap/
+# 4h-cap/locked-day checks, an auto-captured segment is held to exactly
+# the same rules a typed row is.
+# --------------------------------------------------------------------------
+def _today_day_locked(db: Session, user: m.Employee) -> bool:
+    today = today_local()
+    sub = db.execute(
+        select(m.DaySubmission).where(
+            m.DaySubmission.employee_id == user.id, m.DaySubmission.date == today
+        )
+    ).scalar_one_or_none()
+    return sub is not None and sub.locked
+
+
+@router.post("/plan/add")
+def add_plan(
+    request: Request,
+    project_id: int = Form(...),
+    task_type_id: int = Form(...),
+    details: str = Form(""),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    if _today_day_locked(db, user):
+        flash(request, "Day is already submitted — can't add a new plan.", "err")
+        return RedirectResponse("/today", status_code=303)
+    project = db.get(m.Project, project_id)
+    task = db.get(m.TaskType, task_type_id)
+    if project is None or not project.active or task is None or not task.active:
+        flash(request, "Choose a Project and Task before adding a plan.", "err")
+        return RedirectResponse("/today", status_code=303)
+    cleaned = capitalize_first(details.strip())
+    if not cleaned:
+        flash(request, "Say what you plan to do.", "err")
+        return RedirectResponse("/today", status_code=303)
+
+    today = today_local()
+    # Auto Punch In on the day's very first plan (Ganesh, 2026-08-22) —
+    # "first plan of the day" is checked BEFORE the new row is added below,
+    # so it's unambiguous. The "already punched in" check is the exact same
+    # query punch_in() itself uses (same table, same one-open-session
+    # invariant) — duplicated rather than calling punch_in() directly since
+    # that route also flashes/redirects on its own, which would fight the
+    # "plan added" flash below; this needs to stay a silent side effect.
+    is_first_plan_today = db.execute(
+        select(m.PlannedTask.id).where(
+            m.PlannedTask.employee_id == user.id, m.PlannedTask.date == today
+        )
+    ).first() is None
+    already_punched_in = db.execute(
+        select(m.PunchSession.id).where(
+            m.PunchSession.employee_id == user.id, m.PunchSession.date == today,
+            m.PunchSession.punched_out_at.is_(None),
+        )
+    ).first() is not None
+
+    db.add(m.PlannedTask(
+        employee_id=user.id, date=today, project_id=project_id,
+        task_type_id=task_type_id, details=cleaned, status=m.PLAN_PLANNED,
+        created_by_employee_id=user.id,
+    ))
+    punched_in_now = False
+    if is_first_plan_today and not already_punched_in:
+        db.add(m.PunchSession(employee_id=user.id, date=today, punched_in_at=dt.datetime.utcnow()))
+        punched_in_now = True
+    db.commit()
+    flash(request, "Added to today's plan." + (" Punched in for you." if punched_in_now else ""), "ok")
+    return RedirectResponse("/today", status_code=303)
+
+
+@router.post("/plan/{plan_id}/edit")
+def edit_plan(
+    plan_id: int,
+    request: Request,
+    details: str = Form(""),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Scoped to just the plan text (Ganesh: "task can be editable") — not
+    Project/Task, same precedent edit_entry_details() above already set
+    for a logged TaskEntry's Details: changing Project/Task is a bigger
+    change than what was asked for, and if the plan was picked wrong,
+    Delete-and-re-add (while still `planned`) is the existing pattern for
+    that, same as a mis-added row anywhere else in this app."""
+    plan = db.get(m.PlannedTask, plan_id)
+    if plan is None or plan.employee_id != user.id:
+        return RedirectResponse("/today", status_code=303)
+    if plan.status not in (m.PLAN_PLANNED, m.PLAN_PAUSED):
+        flash(request, "Pause it first before editing — a running or finished plan can't be changed.", "err")
+        return RedirectResponse("/today", status_code=303)
+    cleaned = capitalize_first(details.strip())
+    if not cleaned:
+        flash(request, "Say what you plan to do.", "err")
+        return RedirectResponse("/today", status_code=303)
+    plan.details = cleaned
+    db.commit()
+    flash(request, "Plan updated.", "ok")
+    return RedirectResponse("/today", status_code=303)
+
+
+@router.post("/plan/{plan_id}/delete")
+def delete_plan(
+    plan_id: int,
+    request: Request,
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    plan = db.get(m.PlannedTask, plan_id)
+    if plan is None or plan.employee_id != user.id:
+        return RedirectResponse("/today", status_code=303)
+    if plan.status != m.PLAN_PLANNED:
+        flash(request, "Only a not-yet-started plan can be removed.", "err")
+        return RedirectResponse("/today", status_code=303)
+    db.delete(plan)
+    db.commit()
+    return RedirectResponse("/today", status_code=303)
+
+
+@router.post("/plan/{plan_id}/start")
+def start_plan(
+    plan_id: int,
+    request: Request,
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Start (from `planned`) or Resume (from `paused`) — same action
+    either way, a fresh segment. Whatever else is currently running (an
+    ad-hoc Auto time capture timer, or a different plan) is auto-finished
+    first via _stop_current_timer_if_any, same "starting a new one
+    auto-stops the old one" convention Auto time capture already uses —
+    the employee doesn't have to remember to Pause the other one first."""
+    cfg = engine.get_config(db)
+    plan = db.get(m.PlannedTask, plan_id)
+    if plan is None or plan.employee_id != user.id:
+        return RedirectResponse("/today", status_code=303)
+    if _today_day_locked(db, user):
+        flash(request, "Day is already submitted.", "err")
+        return RedirectResponse("/today", status_code=303)
+    if plan.status not in (m.PLAN_PLANNED, m.PLAN_PAUSED):
+        return RedirectResponse("/today", status_code=303)
+    project = db.get(m.Project, plan.project_id)
+    task = db.get(m.TaskType, plan.task_type_id)
+    if project is None or not project.active or task is None or not task.active:
+        flash(request, "That plan's Project/Task is no longer active — edit it first.", "err")
+        return RedirectResponse("/today", status_code=303)
+
+    ok, error = _stop_current_timer_if_any(db, user, cfg)
+    if not ok:
+        flash(request, f"Couldn't save the timer already running: {error}", "err")
+        return RedirectResponse("/today", status_code=303)
+
+    now = now_local()
+    db.add(m.ActiveTaskTimer(
+        employee_id=user.id, date=today_local(), project_id=plan.project_id,
+        task_type_id=plan.task_type_id, details=plan.details,
+        start_minute=now.hour * 60 + now.minute, started_at=dt.datetime.utcnow(),
+        planned_task_id=plan.id,
+    ))
+    plan.status = m.PLAN_RUNNING
+    db.commit()
+    flash(request, "Started — timer's running.", "ok")
+    return RedirectResponse("/today", status_code=303)
+
+
+def _finish_plan_segment(db: Session, user: m.Employee, plan: m.PlannedTask, cfg: dict):
+    """Shared by pause_plan/stop_plan below: if this plan currently has the
+    active timer, close that segment into a real TaskEntry via the same
+    _finish_task_timer every ad-hoc Stop already uses. Returns (ok, error)
+    — (True, None) with nothing to do if the plan has no running segment
+    (e.g. Stop pressed on an already-paused plan, nothing to finalize)."""
+    timer = db.execute(
+        select(m.ActiveTaskTimer).where(
+            m.ActiveTaskTimer.employee_id == user.id, m.ActiveTaskTimer.planned_task_id == plan.id
+        )
+    ).scalar_one_or_none()
+    if timer is None:
+        return True, None
+    return _finish_task_timer(db, user, timer, cfg)
+
+
+@router.post("/plan/{plan_id}/pause")
+def pause_plan(
+    plan_id: int,
+    request: Request,
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    cfg = engine.get_config(db)
+    plan = db.get(m.PlannedTask, plan_id)
+    if plan is None or plan.employee_id != user.id:
+        return RedirectResponse("/today", status_code=303)
+    if plan.status != m.PLAN_RUNNING:
+        return RedirectResponse("/today", status_code=303)
+    ok, error = _finish_plan_segment(db, user, plan, cfg)
+    if not ok:
+        flash(request, error, "err")
+        return RedirectResponse("/today", status_code=303)
+    plan.status = m.PLAN_PAUSED
+    db.commit()
+    flash(request, "Paused — logged to your task log.", "ok")
+    return RedirectResponse("/today", status_code=303)
+
+
+@router.post("/plan/{plan_id}/stop")
+def stop_plan(
+    plan_id: int,
+    request: Request,
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    cfg = engine.get_config(db)
+    plan = db.get(m.PlannedTask, plan_id)
+    if plan is None or plan.employee_id != user.id:
+        return RedirectResponse("/today", status_code=303)
+    if plan.status not in (m.PLAN_RUNNING, m.PLAN_PAUSED):
+        return RedirectResponse("/today", status_code=303)
+    ok, error = _finish_plan_segment(db, user, plan, cfg)
+    if not ok:
+        flash(request, error, "err")
+        return RedirectResponse("/today", status_code=303)
+    plan.status = m.PLAN_DONE
+    db.commit()
+    flash(request, "Marked done.", "ok")
     return RedirectResponse("/today", status_code=303)
 
 
@@ -881,7 +1290,46 @@ def submit_day(
         f"{user.id}:{day.isoformat()}", {"total_minutes": total},
     )
     engine.recompute_employee(db, user, day, day)
-    flash(request, f"Day submitted and locked — total {total // 60}:{total % 60:02d}.", "ok")
+
+    # Auto-carry unfinished plans to tomorrow (Ganesh, 2026-08-22) — a plan
+    # still `planned` (never started) or `paused` at Submit Day time didn't
+    # get finished today; rather than it just vanishing once Today's Plan
+    # stops showing this date (that section only ever shows date ==
+    # today_local(), see _day_context), a fresh copy shows up on tomorrow's
+    # plan list automatically. This COPIES, it doesn't move — the original
+    # PlannedTask row keeps its real date/status untouched as an honest
+    # record of what didn't happen today, same never-rewrite-history
+    # instinct as everything else in this app (DayStatus.source='imported'
+    # etc.) — only PlannedTask.carried_at gets set, purely to stop a day
+    # that's resubmitted after an admin unlock from copying the same plan
+    # to tomorrow a second time. A plan still `running` at submit time
+    # (forgotten to pause/stop) is left alone — not asked for, and Submit
+    # Day shouldn't silently end a live timer out from under someone.
+    carried = 0
+    for plan in db.execute(
+        select(m.PlannedTask).where(
+            m.PlannedTask.employee_id == user.id, m.PlannedTask.date == day,
+            m.PlannedTask.status.in_((m.PLAN_PLANNED, m.PLAN_PAUSED)),
+            m.PlannedTask.carried_at.is_(None),
+        )
+    ).scalars():
+        db.add(m.PlannedTask(
+            employee_id=user.id, date=day + dt.timedelta(days=1),
+            project_id=plan.project_id, task_type_id=plan.task_type_id,
+            details=plan.details, status=m.PLAN_PLANNED,
+            created_by_employee_id=user.id,
+        ))
+        plan.carried_at = dt.datetime.utcnow()
+        carried += 1
+    if carried:
+        db.commit()
+
+    flash(
+        request,
+        f"Day submitted and locked — total {total // 60}:{total % 60:02d}."
+        + (f" {carried} unfinished plan{'s' if carried != 1 else ''} carried to tomorrow." if carried else ""),
+        "ok",
+    )
     return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
 
 
@@ -1006,6 +1454,12 @@ def my_month(
 # --------------------------------------------------------------------------
 # Leave: self-service request (PRD open question 5 — employees request,
 # admin approves; see app/routes/admin.py for the approval queue).
+#
+# Leave Management V2 (Ganesh, 2026-08-21, behind LEAVE_MANAGEMENT_V2_ENABLED
+# — see docs/LEAVE_MANAGEMENT_PLAN.md): while the flag is off, my_leave()/
+# request_leave() behave exactly as before (m.LEAVE_TYPES, engine.
+# leave_balance()) — nothing below changes for anyone until it's flipped on
+# after a real pytest + legacy.verify_strikes run confirms the accrual math.
 # --------------------------------------------------------------------------
 @router.get("/leave")
 def my_leave(
@@ -1021,6 +1475,21 @@ def my_leave(
         ).scalars()
     )
     today = today_local()
+    if LEAVE_MANAGEMENT_V2_ENABLED:
+        cfg = engine.get_config(db)
+        # Overtime-for-Missed-Hours match request UI moved to /overtime
+        # (Ganesh, 2026-08-22 — see my_overtime() below): it's an overtime
+        # decision, not a leave one, so it no longer lives on this page.
+        return render(
+            request, "leave.html",
+            {
+                "user": user, "records": records, "leave_types": m.LEAVE_TYPES_V2, "today": today,
+                "balance_v2": engine.leave_balance_v2(db, user, today, cfg),
+                "is_probation_active": engine.is_probation_active(user, today, cfg),
+                "half_day_minutes": user.daily_target_minutes // 2,
+                "full_day_minutes": user.daily_target_minutes,
+            },
+        )
     return render(
         request, "leave.html",
         {
@@ -1036,8 +1505,10 @@ def request_leave(
     start_date: str = Form(...),
     end_date: str = Form(""),
     type: str = Form("Other"),
+    duration: str = Form(""),  # V2 only: "half" / "full" / "custom"
     hours: str = Form(""),
     note: str = Form(""),
+    relation: str = Form(""),  # V2 only: Bereavement Time
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -1050,27 +1521,115 @@ def request_leave(
     if end < start:
         flash(request, "End date is before start date.", "err")
         return RedirectResponse("/leave", status_code=303)
-    minutes = None  # full day = your daily target (PRD §5)
-    if hours.strip():
+
+    if not LEAVE_MANAGEMENT_V2_ENABLED:
+        minutes = None  # full day = your daily target (PRD §5)
+        if hours.strip():
+            try:
+                minutes = int(round(float(hours) * 60))
+            except ValueError:
+                flash(request, "Hours must be a number (leave blank for a full day).", "err")
+                return RedirectResponse("/leave", status_code=303)
+        if type == "Other" and not note.strip():
+            flash(request, "'Other' leave needs a note.", "err")
+            return RedirectResponse("/leave", status_code=303)
+        lv = m.LeaveRecord(
+            employee_id=user.id, start_date=start, end_date=end, type=type,
+            minutes_per_day=minutes, note=note.strip(), entered_by=user.name,
+            status=m.LEAVE_REQUESTED,  # awaits admin approval — doesn't affect
+            # compliance math until then (see engine.leave_minutes_on)
+        )
+        db.add(lv)
+        db.commit()
+        audit(db, user.name, "leave_requested", "LeaveRecord", lv.id,
+              {"range": f"{start}..{end}", "type": type, "minutes": minutes})
+        flash(request, "Leave request submitted — an admin will review it.", "ok")
+        return RedirectResponse("/leave", status_code=303)
+
+    # ---- Leave Management V2 path -------------------------------------------
+    if type not in m.LEAVE_TYPES_V2:
+        flash(request, "Choose a valid leave type.", "err")
+        return RedirectResponse("/leave", status_code=303)
+    if type == m.LEAVE_SPECIAL_PAID:
+        # Special Paid Time is granted by management, not requested (see
+        # SpecialPaidGrant / docs/LEAVE_MANAGEMENT_PLAN.md §3) — not offered
+        # as an option in the template's dropdown either, but block it here
+        # too in case someone crafts the POST directly.
+        flash(request, "Special Paid Time is granted by management, not requested.", "err")
+        return RedirectResponse("/leave", status_code=303)
+
+    duration = duration or m.LEAVE_DURATION_FULL
+    if duration not in m.LEAVE_DURATIONS:
+        flash(request, "Choose Half Day, Full Day, or Custom.", "err")
+        return RedirectResponse("/leave", status_code=303)
+    if duration == m.LEAVE_DURATION_FULL:
+        minutes = None  # None => full day = the employee's own daily target that day
+    elif duration == m.LEAVE_DURATION_HALF:
+        minutes = user.daily_target_minutes // 2
+    else:
+        if not hours.strip():
+            flash(request, "Enter the number of custom hours (or pick Half/Full Day).", "err")
+            return RedirectResponse("/leave", status_code=303)
         try:
             minutes = int(round(float(hours) * 60))
         except ValueError:
-            flash(request, "Hours must be a number (leave blank for a full day).", "err")
+            flash(request, "Hours must be a number.", "err")
             return RedirectResponse("/leave", status_code=303)
-    if type == "Other" and not note.strip():
-        flash(request, "'Other' leave needs a note.", "err")
+        if minutes <= 0:
+            flash(request, "Custom hours must be greater than zero.", "err")
+            return RedirectResponse("/leave", status_code=303)
+
+    relation = relation.strip()
+    if type == m.LEAVE_BEREAVEMENT:
+        if relation not in m.BEREAVEMENT_RELATIONS:
+            flash(request, "Choose who Bereavement Time is for.", "err")
+            return RedirectResponse("/leave", status_code=303)
+    else:
+        relation = ""
+
+    cfg = engine.get_config(db)
+    today = today_local()
+
+    # Requirement: block Planned Time during the waiting period — every
+    # other type stays available (m.LEAVE_TYPES_NO_PROBATION_BLOCK).
+    if type == m.LEAVE_PLANNED and engine.is_probation_active(user, today, cfg):
+        flash(request, "Planned Time isn't available yet — you're still in your waiting period.", "err")
         return RedirectResponse("/leave", status_code=303)
+
+    # Notice period, Planned Time only (docs/LEAVE_MANAGEMENT_PLAN.md,
+    # decided 2026-08-20).
+    if type == m.LEAVE_PLANNED:
+        days_requested = (end - start).days + 1
+        holidays = engine.holidays_set(db)
+        if not engine.notice_period_satisfied(today, start, days_requested, user, holidays):
+            required = engine.required_notice_working_days(days_requested)
+            flash(
+                request,
+                f"Planned Time for {days_requested} day(s) needs at least {required} working day(s)' notice.",
+                "err",
+            )
+            return RedirectResponse("/leave", status_code=303)
+
+    # Requirement 10: no paid leave while on a PIP — every type becomes
+    # Unpaid Time, decided at request time.
+    effective_type = engine.effective_leave_type(user, type)
+    pip_converted = effective_type != type
+
     lv = m.LeaveRecord(
-        employee_id=user.id, start_date=start, end_date=end, type=type,
+        employee_id=user.id, start_date=start, end_date=end, type=effective_type,
         minutes_per_day=minutes, note=note.strip(), entered_by=user.name,
-        status=m.LEAVE_REQUESTED,  # awaits admin approval — doesn't affect
-        # compliance math until then (see engine.leave_minutes_on)
+        relation=relation or None,
+        status=m.LEAVE_REQUESTED,
     )
     db.add(lv)
     db.commit()
     audit(db, user.name, "leave_requested", "LeaveRecord", lv.id,
-          {"range": f"{start}..{end}", "type": type, "minutes": minutes})
-    flash(request, "Leave request submitted — an admin will review it.", "ok")
+          {"range": f"{start}..{end}", "type": effective_type, "minutes": minutes,
+           "pip_converted_from": type if pip_converted else None})
+    if pip_converted:
+        flash(request, "Recorded as Unpaid Time — no paid leave is available while on a Performance Improvement Plan.", "ok")
+    else:
+        flash(request, "Leave request submitted — an admin will review it.", "ok")
     return RedirectResponse("/leave", status_code=303)
 
 
@@ -1095,6 +1654,60 @@ def cancel_leave_request(
 
 
 # --------------------------------------------------------------------------
+# Overtime-for-Missed-Hours match request (requirement 9, Leave Management
+# V2, 2026-08-21) — extends the existing Compensation Links feature
+# (app/routes/admin.py's add_complink, Person Detail page) rather than
+# building a second one, per docs/LEAVE_MANAGEMENT_PLAN.md §3. Previously
+# only an admin could create a link; this lets an employee propose one
+# themselves for a SuperAdmin to approve/reject — same submit -> queue ->
+# act shape as Leave/Overtime requests just above.
+# --------------------------------------------------------------------------
+@router.post("/leave/match-request")
+def request_compensation_match(
+    request: Request,
+    shortfall_date: str = Form(...),
+    surplus_dates: list = Form([]),
+    note: str = Form(""),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    if not LEAVE_MANAGEMENT_V2_ENABLED:
+        flash(request, "Not available.", "err")
+        return RedirectResponse("/overtime", status_code=303)
+    try:
+        shortfall = parse_date_field(shortfall_date, "Missed Hours day")
+    except FormError as e:
+        flash(request, e.message, "err")
+        return RedirectResponse("/overtime", status_code=303)
+    try:
+        surplus = sorted({dt.date.fromisoformat(x.strip()).isoformat() for x in surplus_dates if x.strip()})
+    except ValueError:
+        flash(request, "Surplus/overtime dates must be valid dates.", "err")
+        return RedirectResponse("/overtime", status_code=303)
+    if not surplus:
+        flash(request, "Pick at least one overtime day to match against.", "err")
+        return RedirectResponse("/overtime", status_code=303)
+    # a surplus day backs at most one shortfall — same invariant
+    # add_complink() already enforces for admin-direct links.
+    taken = engine.surplus_links_by_date(db, user.id)
+    clash = [s for s in surplus if dt.date.fromisoformat(s) in taken]
+    if clash:
+        flash(request, f"Already matched to another day: {', '.join(clash)}", "err")
+        return RedirectResponse("/overtime", status_code=303)
+    link = m.CompensationLink(
+        employee_id=user.id, shortfall_date=shortfall, surplus_dates=json.dumps(surplus),
+        note=note.strip(), linked_by=user.name,
+        status=m.LEAVE_REQUESTED, requested_by_employee=True,
+    )
+    db.add(link)
+    db.commit()
+    audit(db, user.name, "compensation_match_requested", "CompensationLink", link.id,
+          {"shortfall": shortfall_date, "surplus": surplus})
+    flash(request, "Match request submitted — an admin will review it.", "ok")
+    return RedirectResponse("/overtime", status_code=303)
+
+
+# --------------------------------------------------------------------------
 # Overtime: self-service pre-approval request (Ganesh's manager, 2026-08-03
 # — exact same submit -> lead/admin queue -> lead/admin acts shape as Leave
 # above; see app/routes/admin.py for the approval queue and app/auth.py's
@@ -1113,7 +1726,53 @@ def my_overtime(
             .order_by(m.OvertimeApproval.start_date.desc())
         ).scalars()
     )
-    return render(request, "overtime.html", {"user": user, "records": records})
+    ctx = {"user": user, "records": records}
+    if LEAVE_MANAGEMENT_V2_ENABLED:
+        # Overtime-for-Missed-Hours match picker (requirement 9) — moved
+        # here from /leave (Ganesh, 2026-08-22: "this should be not in
+        # leave management... it should be in overtime management", the
+        # same call he made for the admin-side decision card). The
+        # employee's own recent shortfall (Missed Hours) and surplus
+        # (Overtime) days, same window CompensationLink already reasons
+        # about, so they're picking from real days rather than typing
+        # dates blind. 60 days back is a plain, generous window — no
+        # requirement pinned an exact number, and it's cheap to widen
+        # later if needed.
+        today = today_local()
+        window_start = today - dt.timedelta(days=60)
+        recent_statuses = list(
+            db.execute(
+                select(m.DayStatus).where(
+                    m.DayStatus.employee_id == user.id,
+                    m.DayStatus.date.between(window_start, today),
+                )
+            ).scalars()
+        )
+        cfg = engine.get_config(db)
+        comp_erases = cfg.get("comp_erases_strike") == "1"
+        taken_surplus = engine.surplus_links_by_date(db, user.id)
+        match_shortfalls = [
+            r for r in recent_statuses
+            if (r.variance_minutes or 0) < 0 and r.effective_status(comp_erases) in m.STRIKE_STATUSES
+        ]
+        match_surpluses = [
+            r for r in recent_statuses
+            if (r.variance_minutes or 0) > 0 and r.date not in taken_surplus
+        ]
+        match_links = list(
+            db.execute(
+                select(m.CompensationLink)
+                .where(m.CompensationLink.employee_id == user.id, m.CompensationLink.requested_by_employee.is_(True))
+                .order_by(m.CompensationLink.created_at.desc())
+            ).scalars()
+        )
+        ctx["match_shortfalls"] = sorted(match_shortfalls, key=lambda r: r.date, reverse=True)
+        ctx["match_surpluses"] = sorted(match_surpluses, key=lambda r: r.date, reverse=True)
+        ctx["match_links"] = [
+            (lk, [dt.date.fromisoformat(x) for x in json.loads(lk.surplus_dates or "[]")])
+            for lk in match_links
+        ]
+    return render(request, "overtime.html", ctx)
 
 
 @router.post("/overtime/request")

@@ -3,7 +3,7 @@ import datetime as dt
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import sessionmaker
 
 from app import models as m
@@ -326,18 +326,31 @@ class TestEnsureListStatusBackfill:
         s.close()
 
     def test_backfills_null_status_to_approved(self, db):
-        # simulates a row created before the status column existed. Leaving
-        # status unset would NOT reproduce this — the ORM applies the
-        # Python-side default('approved') to any new insert. An explicit
-        # status=None bypasses that default (only an *unset* attribute gets
-        # the default; an explicitly-assigned None is inserted as NULL),
-        # which is what SQLite's own ALTER TABLE ADD COLUMN does to every
-        # row that existed before the column did.
-        p = m.Project(name="Legacy Project", active=True, status=None)
-        t = m.TaskType(name="Legacy Task", active=True, status=None)
+        # Simulates a row created before the status column existed. A real
+        # SQLite `ALTER TABLE ADD COLUMN` never goes through the ORM at
+        # all — every pre-existing row just gets SQL NULL directly, no
+        # Python-side default involved. Constructing via `Model(status=
+        # None)` used to reproduce that (an explicit None bypassed the
+        # ORM's Python-side default, only an *unset* attribute got it) but
+        # that's an ORM-internal nuance that drifted under a newer
+        # SQLAlchemy on Ganesh's machine (Python 3.14, unpinned
+        # requirements.txt — see feedback-timekeeping-dependency-drift) —
+        # it started reapplying the default even to an explicit None,
+        # which made this test's own setup silently stop simulating the
+        # bug it exists to catch. A raw UPDATE bypasses the ORM entirely
+        # instead: Column-level Python defaults only ever fire on INSERT,
+        # never UPDATE, so this reliably lands NULL regardless of
+        # SQLAlchemy version — and it's arguably more faithful anyway,
+        # since ALTER TABLE ADD COLUMN isn't an ORM insert either.
+        p = m.Project(name="Legacy Project", active=True)
+        t = m.TaskType(name="Legacy Task", active=True)
         db.add_all([p, t])
         db.commit()
-        assert p.status is None and t.status is None  # sanity: nothing set it yet
+        db.execute(update(m.Project.__table__).where(m.Project.__table__.c.id == p.id).values(status=None))
+        db.execute(update(m.TaskType.__table__).where(m.TaskType.__table__.c.id == t.id).values(status=None))
+        db.commit()
+        db.expire_all()
+        assert p.status is None and t.status is None  # sanity: really NULL in the DB
 
         ensure_list_status_backfill(db)
 

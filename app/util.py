@@ -299,6 +299,29 @@ def ensure_location_backfill(db: Session) -> None:
         db.commit()
 
 
+def ensure_leave_v2_backfill(db: Session) -> None:
+    """Backfill for `Employee.is_on_pip`, added 2026-08-21 (Leave
+    Management V2). Same root cause as ensure_location_backfill above:
+    SQLite's ADD COLUMN gives every existing row NULL, not the ORM-level
+    `default=False` — without this, `if emp.is_on_pip` still works fine
+    (SQL NULL is falsy in Python exactly like False, same reasoning as
+    is_developer's docstring), but leaves the column in a NULL rather than
+    an explicit False state, which the admin-facing PIP toggle checkbox
+    would otherwise render inconsistently for. A no-op once every row
+    already has a real boolean, safe on every startup.
+
+    `Employee.probation_days` deliberately gets NO backfill here — NULL is
+    already its correct, meaningful value ("use the company default from
+    Config.probation_days_default"), not a gap to fill in, same convention
+    as the entitlement columns (casual_leave_days etc.)."""
+    rows = list(db.execute(select(m.Employee).where(m.Employee.is_on_pip.is_(None))).scalars())
+    if not rows:
+        return
+    for emp in rows:
+        emp.is_on_pip = False
+    db.commit()
+
+
 def ensure_bootstrap_admins(db: Session) -> None:
     """Creates the initial Super Admin account(s) from the BOOTSTRAP_ADMINS
     env var, but ONLY if the employees table is completely empty.
@@ -394,6 +417,101 @@ def normalize_title_case(name: str) -> str:
     return " ".join(out)
 
 
+def capitalize_first(text: str) -> str:
+    """'working on india flag' -> 'Working on india flag'. Applied to
+    free-text details fields (Plan for the Day, Add Row, Auto time
+    capture) when saved (Ganesh, 2026-08-22) — capitalizes only the very
+    first character of the string; everything else is left exactly as
+    typed. Deliberately NOT normalize_title_case() above — that
+    capitalizes every word and exists for short Project/Task labels, not
+    a typed sentence or multi-line note, where capitalizing every word
+    would read wrong ('Have To Work On The New System'). Caller is
+    expected to have already .strip()'d `text`; this doesn't strip or
+    collapse whitespace itself, so a multi-line paste's later lines are
+    untouched."""
+    return text[:1].upper() + text[1:] if text else text
+
+
+# Human-readable labels for AuditLog.action codes (Ganesh, 2026-08-22) —
+# used only by the Dashboard's "Recent activity" preview widget, which
+# reads like a manager-facing summary ("Submitted day", "Updated config"),
+# not the full /admin/audit trail, which deliberately keeps raw action
+# codes + entity/detail columns as-is since that page is a searchable
+# technical log meant to be grepped/filtered by the exact code an
+# investigation is looking for. Every entry here is a snapshot of the
+# audit() call sites that existed on 2026-08-22 (see util.audit callers
+# across app/routes/*.py) — a *new* audit() call site with an unmapped
+# action code doesn't break anything, it just falls back to the same
+# "action_code" -> "Action code" title-casing the Dashboard already used
+# before this existed, so this dict is a nice-to-have, not something that
+# needs to be kept in lockstep with every new audit() call.
+_AUDIT_ACTION_LABELS = {
+    "submit_day": "Submitted day",
+    "resubmit_day": "Resubmitted day",
+    "entry_details_edited": "Edited task details",
+    "break_details_edited": "Edited break details",
+    "leave_requested": "Requested leave",
+    "leave_request_withdrawn": "Withdrew leave request",
+    "leave_approve": "Approved leave",
+    "leave_reject": "Rejected leave",
+    "leave_add": "Added leave",
+    "leave_delete": "Deleted leave",
+    "leave_bulk_upload": "Bulk-uploaded leave",
+    "compensation_match_requested": "Requested overtime match",
+    "delete_compensation_link": "Deleted compensation link",
+    "reject_compensation_match": "Rejected compensation match",
+    "overtime_requested": "Requested overtime",
+    "overtime_request_withdrawn": "Withdrew overtime request",
+    "overtime_approve": "Approved overtime",
+    "overtime_reject": "Rejected overtime",
+    "overtime_grant": "Granted overtime",
+    "overtime_delete": "Deleted overtime",
+    "special_paid_grant": "Granted special paid time",
+    "config_change": "Updated config",
+    "clear_override": "Cleared override",
+    "recompute_month": "Recomputed month",
+    "roster_add": "Added employee",
+    "roster_edit": "Edited employee",
+    "roster_bulk_upload": "Bulk-uploaded roster",
+    "reset_password": "Reset password",
+    "location_change": "Changed location",
+    "profile_personal_details_updated": "Updated personal details",
+    "profile_employment_details_updated": "Updated employment details",
+    "assignments_save": "Saved assignments",
+    "holiday_add": "Added holiday",
+    "holiday_delete": "Deleted holiday",
+    "holiday_bulk_upload": "Bulk-uploaded holidays",
+    "support_query_submitted": "Submitted a support question",
+    "support_resolved": "Resolved a support question",
+    "ticket_raised": "Raised a ticket",
+    "ticket_commented": "Commented on a ticket",
+    "ticket_status_changed": "Changed ticket status",
+    "approve_complink": "Approved compensation match",
+    "reject_complink": "Rejected compensation match",
+}
+# Ordered so a more specific prefix (e.g. "suggestion_approve_") is checked
+# before a shorter one that could also match by accident.
+_AUDIT_ACTION_PREFIXES = [
+    ("suggestion_approve_", "Approved {} suggestion"),
+    ("suggestion_edit_", "Edited {} suggestion"),
+    ("suggestion_reject_", "Rejected {} suggestion"),
+    ("lists_bulk_upload_", "Bulk-uploaded {} list"),
+    ("toggle_", "Toggled {} active"),
+    ("add_", "Added {}"),
+]
+
+
+def humanize_audit_action(action: str) -> str:
+    """AuditLog.action code -> short human phrase for the Dashboard's
+    Recent activity widget. See _AUDIT_ACTION_LABELS above for scope."""
+    if action in _AUDIT_ACTION_LABELS:
+        return _AUDIT_ACTION_LABELS[action]
+    for prefix, template in _AUDIT_ACTION_PREFIXES:
+        if action.startswith(prefix):
+            return template.format(action[len(prefix):].replace("_", " "))
+    return action.replace("_", " ").capitalize()
+
+
 def punch_remaining_minutes(target_minutes: int, completed_punch_minutes: int) -> int:
     """Countdown-to-target remaining minutes for the Punch In/Out widget on
     Today, computed fresh server-side on every page load; the browser just
@@ -421,6 +539,29 @@ def overtime_minutes(punched_minutes: int, target_minutes: Optional[int]) -> int
     if target_minutes is None:
         return 0
     return max(0, punched_minutes - target_minutes)
+
+
+def overtime_row_flags(durations, target_minutes: int) -> list:
+    """Task Planning (Ganesh, 2026-08-21) — which of today's task log rows
+    fall after the day's target was already reached, for the distinct
+    row-coloring on Today (see today.html's `overtime-row` class). Takes
+    plain per-row minute durations in the SAME chronological order the
+    rows are displayed (app/routes/employee.py's _day_context already
+    orders TaskEntry by start_minute), returns a same-length list of
+    booleans — True when the running total BEFORE that row already
+    reached target. Pure/no side effects, deliberately: callers zip the
+    result back onto their own row objects (a transient `.is_overtime`
+    attribute, never persisted) rather than this function knowing
+    anything about TaskEntry/ORM objects, so it's trivially testable in
+    isolation. `target_minutes <= 0` (e.g. a full day of approved leave,
+    nothing expected) means nothing is flagged — every result is False,
+    not everything."""
+    flags = []
+    running = 0
+    for d in durations:
+        flags.append(target_minutes > 0 and running >= target_minutes)
+        running += d
+    return flags
 
 
 def punch_out_error(day_submission: Optional[m.DaySubmission]) -> Optional[str]:

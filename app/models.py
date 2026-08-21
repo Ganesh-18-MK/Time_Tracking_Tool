@@ -41,6 +41,41 @@ STRIKE_STATUSES = (PARTIAL, MISSING)
 
 LEAVE_TYPES = ("Casual", "Sick", "Vacation", "Other")
 
+# Leave Management V2 (Ganesh, 2026-08-21 — see docs/LEAVE_MANAGEMENT_PLAN.md)
+# — the 5 replacement types requested. LEAVE_TYPES above is left untouched
+# on purpose: existing LeaveRecord.type values ("Casual"/"Sick"/"Vacation"/
+# "Other") are frozen historical fact, same "never rewrite frozen fact"
+# principle CLAUDE.md already uses for imported DayStatus rows — old rows
+# keep their old string exactly as stored. LEAVE_TYPES_V2 is what every NEW
+# request/admin-entry picks from once LEAVE_MANAGEMENT_V2_ENABLED is on
+# (see app/templating.py); the employee/admin leave screens switch their
+# dropdown to this list, they don't merge the two.
+LEAVE_PLANNED = "Planned Time"
+LEAVE_UNPLANNED = "Unplanned Time"
+LEAVE_UNPAID = "Unpaid Time"
+LEAVE_BEREAVEMENT = "Bereavement Time"
+LEAVE_SPECIAL_PAID = "Special Paid Time"
+LEAVE_TYPES_V2 = (LEAVE_PLANNED, LEAVE_UNPLANNED, LEAVE_UNPAID, LEAVE_BEREAVEMENT, LEAVE_SPECIAL_PAID)
+# Only Planned Time accrues automatically and only it is blocked during
+# probation (PDF: "Unplanned Time... available immediately, no probation
+# period" — the same reasoning extends to Unpaid/Bereavement/Special Paid,
+# none of which are earned, so there's nothing to wait for).
+LEAVE_TYPES_NO_PROBATION_BLOCK = (LEAVE_UNPLANNED, LEAVE_UNPAID, LEAVE_BEREAVEMENT, LEAVE_SPECIAL_PAID)
+# Duration picker (requirement 2) — Half Day / Full Day are derived from the
+# employee's own daily_target_minutes (target÷2, target), not a hardcoded
+# 4h/8h, so someone on a non-standard schedule still gets a proportionally
+# correct number (see docs/LEAVE_MANAGEMENT_PLAN.md §2). Custom reuses the
+# existing free-hours input.
+LEAVE_DURATION_HALF = "half"
+LEAVE_DURATION_FULL = "full"
+LEAVE_DURATION_CUSTOM = "custom"
+LEAVE_DURATIONS = (LEAVE_DURATION_HALF, LEAVE_DURATION_FULL, LEAVE_DURATION_CUSTOM)
+# Bereavement relationship picker (requirement 7) — deliberately a short
+# open list, same convention as LOCATIONS/BREAK_TYPES: a free-text "Other"
+# covers anything not listed rather than trying to enumerate every possible
+# relation up front.
+BEREAVEMENT_RELATIONS = ("Spouse", "Child", "Parent", "Sibling", "Other")
+
 # Employee work location (Ganesh, 2026-08-12: holiday management — the team
 # now has both US and India staff, and each country's holiday calendar is
 # different, so compliance/"is this a working day" can no longer assume one
@@ -145,6 +180,29 @@ class Employee(Base):
     # calendar applies" always needs an answer, unlike e.g. date_of_birth
     # where blank is a perfectly fine, honest "not collected yet" state.
     location: Mapped[str] = mapped_column(String(20), default=DEFAULT_LOCATION)
+
+    # Leave Management V2 (Ganesh, 2026-08-21). Both additive/nullable —
+    # real production data exists now, no rm-tms.db migration path (same
+    # reasoning as every other column added this way, see location above).
+    # is_on_pip: Performance Improvement Plan flag (requirement 10 — "no
+    # paid leave while on a PIP", enforced in engine.effective_leave_type()
+    # and the request routes, not by blocking the request itself: a PIP
+    # employee can still request time off, it's just force-converted to
+    # Unpaid Time so nobody has to remember to pick the right type by hand).
+    # Plain on/off, no start/end date of its own — see the "still open"
+    # section of docs/LEAVE_MANAGEMENT_PLAN.md; a start/end-dated PIP is a
+    # bigger, separate feature (notifications, auto-expiry) not asked for
+    # here, and easy to layer on top of a plain bool later without a schema
+    # break. Toggled via Roster -> Edit (Super-Admin-gated, same tier as the
+    # reports_to/Developer fields above).
+    is_on_pip: Mapped[bool] = mapped_column(Boolean, default=False)
+    # probation_days: NULL means "use the company default from
+    # Config.probation_days_default" (see CONFIG_DEFAULTS below) — same
+    # nullable-means-fall-back-to-config convention as the entitlement
+    # columns above, not a value that needs its own backfill (NULL is
+    # already the correct, meaningful state for every existing employee
+    # until an admin explicitly overrides one person's probation length).
+    probation_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     entries = relationship("TaskEntry", back_populates="employee")
     # remote_side=[id]: tells SQLAlchemy this is the "many" side pointing at
@@ -348,6 +406,27 @@ class TaskAssignment(Base):
     task_type = relationship("TaskType")
 
 
+# Feature-usage tracking (Ganesh, 2026-08-21, "as a developer I want to
+# know how many people are using what option") — which of the 3 ways a
+# TaskEntry row got created. Set at each of the three creation call sites
+# in app/routes/employee.py (add_entry, _finish_task_timer) going FORWARD
+# ONLY from the day this shipped — every historical/imported row and
+# every row logged before this change stays NULL, meaning "unknown," not
+# "manual". app/reports.py's feature_usage_report() treats NULL as
+# excluded from every method's count rather than lumping it into
+# ENTRY_METHOD_MANUAL, so old data never silently inflates (or deflates)
+# the adoption percentages.
+ENTRY_METHOD_PLAN = "plan"
+ENTRY_METHOD_AUTO_TIMER = "auto_timer"
+ENTRY_METHOD_MANUAL = "manual_add"
+ENTRY_METHODS = (ENTRY_METHOD_PLAN, ENTRY_METHOD_AUTO_TIMER, ENTRY_METHOD_MANUAL)
+ENTRY_METHOD_LABELS = {
+    ENTRY_METHOD_PLAN: "Plan for the Day",
+    ENTRY_METHOD_AUTO_TIMER: "Auto time capture",
+    ENTRY_METHOD_MANUAL: "Add Row",
+}
+
+
 class TaskEntry(Base):
     __tablename__ = "task_entries"
 
@@ -362,6 +441,9 @@ class TaskEntry(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     # marks rows migrated from legacy Task Summary files (not validated to new rules)
     imported: Mapped[bool] = mapped_column(Boolean, default=False)
+    # See ENTRY_METHOD_* above — one of ENTRY_METHODS, or NULL for any row
+    # created before 2026-08-21 (imported or app-created, doesn't matter).
+    entry_method: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
     employee = relationship("Employee", back_populates="entries")
     project = relationship("Project")
@@ -488,14 +570,103 @@ class ActiveTaskTimer(Base):
     # the minute-of-day value.
     start_minute: Mapped[int] = mapped_column(Integer)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    # Task Planning (Ganesh, 2026-08-21) — set when this running segment was
+    # started FROM a planned row (Today's Plan's Start/Resume button)
+    # rather than the ad-hoc Auto time capture form; NULL for every ad-hoc
+    # timer, exactly as before. Nullable/additive: existing rows and every
+    # ad-hoc Start Timer keep behaving identically. See PlannedTask below —
+    # this is the only schema link between the two; TaskEntry itself never
+    # needs to know a row came from a plan (see PlannedTask's docstring).
+    planned_task_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("planned_tasks.id"), nullable=True
+    )
 
     employee = relationship("Employee")
     project = relationship("Project")
     task_type = relationship("TaskType")
+    planned_task = relationship("PlannedTask")
 
     @property
     def elapsed_minutes(self) -> int:
         return int((dt.datetime.utcnow() - self.started_at).total_seconds() // 60)
+
+
+PLAN_PLANNED = "planned"
+PLAN_RUNNING = "running"
+PLAN_PAUSED = "paused"
+PLAN_DONE = "done"
+PLAN_STATUSES = (PLAN_PLANNED, PLAN_RUNNING, PLAN_PAUSED, PLAN_DONE)
+
+
+class PlannedTask(Base):
+    """"Plan for the Day" (Ganesh, 2026-08-21): an employee picks a Project/
+    Task and a short plan note *before* working on it, then works it with
+    Start / Pause / Resume / Stop instead of one uninterrupted Start/Stop.
+
+    Deliberately does NOT introduce a "worked time spans a pause" concept
+    into TaskEntry at all — every Start-to-Pause (or Start-to-Stop) segment
+    is finished through the exact same `_finish_task_timer()` an ad-hoc
+    Auto time capture timer already uses (app/routes/employee.py), which
+    creates one ordinary, independent TaskEntry row per segment. A task
+    paused over a meeting and resumed after therefore shows as two normal
+    rows in the log, each with its own real start/end clock time — not one
+    row with a mysterious internal gap. This is why nothing in
+    app/engine.py or app/validation.py needed to change: every segment is,
+    to the rest of the app, indistinguishable from a plain hand-typed row,
+    so the existing overlap/4-hour-cap/day-total/strike math already
+    applies to it correctly with zero new cases to reason about.
+
+    status walks planned -> running -> paused -> ... -> done:
+      - planned: added, never started yet. Editable (project/task/details),
+        deletable.
+      - running: the currently-open segment is this plan's (see
+        ActiveTaskTimer.planned_task_id) — at most one row across an
+        employee's WHOLE day can be `running` at a time, same single-
+        active-timer rule Auto time capture already enforces (the shared
+        ActiveTaskTimer table's own UniqueConstraint("employee_id")).
+      - paused: was running, got paused (or got auto-finished because the
+        employee started a different plan/timer without pausing first —
+        same "starting a new one auto-stops the old one" convention
+        start_task_timer already uses). Its segments-so-far are already
+        real TaskEntry rows; Resume opens a fresh one.
+      - done: explicitly stopped for good. Read-only from here.
+
+    created_by_employee_id (nullable) distinguishes a self-planned row from
+    one an admin/team lead planned for someone else — not used by any
+    route yet (no lead-side "plan a task for someone" screen exists yet),
+    but included now so that screen, if built later, is additive rather
+    than a schema change on top of a schema change."""
+
+    __tablename__ = "planned_tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True)
+    date: Mapped[dt.date] = mapped_column(Date, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    task_type_id: Mapped[int] = mapped_column(ForeignKey("task_types.id"))
+    details: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default=PLAN_PLANNED)
+    created_by_employee_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("employees.id"), nullable=True
+    )
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    # Set once this specific plan has been auto-carried to a fresh
+    # PLAN_PLANNED row on the next day because it was still `planned`/
+    # `paused` at Submit Day (Ganesh, 2026-08-22 — see submit_day() in
+    # app/routes/employee.py). NULL on every plan that's never been
+    # through that path (which is all of them before this column existed,
+    # and every one that finished the same day it was made). Deliberately
+    # a separate marker rather than changing `status` when carried — the
+    # original row's status stays the honest, unmutated record of what
+    # actually happened that day (never-rewrite-frozen-history, same
+    # instinct as DayStatus.source='imported' elsewhere in this app); this
+    # column exists purely to stop a day getting resubmitted after an
+    # admin unlock from copying the same unfinished plan to tomorrow twice.
+    carried_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+
+    employee = relationship("Employee", foreign_keys=[employee_id])
+    project = relationship("Project")
+    task_type = relationship("TaskType")
 
 
 class DaySubmission(Base):
@@ -540,6 +711,21 @@ class LeaveRecord(Base):
     reviewed_by: Mapped[str] = mapped_column(String(120), default="")
     reviewed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
     review_note: Mapped[str] = mapped_column(Text, default="")
+    # Leave Management V2 (Ganesh, 2026-08-21), both additive/nullable:
+    # relation: which family member Bereavement Time is for (requirement
+    # 7) — only meaningful when type == LEAVE_BEREAVEMENT, NULL/blank for
+    # every other type and every pre-existing row.
+    relation: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    # approved_minutes_per_day: NULL until a decision is made; set at
+    # approve time from the admin's editable "Hours approved" field
+    # (requirement 6 — partial approval). May be LESS than
+    # minutes_per_day — that's the whole point of a partial approval —
+    # but is never used to widen a request past what was asked for.
+    # engine.leave_balance_v2()'s "used" sums THIS column, not
+    # minutes_per_day, so a partial approval is reflected correctly;
+    # review_note carries the "why partial" explanation and is already a
+    # plain-text field above, no new column needed for that half of it.
+    approved_minutes_per_day: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     employee = relationship("Employee")
 
@@ -795,6 +981,45 @@ class CompensationLink(Base):
     linked_by: Mapped[str] = mapped_column(String(120), default="")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     fully_compensated: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Overtime-for-Missed-Hours, employee-requested (Ganesh, 2026-08-21,
+    # requirement 9) — extends this existing feature rather than building a
+    # second one, since "match a shortfall day against surplus days" is
+    # exactly what a link already is; see
+    # docs/LEAVE_MANAGEMENT_PLAN.md §3. status default is LEAVE_APPROVED,
+    # matching LeaveRecord's own precedent: every pre-existing row here was
+    # created directly by a SuperAdmin (app/routes/admin.py's
+    # add_complink()), which is already-approved by definition — only a
+    # NEW employee-submitted match request starts life as LEAVE_REQUESTED.
+    # requested_by_employee distinguishes the two cases (True only for a
+    # self-service request) so the admin queue knows which rows actually
+    # need a decision instead of showing every historical admin-made link.
+    status: Mapped[str] = mapped_column(String(20), default=LEAVE_APPROVED)
+    requested_by_employee: Mapped[bool] = mapped_column(Boolean, default=False)
+    reviewed_by: Mapped[str] = mapped_column(String(120), default="")
+    reviewed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    review_note: Mapped[str] = mapped_column(Text, default="")
+
+    employee = relationship("Employee")
+
+
+class SpecialPaidGrant(Base):
+    """Special Paid Time, granted by management (requirement 8) — a ledger,
+    not an entitlement column, since these hours are handed out one grant
+    at a time (a reward, a one-off exception) rather than accrued like
+    Planned Time. No separate approval step: a SuperAdmin granting the
+    hours *is* the approval, same one-action-reason-required shape
+    Compensation Links already use above (see docs/LEAVE_MANAGEMENT_PLAN.md
+    §3 — "Recommended: no separate step"). engine.leave_balance_v2() sums
+    this table's minutes as the Special Paid Time entitlement for that
+    employee."""
+    __tablename__ = "special_paid_grants"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True)
+    minutes: Mapped[int] = mapped_column(Integer)  # integer minutes, CLAUDE.md hard rule
+    reason: Mapped[str] = mapped_column(Text, default="")
+    granted_by: Mapped[str] = mapped_column(String(120), default="")
+    granted_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     employee = relationship("Employee")
 
@@ -828,4 +1053,13 @@ CONFIG_DEFAULTS = {
     "comp_erases_strike": "1",        # open question 3
     "live_start_date": "",            # set by importer; engine computes from here on
     "max_break_minutes": "30",        # break time beyond this extends that day's target
+    # Leave Management V2 (Ganesh, 2026-08-21) — thresholds instead of
+    # hardcoded numbers, per CLAUDE.md's existing rule ("read via
+    # engine.get_config(db), never hardcode thresholds"). Days/year, not
+    # minutes/month — engine.py converts using each employee's own
+    # daily_target_minutes (see docs/LEAVE_MANAGEMENT_PLAN.md §2's table).
+    "probation_days_default": "90",
+    "planned_days_year_0_2": "9",      # 0-2 years' experience
+    "planned_days_year_2_5": "11",     # 2-5 years' experience
+    "planned_days_year_5_plus": "13",  # 5+ years' experience
 }

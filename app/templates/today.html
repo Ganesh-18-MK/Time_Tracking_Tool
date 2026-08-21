@@ -10,7 +10,7 @@
 <div class="today-page">
 
 <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px 16px">
-  <h1 style="margin-bottom:0">Task log — {{ day.strftime('%A') }}, {{ day|mdy }}{% if day == today %} (today){% endif %}</h1>
+  <h1 style="margin-bottom:0">Task log — {{ day.strftime('%A') }}, {{ day|mdy }}{% if day == today %} (Today){% endif %}</h1>
 
   {% if day == today %}
   {# Punch In/Out + Break, compact (manager's redesign, 2026-08-14) — was
@@ -53,6 +53,28 @@
   </div>
   {% endif %}
 </div>
+
+{% if show_punch_out_reminder %}
+{# Punch-out reminder popup (Ganesh, 2026-08-21) — Punch Out is already
+   blocked until Submit Day locks the day (see util.punch_out_error); this
+   fires the moment that becomes possible and there's still an open punch
+   session sitting there. Same modal-overlay/modal-box pattern as base.html's
+   profile-completion popup, but no session-dismissal bookkeeping needed —
+   actually punching out makes active_punch None on the next load, which
+   alone stops this from reappearing; "Not now" here is purely client-side. #}
+<div class="modal-overlay" id="punchOutReminderOverlay">
+  <div class="modal-box">
+    <h2 style="margin-top:0">Day submitted — don't forget to punch out</h2>
+    <p class="small muted">Your task log is submitted and locked. You're still punched in — punch out to close today's session.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+      <form method="post" action="/punch/out" class="inline">
+        <button type="submit">Punch Out</button>
+      </form>
+      <button type="button" class="small secondary" onclick="document.getElementById('punchOutReminderOverlay').style.display='none'">Not now</button>
+    </div>
+  </div>
+</div>
+{% endif %}
 
 {% if edit_notices %}
 {# An admin rewrote one of this employee's own Project/Task suggestions
@@ -188,7 +210,7 @@
       <select name="date" onchange="this.form.submit()">
         {% for d in allowed_dates|reverse %}
         <option value="{{ d.isoformat() }}" {{ 'selected' if d == day }}>
-          {{ d.strftime('%a') }} {{ d|mdy }}{% if d == today %} — today{% endif %}
+          {{ d.strftime('%a') }} {{ d|mdy }}{% if d == today %} — Today{% endif %}
         </option>
         {% endfor %}
       </select>
@@ -205,6 +227,117 @@
   make your corrections and <strong>resubmit</strong> below.</div>
 {% endif %}
 
+{% if day == today and not day_locked %}
+{# Task Planning: "Plan for the Day" + "Today's Plan" (Ganesh, 2026-08-21,
+   see docs/TASK_PLANNING_TIMER_PLAN.md) — sits above Auto time capture,
+   between the page header and it. Always "today" only, same live/right-
+   now convention as Punch/Break/Auto time capture on this page — a plan
+   only ever carries today's date (see _day_context's `plans`), so this
+   interactive section is hidden while browsing a past day via the date
+   dropdown above, same as those other live widgets. A read-only view of
+   that day's plans (Ganesh, 2026-08-22) shows instead — see the
+   `past_plans` block right below. #}
+<div class="card">
+  <h2>Plan for the day</h2>
+  <form method="post" action="/plan/add" class="formrow">
+    <div class="combo" id="combo-plan-project" data-placeholder="a project">
+      <label>Project/Employer</label>
+      <input type="text" class="combo-input" autocomplete="off" placeholder="Type to search…" required>
+      <input type="hidden" name="project_id">
+      <div class="combo-menu" hidden></div>
+    </div>
+    <div class="combo" id="combo-plan-task" data-placeholder="a task">
+      <label>Task</label>
+      <input type="text" class="combo-input" autocomplete="off" placeholder="Type to search…" required>
+      <input type="hidden" name="task_type_id">
+      <div class="combo-menu" hidden></div>
+    </div>
+    <div style="flex:1 1 240px">
+      <label>Plan</label>
+      <textarea name="details" rows="1" style="width:100%; resize:vertical" placeholder="e.g. Need to work on the new leave management system" required></textarea>
+    </div>
+    <div><button>Add</button></div>
+  </form>
+  <p class="small muted" style="margin:3px 0 0">Add what you intend to work on before you start it — it shows up below with Start/Pause/Stop. Multiple lines (e.g. a numbered list) are fine and display as typed.</p>
+</div>
+
+<div class="card">
+  <h2>Today's Plan{% if plans %} - {{ plans|length }} {{ 'task' if plans|length == 1 else 'Tasks' }}{% endif %}</h2>
+  {% if plans %}
+  {% for p in plans %}
+  <div class="plan-item plan-{{ p.status }}">
+    <div>
+      <div><strong>{{ p.project.name }} · {{ p.task_type.name }}</strong>
+        {% if p.status == 'planned' %}<span class="badge b-plan-not-started">not started</span>
+        {% elif p.status == 'running' %}<span class="badge b-plan-in-progress">in progress</span>
+        {% elif p.status == 'paused' %}<span class="badge b-plan-paused">paused</span>
+        {% else %}<span class="badge b-plan-done">done</span>{% endif %}
+      </div>
+      <div class="small" style="white-space:pre-wrap">{{ p.details }}{%- if p.status in ('planned', 'paused') -%}
+        <details class="details-edit" style="display:inline-block">
+          <summary class="small muted">✎ edit</summary>
+          <form method="post" action="/plan/{{ p.id }}/edit" style="margin-top:6px;display:flex;gap:6px;align-items:flex-start">
+            <textarea name="details" rows="2" style="flex:1;min-width:180px">{{ p.details }}</textarea>
+            <button class="small">Save</button>
+          </form>
+        </details>
+        {%- endif %}</div>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      {% if p.status in ('planned', 'paused') %}
+      <form method="post" action="/plan/{{ p.id }}/start" class="inline">
+        <button class="small">{{ 'Resume' if p.status == 'paused' else 'Start' }}</button>
+      </form>
+      {% endif %}
+      {% if p.status == 'running' %}
+      <form method="post" action="/plan/{{ p.id }}/pause" class="inline">
+        <button class="small warn">Pause</button>
+      </form>
+      {% endif %}
+      {% if p.status in ('running', 'paused') %}
+      <form method="post" action="/plan/{{ p.id }}/stop" class="inline" onsubmit="return confirm('Mark this plan done? You can\'t resume it after.')">
+        <button class="small danger">Stop</button>
+      </form>
+      {% endif %}
+      {% if p.status == 'planned' %}
+      <form method="post" action="/plan/{{ p.id }}/delete" class="inline" onsubmit="return confirm('Remove this plan?')">
+        <button class="small secondary">✕</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <p class="small muted">Nothing planned yet — add what you intend to work on above.</p>
+  {% endif %}
+  <p class="small muted" style="margin:2px 0 0">Start/Resume opens a live timer; Pause or Stop logs that stretch of time into your task log below automatically, with the actual time it happened. Starting a different plan (or the Auto time capture timer below) while one's running pauses it for you first — nothing gets lost.</p>
+</div>
+{% endif %}
+
+{% if day != today and past_plans %}
+{# Read-only counterpart to "Today's Plan" above (Ganesh, 2026-08-22) —
+   same plan-item markup/badges/colors for visual consistency, but no
+   Start/Pause/Stop/edit/delete forms: a past day's PlannedTask rows are
+   just context for what was planned/left running/done that day, not
+   something this page can act on (see `past_plans` in _day_context). #}
+<div class="card">
+  <h2>Plan — {{ day.strftime('%A') }}, {{ day|mdy }} ({{ past_plans|length }} {{ 'task' if past_plans|length == 1 else 'tasks' }})</h2>
+  {% for p in past_plans %}
+  <div class="plan-item plan-{{ p.status }}">
+    <div>
+      <div><strong>{{ p.project.name }} · {{ p.task_type.name }}</strong>
+        {% if p.status == 'planned' %}<span class="badge b-plan-not-started">not started</span>
+        {% elif p.status == 'running' %}<span class="badge b-plan-in-progress">in progress</span>
+        {% elif p.status == 'paused' %}<span class="badge b-plan-paused">paused</span>
+        {% else %}<span class="badge b-plan-done">done</span>{% endif %}
+      </div>
+      <div class="small" style="white-space:pre-wrap">{{ p.details }}</div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
 {% if not day_locked %}
 {# Auto time capture + Add row (manager's redesign, 2026-08-14) — both
    "ways to add a task" now sit above the logged-time table, instead of
@@ -215,13 +348,33 @@
   <div class="totalbar">
     <span class="big" id="tasktimer">00:00</span>
     <span class="muted">{{ active_timer.project.name }} · {{ active_timer.task_type.name }} — started {{ active_timer.start_minute|clock }}</span>
+    {% if active_timer.planned_task_id %}
+    {# This timer belongs to a running plan (Ganesh, 2026-08-22) — Pause/
+       Stop here post straight to the same /plan/{id}/pause|stop routes
+       Today's Plan's own buttons use, not /task-timer/stop|cancel. Those
+       ad-hoc routes don't know about PlannedTask at all, so using them on
+       a plan-linked timer used to leave the plan's status stuck on
+       "running" (Stop & Log) or silently drop the segment with no entry
+       logged at all (Cancel) — see _finish_plan_segment vs
+       _finish_task_timer. This card now mirrors whichever plan is
+       running instead of offering a second, timer-only set of controls
+       that could desync from it. #}
+    <span class="small muted">Running from your plan below.</span>
+    <form method="post" action="/plan/{{ active_timer.planned_task_id }}/pause" class="inline">
+      <button class="small warn">Pause</button>
+    </form>
+    <form method="post" action="/plan/{{ active_timer.planned_task_id }}/stop" class="inline" onsubmit="return confirm('Mark this plan done? You can\'t resume it after.')">
+      <button class="small danger">Stop</button>
+    </form>
+    {% else %}
     <form method="post" action="/task-timer/stop" class="inline">
-      <textarea name="details" placeholder="Details{% if active_timer.details %} (already set — optional to change){% else %} (min 5 chars){% endif %}" rows="1" style="width:220px; resize:vertical"></textarea>
-      <button>Stop &amp; Log</button>
+      <textarea name="details" placeholder="{% if active_timer.details %}Optional (already set){% else %}Details (min 5 chars){% endif %}" rows="1" style="width:240px; resize:vertical; vertical-align:middle"></textarea>
+      <button class="small">Stop &amp; Log</button>
     </form>
     <form method="post" action="/task-timer/cancel" class="inline" onsubmit="return confirm('Discard this timer — nothing gets logged?')">
       <button class="small secondary">Cancel</button>
     </form>
+    {% endif %}
   </div>
   <script>
   (function () {
@@ -258,7 +411,7 @@
     <div><button>Start Timer</button></div>
   </form>
   {% endif %}
-  <p class="small muted" style="margin:6px 0 0">Starts a live timer and auto-fills Start/End from the clock when you stop —
+  <p class="small muted" style="margin:3px 0 0">Starts a live timer and auto-fills Start/End from the clock when you stop —
     same rules apply (min 5 char details, no overlaps, {{ (max_row_minutes // 60) }}h max per row). Starting a new
     timer auto-stops and logs whatever's already running.</p>
 </div>
@@ -287,15 +440,15 @@
     </div>
     <div style="flex:1 1 220px">
       <label>Details (min 5 chars)</label>
-      <textarea name="details" required minlength="5" rows="2" style="width:100%; resize:vertical" placeholder="What exactly was done">{{ reopen_details or '' }}</textarea>
+      <textarea name="details" required minlength="5" rows="1" style="width:100%; resize:vertical" placeholder="What exactly was done">{{ reopen_details or '' }}</textarea>
     </div>
     <div>
       <label>Start</label>
-      <input type="time" name="start_time" required value="{{ suggest_start or '' }}">
+      <input type="time" id="start_time" name="start_time" required value="{{ suggest_start or '' }}">
     </div>
     <div>
       <label>End</label>
-      <input type="time" name="end_time" required value="{{ reopen_end or '' }}">
+      <input type="time" id="end_time" name="end_time" required value="{{ reopen_end or '' }}">
     </div>
     <div>
       <label>Duration</label>
@@ -315,7 +468,18 @@
     </thead>
     <tbody>
       {% for e in display_entries %}
-      <tr{% if not e.id %} class="muted"{% endif %}>
+      {% if e.is_gap %}
+      <tr class="gap-row">
+        <td class="nowrap">{{ e.start_minute|clock }}</td>
+        <td class="nowrap">{{ e.end_minute|clock }}</td>
+        <td class="nowrap">{{ e.duration_minutes|hm }}</td>
+        <td colspan="3" class="small muted">Unlogged gap — nothing on your task log covers this stretch of time.</td>
+        <td class="nowrap">
+          <button type="button" class="small secondary" onclick="fillGapRow({{ e.start_minute }}, {{ e.end_minute }})">Fill</button>
+        </td>
+      </tr>
+      {% else %}
+      <tr class="{{ 'muted' if not e.id else '' }}{{ ' overtime-row' if e.is_overtime else '' }}" {% if e.is_overtime %}title="Logged after today's target was already reached"{% endif %}>
         <td class="nowrap">{{ e.start_minute|clock }}
           {% if flags.get(e.id) %}<div class="gapflag">⚠ {{ flags[e.id]|hm }} gap before</div>{% endif %}
         </td>
@@ -349,6 +513,7 @@
           {% endif %}
         </td>
       </tr>
+      {% endif %}
       {% else %}
       <tr><td colspan="7" class="muted">No rows yet — add your first task above.</td></tr>
       {% endfor %}
@@ -382,7 +547,7 @@
     <div style="flex:1 1 240px"><label>Name</label><input name="name" required style="width:100%"></div>
     <div><button class="secondary">Suggest</button></div>
   </form>
-  <p class="small muted" style="margin:6px 0 0">It stays hidden and can't be used on any entry — not even your own —
+  <p class="small muted" style="margin:3px 0 0">It stays hidden and can't be used on any entry — not even your own —
     until a team lead approves it.</p>
 </details>
 
@@ -396,6 +561,13 @@ initCombo(document.getElementById('combo-task'), {{ tasks|tojson }}, {{ reopen_t
 // instead, whenever a timer is already active)
 initCombo(document.getElementById('combo-timer-project'), {{ projects|tojson }});
 initCombo(document.getElementById('combo-timer-task'), {{ tasks|tojson }});
+{% endif %}
+{% if day == today %}
+// Plan for the Day (Ganesh, 2026-08-21) — combo-plan-* only exist in the
+// DOM when day == today (see the Task Planning section above), same
+// guard as combo-timer-* above.
+initCombo(document.getElementById('combo-plan-project'), {{ projects|tojson }});
+initCombo(document.getElementById('combo-plan-task'), {{ tasks|tojson }});
 {% endif %}
 
 (function () {
@@ -413,6 +585,27 @@ initCombo(document.getElementById('combo-timer-task'), {{ tasks|tojson }});
   }
   s.addEventListener('input', upd); e.addEventListener('input', upd);
 })();
+
+// Fill a gap row (Ganesh, 2026-08-22) — sets Add Row's Start/End to this
+// exact gap's window and scrolls to it, same idea as the single earliest-
+// gap server-side auto-prefill above but usable from ANY gap row's "Fill"
+// button, entirely client-side (no page reload needed just to pre-fill a
+// form). Dispatching 'input' after setting .value is what makes the
+// duration-preview listener above (and the browser's own native time-
+// input validation) notice the change — setting .value directly does not
+// fire that event on its own. Filling only part of a gap and saving is
+// exactly how "split a gap into more than one entry" works here: submit
+// covers part of the window, whatever's left shows up as its own
+// (smaller) gap row next time the page loads.
+function fillGapRow(startMin, endMin) {
+  function toHHMM(min) { return String(Math.floor(min / 60)).padStart(2, '0') + ':' + String(min % 60).padStart(2, '0'); }
+  const s = document.getElementById('start_time'), e = document.getElementById('end_time');
+  s.value = toHHMM(startMin);
+  e.value = toHHMM(endMin);
+  s.dispatchEvent(new Event('input'));
+  e.dispatchEvent(new Event('input'));
+  document.getElementById('addrowcard').scrollIntoView({behavior: 'smooth', block: 'center'});
+}
 </script>
 {% endif %}
 

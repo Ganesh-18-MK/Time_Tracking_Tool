@@ -1,8 +1,23 @@
 # Leave Management Rebuild — Implementation Plan
 
-**Status:** Plan only, nothing built yet. Written 2026-08-20 from
-`Leave Management Requirements.pdf` (manager) plus decisions Ganesh made
-in chat the same day. Ready to start building.
+**Status:** Built 2026-08-21, behind `LEAVE_MANAGEMENT_V2_ENABLED` (default
+off — see CLAUDE.md/README.md). `py_compile` clean across every changed
+file, engine math hand-verified against the exact numbers in §2 via
+standalone scripts, and both `leave.html`/`admin/leave.html` render clean
+in every flag/data-state combination via a Jinja2 render harness — but
+**not yet run through real `pytest tests/ -q` or `legacy.verify_strikes`**,
+since this sandbox has neither sqlalchemy nor pytest available. Do that
+local run (particularly `tests/test_leave_v2.py` and
+`tests/test_engine.py`'s `TestPartialApprovalReducesTarget`) before
+flipping the flag on anywhere real — this touches pay-adjacent math.
+Two interpretation calls below (§3) were made without being able to check
+the source PDF word-for-word and are flagged for Ganesh to confirm:
+the 3-week notice tier (read as 15 working days), and the compensation-
+match window boundary (`engine.compensation_window_ok` — read as ≤21
+calendar days OR same calendar month).
+
+Written 2026-08-20 from `Leave Management Requirements.pdf` (manager)
+plus decisions Ganesh made in chat the same day.
 
 **Source of truth for behavior:** the requirements PDF, narrowed by the
 decisions below. Where the PDF was ambiguous, this plan states the call

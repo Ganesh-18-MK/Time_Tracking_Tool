@@ -20,6 +20,23 @@ stage). Two independent layers live here:
    MAX_ATTEMPTS) so one shared office/NAT IP with several people signing
    in around the same time doesn't get everyone locked out.
 
+   IP_MAX_ATTEMPTS raised 30 -> 200 (Ganesh, 2026-08-21, ahead of a planned
+   headcount increase to ~150-250 employees). At 30, a single shared
+   office/NAT IP logging in during a normal morning rush was already
+   close to the ceiling at ~45 staff — at 150-250 it would trip on
+   completely legitimate traffic with no attacker involved, exactly the
+   false-positive load_test/ hit during ramp-up (see its README). 200
+   comfortably covers the entire post-growth headcount logging in from
+   one shared IP inside a single 10-minute window, while staying well
+   below the volume a real credential-stuffing/enumeration run would
+   produce — the TPRM-motivated protection this layer exists for is
+   still intact, just resized for real usage instead of the old ~45-user
+   baseline. Revisit this number again if headcount grows past what a
+   comfortable buffer over 200 covers, or if IP_MAX_ATTEMPTS ever needs
+   to move to a shared store (see the multi-instance/multi-worker note
+   below) — the actual attempt volume from a real incident, not a guess,
+   should drive the next change.
+
 Both layers return the exact same lockout message (see _lockout_message in
 app/routes/auth.py) so a caller can't tell which one tripped.
 
@@ -33,7 +50,14 @@ numbers below suggest. If that becomes a real concern, move the counters
 into Postgres (already the prod DB) or add a Cloud Armor rate-limit policy
 in front of Cloud Run instead — this module is deliberately small so either
 swap is easy.
+
+RATE_LIMIT_DISABLED: an explicit, off-by-default escape hatch for local
+load testing ONLY (e.g. load_test/, where 100 simulated users share the
+one real IP of the machine running Locust and would otherwise all trip
+the per-IP layer within seconds of ramp-up). Never set this in a real
+deploy — deploy_gcp.sh does not set it, and it must stay that way.
 """
+import os
 import time
 from collections import defaultdict
 from threading import Lock
@@ -43,8 +67,10 @@ from fastapi import Request
 MAX_ATTEMPTS = 5
 LOCKOUT_SECONDS = 15 * 60
 
-IP_MAX_ATTEMPTS = 30
+IP_MAX_ATTEMPTS = 200  # see module docstring, raised 30 -> 200 on 2026-08-21
 IP_WINDOW_SECONDS = 10 * 60
+
+RATE_LIMIT_DISABLED = os.environ.get("RATE_LIMIT_DISABLED", "0") == "1"
 
 _lock = Lock()
 _failures: dict = defaultdict(list)  # "scope:email" -> [failure timestamps]
@@ -80,6 +106,8 @@ def seconds_until_unlock(scope: str, email: str) -> int:
     """0 if not currently locked out, else how many seconds remain.
     Also prunes attempts older than the lockout window as a side effect,
     so this module never needs a background cleanup task."""
+    if RATE_LIMIT_DISABLED:
+        return 0
     key = _key(scope, email)
     now = time.time()
     with _lock:
@@ -94,6 +122,8 @@ def seconds_until_unlock(scope: str, email: str) -> int:
 
 
 def record_failure(scope: str, email: str) -> None:
+    if RATE_LIMIT_DISABLED:
+        return
     with _lock:
         _failures[_key(scope, email)].append(time.time())
 
@@ -111,6 +141,8 @@ def seconds_until_ip_unlock(scope: str, ip: str) -> int:
     a proper sliding window: the lockout decays as the oldest attempt in
     IP_WINDOW_SECONDS ages out, rather than resetting from whichever
     attempt happened last."""
+    if RATE_LIMIT_DISABLED:
+        return 0
     key = _ip_key(scope, ip)
     now = time.time()
     with _lock:
@@ -125,5 +157,7 @@ def seconds_until_ip_unlock(scope: str, ip: str) -> int:
 
 
 def record_ip_hit(scope: str, ip: str) -> None:
+    if RATE_LIMIT_DISABLED:
+        return
     with _lock:
         _ip_hits[_ip_key(scope, ip)].append(time.time())

@@ -122,6 +122,46 @@ class TestIpThrottle:
         assert rate_limit.IP_MAX_ATTEMPTS > rate_limit.MAX_ATTEMPTS
 
 
+class TestRateLimitDisabled:
+    """RATE_LIMIT_DISABLED — the explicit, off-by-default escape hatch used
+    only by load_test/ (see its README's "one thing that will silently
+    ruin a run" section). Must short-circuit both layers, and must default
+    to enforcing when unset — that default is the actual security
+    property, so it gets its own assertion."""
+
+    def test_defaults_to_enforcing(self):
+        assert rate_limit.RATE_LIMIT_DISABLED is False
+
+    def test_disabled_bypasses_email_lockout(self, monkeypatch):
+        _fake_clock(monkeypatch)
+        monkeypatch.setattr(rate_limit, "RATE_LIMIT_DISABLED", True)
+        for _ in range(rate_limit.MAX_ATTEMPTS * 3):
+            rate_limit.record_failure("login", "a@x.com")
+        assert rate_limit.seconds_until_unlock("login", "a@x.com") == 0
+        # record_failure itself was a no-op, not just the read side
+        assert rate_limit._failures == {}
+
+    def test_disabled_bypasses_ip_throttle(self, monkeypatch):
+        _fake_clock(monkeypatch)
+        monkeypatch.setattr(rate_limit, "RATE_LIMIT_DISABLED", True)
+        for _ in range(rate_limit.IP_MAX_ATTEMPTS * 3):
+            rate_limit.record_ip_hit("login", "1.2.3.4")
+        assert rate_limit.seconds_until_ip_unlock("login", "1.2.3.4") == 0
+        assert rate_limit._ip_hits == {}
+
+    def test_re_enabling_mid_run_resumes_enforcement(self, monkeypatch):
+        # confirms this is a live check on every call, not a value cached
+        # once at import time
+        _fake_clock(monkeypatch)
+        monkeypatch.setattr(rate_limit, "RATE_LIMIT_DISABLED", True)
+        for _ in range(rate_limit.MAX_ATTEMPTS):
+            rate_limit.record_failure("login", "a@x.com")
+        monkeypatch.setattr(rate_limit, "RATE_LIMIT_DISABLED", False)
+        for _ in range(rate_limit.MAX_ATTEMPTS):
+            rate_limit.record_failure("login", "a@x.com")
+        assert rate_limit.seconds_until_unlock("login", "a@x.com") > 0
+
+
 class TestClientIp:
     def _request(self, headers=None, client_host="10.0.0.5"):
         return SimpleNamespace(

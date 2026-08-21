@@ -73,6 +73,22 @@ def require_developer(user: m.Employee = Depends(current_user)) -> m.Employee:
     return user
 
 
+def require_developer_or_admin(user: m.Employee = Depends(current_user)) -> m.Employee:
+    """Gate for the Developer Usage Report (Ganesh, 2026-08-21, "as a
+    developer I want to know how many people are using what option") —
+    open to either axis independently: a plain-employee Developer who
+    isn't an admin, or an admin who isn't flagged as a Developer (Ganesh
+    himself, most likely). Neither require_admin nor require_developer
+    alone covers both cases; this is deliberately its own dependency
+    rather than nesting one inside the other, so it doesn't accidentally
+    inherit require_admin's department-scoping assumptions — this report
+    is org-wide, same as Audit Logs, not department-scoped like the other
+    three Reports pages."""
+    if not (user.is_developer or user.is_admin):
+        raise Forbidden()
+    return user
+
+
 def admin_department_scope(admin: m.Employee) -> Optional[str]:
     """None => no restriction (super admin sees every department).
     Otherwise the exact department string a department-scoped admin is

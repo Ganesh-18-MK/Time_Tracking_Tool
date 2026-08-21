@@ -44,6 +44,26 @@
 </div>
 
 <div class="card">
+  <h2>Approved projects/employers ({{ approved_projects|length }})</h2>
+  {% if approved_projects %}
+  <table>
+    <thead><tr><th>Name</th><th>Suggested by</th><th>Department</th><th>Approved by</th><th>When</th></tr></thead>
+    <tbody>
+      {% for p in approved_projects %}
+      <tr>
+        <td>{{ p.name }}{% if p.original_name %} <span class="muted small">(was "{{ p.original_name }}")</span>{% endif %}</td>
+        <td>{{ p.created_by.name if p.created_by else '—' }}</td>
+        <td>{{ (p.created_by.department or '—') if p.created_by else '—' }}</td>
+        <td class="small muted">{{ p.reviewed_by }}</td>
+        <td class="small nowrap">{{ p.reviewed_at|mdy_dt if p.reviewed_at else '—' }} UTC</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted small">None yet.</p>{% endif %}
+</div>
+
+<div class="card">
   <h2>Tasks ({{ tasks|length }} pending)</h2>
   {% if tasks %}
   <table>
@@ -77,5 +97,25 @@
     </tbody>
   </table>
   {% else %}<p class="muted small">Nothing pending.</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Approved tasks ({{ approved_tasks|length }})</h2>
+  {% if approved_tasks %}
+  <table>
+    <thead><tr><th>Name</th><th>Suggested by</th><th>Department</th><th>Approved by</th><th>When</th></tr></thead>
+    <tbody>
+      {% for t in approved_tasks %}
+      <tr>
+        <td>{{ t.name }}{% if t.original_name %} <span class="muted small">(was "{{ t.original_name }}")</span>{% endif %}</td>
+        <td>{{ t.created_by.name if t.created_by else '—' }}</td>
+        <td>{{ (t.created_by.department or '—') if t.created_by else '—' }}</td>
+        <td class="small muted">{{ t.reviewed_by }}</td>
+        <td class="small nowrap">{{ t.reviewed_at|mdy_dt if t.reviewed_at else '—' }} UTC</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted small">None yet.</p>{% endif %}
 </div>
 {% endblock %}

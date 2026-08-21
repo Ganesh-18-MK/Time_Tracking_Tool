@@ -70,6 +70,23 @@
       <label><input type="checkbox" name="is_developer" value="1" {{ 'checked' if emp.is_developer }}> Developer — can work tickets raised in Support → Tickets</label>
     </div>
     {% endif %}
+    {% if LEAVE_MANAGEMENT_V2_ENABLED %}
+    <div style="margin-top:10px">
+      <label class="f">Leave Management</label>
+      <label style="margin-right:14px"><input type="checkbox" name="is_on_pip" value="1" {{ 'checked' if emp.is_on_pip }}>
+        On a Performance Improvement Plan — all leave becomes Unpaid Time while checked</label>
+    </div>
+    <div class="formrow" style="margin-top:6px">
+      <div>
+        <label>Probation length override (days)</label>
+        <input name="probation_days" value="{{ emp.probation_days if emp.probation_days is not none else '' }}"
+               style="width:100px" placeholder="company default">
+      </div>
+    </div>
+    <p class="small muted" style="margin:4px 0 0">Blank = use the company default
+      ({{ leave_probation_days_default }} days). Planned Time isn't earned or usable until probation ends;
+      every other leave type is available immediately regardless.</p>
+    {% endif %}
     <div style="margin-top:14px">
       <button>Save</button>
       <a class="btn secondary" href="/admin/roster">Cancel</a>

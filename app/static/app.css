@@ -7,6 +7,11 @@
   --ok: #1e7d3f; --ok-bg: #d9f0e0; --warn: #8a6d00; --warn-bg: #fdf0c2;
   --bad: #b3261e; --bad-bg: #fadcda; --leave: #6e4b2c; --leave-bg: #ecdfc9;
   --hol-bg: #e9e4d8; --pending-bg: #f1ede1;
+  /* Orange (Ganesh, 2026-08-21, Today's Plan "in progress" badge) — the
+     palette above had no true orange (warn is olive/yellow, accent is
+     brown), so this is new; same dark-text-on-light-tint shape every
+     other status pair already uses. */
+  --orange: #b35c00; --orange-bg: #fbe4cc;
   /* Shared content width (Ganesh's manager, 2026-08-14: header spanned
      edge-to-edge while the page content below sat in a much narrower
      1280px column, so the logo/nav never lined up with the cards and wide
@@ -107,7 +112,13 @@ tr:hover td { background: #faf6ee; }
 button, .btn { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px;
   padding: 7px 14px; font: inherit; cursor: pointer; }
 button.secondary, .btn.secondary { background: var(--pending-bg); color: var(--ink); }
-button.danger { background: var(--bad); }
+button.danger { background: var(--warn); }
+/* Pause now matches the nav's "Today" active-tab treatment (Ganesh,
+   2026-08-22 — .topbar nav a.on above uses this same pair); Stop took
+   over Pause's old olive/brown color, both only ever used on the Plan/
+   Auto time capture Pause+Stop buttons in today.html (grep confirms no
+   other template uses button.warn/.danger). */
+button.warn { background: var(--accent-light); color: var(--brand-dark); }
 button.small, .btn.small { padding: 3px 9px; font-size: 12px; border-radius: 6px; }
 input, select, textarea { font: inherit; padding: 6px 8px; border: 1px solid #d3cbb8;
   border-radius: 7px; background: #fff; color: var(--ink); }
@@ -186,6 +197,16 @@ td.strikecol { font-weight: 700; }
   padding: 12px 14px; color: var(--ink); text-decoration: none; transition: border-color .15s, transform .1s; }
 .deptcard:hover { border-color: var(--accent-light); text-decoration: none; transform: translateY(-1px); }
 .deptcard.active { border-color: var(--accent); background: var(--pending-bg); }
+/* "All departments" — the primary entry point, given its own accent even
+   when not the active selection (Ganesh, 2026-08-22) so it doesn't read as
+   just one more tile among many single-employee departments. */
+.deptcard.all { border-color: var(--accent); background: var(--pending-bg); }
+/* Nobody from this department has logged in yet today — dimmed until
+   hovered so a glance at the grid shows which teams have activity
+   (Ganesh, 2026-08-22). Doesn't apply to .all, which tracks org-wide
+   presence, not a single department's. */
+.deptcard.zero { opacity: .55; }
+.deptcard.zero:hover { opacity: 1; }
 .deptcard .n { font-size: 20px; font-weight: 700; }
 .deptcard .n .of { font-size: 13px; font-weight: 500; color: var(--muted); }
 .deptcard .l { font-size: 12px; color: var(--muted); margin-top: 2px;
@@ -195,7 +216,11 @@ td.strikecol { font-weight: 700; }
 details.kpi summary { cursor: pointer; list-style: none; }
 details.kpi summary::-webkit-details-marker { display: none; }
 details.kpi summary .n, details.kpi summary .l { display: block; }
+.kpi.leavek .n { color: var(--leave); }
 .namelist { margin: 10px 0 0; padding-left: 18px; font-size: 13px; max-height: 220px; overflow-y: auto; }
+.needslist-group { font-size: 11px; text-transform: uppercase; letter-spacing: .4px;
+  color: var(--muted); font-weight: 700; margin: 12px 0 5px; }
+.needslist-group:first-child { margin-top: 0; }
 .namelist li { margin-bottom: 3px; }
 
 .avatar-sm { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; vertical-align: middle; margin-right: 2px; }
@@ -219,7 +244,34 @@ details.kpi summary .n, details.kpi summary .l { display: block; }
 tr.hide-dept { display: none !important; }
 
 .gapflag { color: var(--warn); font-size: 11px; }
+/* Fillable gap placeholder row (Ganesh, 2026-08-22) — a dashed, muted row
+   distinct from real logged rows, so it reads as "nothing here yet" not
+   as actual logged time. */
+tr.gap-row td { background: var(--warn-bg); border-top: 1px dashed var(--warn); border-bottom: 1px dashed var(--warn); font-style: italic; }
 .lockbanner { background: var(--leave-bg); color: var(--leave); border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; }
+/* Overtime-colored task log rows (Ganesh, 2026-08-21, Task Planning) — a
+   row whose running total-before already crossed the day's target reads
+   visually distinct from the regular workday, same warn palette the
+   overtime alert banner/badge already use elsewhere, not a new color. */
+tr.overtime-row td { background: var(--warn-bg); }
+/* Today's Plan (Ganesh, 2026-08-21) — a plan card's left accent bar
+   communicates state at a glance. Colors (Ganesh, 2026-08-21): not
+   started = red, in progress = orange, paused = yellow, done = green —
+   a dedicated b-plan-* badge set below, not the compliance b-complete/
+   b-partial/b-missing badges (those mean something unrelated elsewhere
+   in the app; reusing them here would tie the two together by accident). */
+.plan-item { border: 1px solid var(--line); border-left: 4px solid var(--bad); border-radius: 8px;
+  padding: 5px 10px; margin-bottom: 4px; display: flex; justify-content: space-between;
+  align-items: center; gap: 10px; flex-wrap: wrap; }
+.plan-item > div:first-child { line-height: 1.35; }
+.plan-item.plan-planned { border-left-color: var(--bad); }
+.plan-item.plan-running { border-left-color: var(--orange); }
+.plan-item.plan-paused { border-left-color: var(--warn); }
+.plan-item.plan-done { border-left-color: var(--ok); opacity: .7; }
+.b-plan-not-started { background: var(--bad-bg); color: var(--bad); }
+.b-plan-in-progress { background: var(--orange-bg); color: var(--orange); }
+.b-plan-paused { background: var(--warn-bg); color: var(--warn); }
+.b-plan-done { background: var(--ok-bg); color: var(--ok); }
 /* Today page quickbar (Ganesh's manager, 2026-08-14) — Punch In/Out and
    Break used to each get a full-width card; now they're compact controls
    next to the page title instead of "a full tab" of their own. Same
@@ -235,8 +287,18 @@ tr.hide-dept { display: none !important; }
    margin (22px) add up fast across a shorter stack of smaller cards.
    Scoped to .today-page only — every other screen keeps the normal
    spacing, this isn't a site-wide density change. */
-.today-page .card { padding: 12px 16px; margin-bottom: 10px; }
-.today-page .card > h2:first-child { margin: 0 0 8px; }
+/* Depth pass (Ganesh, 2026-08-22) — compacting padding/margin earlier this
+   session (see comment above) made cards read as one continuous wall since
+   the border color is nearly the same as the page background; a soft
+   elevation shadow (same rgba(7,41,38,..) brand-dark tint every dropdown/
+   popover on this page already shadows with, just much softer) plus a
+   touch more margin-bottom gives each section its own visual "segment"
+   again without giving back the vertical space the compacting pass saved. */
+.today-page .card {
+  padding: 8px 14px; margin-bottom: 14px;
+  box-shadow: 0 2px 4px rgba(7, 41, 38, .09), 0 6px 16px rgba(7, 41, 38, .12);
+}
+.today-page .card > h2:first-child { margin: 0 0 4px; }
 .today-page .totalbar { margin: 6px 0; }
 .totalbar { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
 .totalbar .big { font-size: 19px; font-weight: 700; }

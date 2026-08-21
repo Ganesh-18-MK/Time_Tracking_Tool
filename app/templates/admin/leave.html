@@ -4,9 +4,14 @@
 {% block content %}
 <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
   <h1 style="margin-bottom:0">Leave entry</h1>
-  {% if user.is_super_admin %}
-  <a class="btn secondary small" href="/admin/leave/bulk-upload">Bulk assign leaves</a>
-  {% endif %}
+  <div>
+    {% if LEAVE_MANAGEMENT_V2_ENABLED and user.is_super_admin %}
+    <a class="btn secondary small" href="/admin/leave/special-paid">Grant Special Paid Time</a>
+    {% endif %}
+    {% if user.is_super_admin %}
+    <a class="btn secondary small" href="/admin/leave/bulk-upload">Bulk assign leaves</a>
+    {% endif %}
+  </div>
 </div>
 <div class="card">
   <form method="post" action="/admin/leave/add" class="formrow">
@@ -21,14 +26,23 @@
     <div><label>To (blank = one day)</label><input type="date" name="end_date"></div>
     <div>
       <label>Type</label>
-      <select name="type">{% for t in leave_types %}<option>{{ t }}</option>{% endfor %}</select>
+      <select name="type">
+        {% for t in leave_types %}{% if t != 'Special Paid Time' %}<option>{{ t }}</option>{% endif %}{% endfor %}
+      </select>
     </div>
     <div><label>Hours/day (blank = full day)</label><input name="hours" style="width:110px" placeholder="e.g. 2.5"></div>
-    <div style="flex:1"><label>Note ('Other' requires one)</label><input name="note" style="width:100%"></div>
+    {% if LEAVE_MANAGEMENT_V2_ENABLED %}
+    <div><label>Relationship (Bereavement only)</label>
+      <select name="relation"><option value="">—</option>{% for r in BEREAVEMENT_RELATIONS %}<option>{{ r }}</option>{% endfor %}</select>
+    </div>
+    {% endif %}
+    <div style="flex:1"><label>Note{% if not LEAVE_MANAGEMENT_V2_ENABLED %} ('Other' requires one){% endif %}</label><input name="note" style="width:100%"></div>
     <div><button>Record leave</button></div>
   </form>
   <p class="small muted">Full-day leave zeroes that day's target (no variance). Partial hours reduce the target —
-  status still derives from what gets submitted. Category totals compute automatically.</p>
+  status still derives from what gets submitted. Category totals compute automatically.
+  {% if LEAVE_MANAGEMENT_V2_ENABLED %}Admin-direct entry is recorded already-approved, same as before — probation/notice-period
+  checks only apply to self-service requests from the employee's own Leave page.{% endif %}</p>
 </div>
 
 {% if pending %}
@@ -41,10 +55,22 @@
       <tr>
         <td><a href="/admin/person/{{ lv.employee_id }}">{{ lv.employee.name }}</a></td>
         <td class="nowrap">{{ lv.start_date|mdy }}{% if lv.end_date != lv.start_date %} → {{ lv.end_date|mdy }}{% endif %}</td>
-        <td>{{ lv.type }}</td>
+        <td>{{ lv.type }}{% if lv.relation %} <span class="muted">({{ lv.relation }})</span>{% endif %}</td>
         <td>{{ 'full day' if lv.minutes_per_day is none else lv.minutes_per_day|hm }}</td>
         <td class="small">{{ lv.note }}</td>
         <td class="nowrap">
+          {% if LEAVE_MANAGEMENT_V2_ENABLED %}
+          <form method="post" action="/admin/leave/{{ lv.id }}/approve" style="display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap;max-width:260px">
+            <input name="approved_hours" style="width:70px" placeholder="{{ 'target/day' if lv.minutes_per_day is none else (lv.minutes_per_day / 60)|round(2) }}">
+            <input name="review_note" placeholder="Note (required if partial)" style="flex:1;min-width:120px">
+            <button class="small">Approve</button>
+          </form>
+          <form method="post" action="/admin/leave/{{ lv.id }}/reject" class="inline">
+            <input type="hidden" name="review_note" value="">
+            <button type="button" class="small secondary"
+              onclick="const n=prompt('Reason for rejecting (optional):'); if(n!==null){this.previousElementSibling.value=n; this.form.submit();}">Reject</button>
+          </form>
+          {% else %}
           <form method="post" action="/admin/leave/{{ lv.id }}/approve" class="inline">
             <button class="small">Approve</button>
           </form>
@@ -53,11 +79,16 @@
             <button type="button" class="small secondary"
               onclick="const n=prompt('Reason for rejecting (optional):'); if(n!==null){this.previousElementSibling.value=n; this.form.submit();}">Reject</button>
           </form>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
+  {% if LEAVE_MANAGEMENT_V2_ENABLED %}
+  <p class="small muted" style="margin:8px 0 0">Leave the hours field blank to approve exactly what was requested.
+    Enter a smaller number to partially approve — a note is required whenever it's less than the request.</p>
+  {% endif %}
 </div>
 {% endif %}
 
@@ -73,8 +104,12 @@
       <tr>
         <td><a href="/admin/person/{{ lv.employee_id }}">{{ lv.employee.name }}</a></td>
         <td class="nowrap">{{ lv.start_date|mdy }}{% if lv.end_date != lv.start_date %} → {{ lv.end_date|mdy }}{% endif %}</td>
-        <td>{{ lv.type }}</td>
-        <td>{{ 'full day' if lv.minutes_per_day is none else lv.minutes_per_day|hm }}</td>
+        <td>{{ lv.type }}{% if lv.relation %} <span class="muted">({{ lv.relation }})</span>{% endif %}</td>
+        <td>{{ 'full day' if lv.minutes_per_day is none else lv.minutes_per_day|hm }}
+          {% if lv.approved_minutes_per_day is not none and lv.approved_minutes_per_day != (lv.minutes_per_day if lv.minutes_per_day is not none else lv.employee.daily_target_minutes) %}
+          <div class="muted small">approved {{ lv.approved_minutes_per_day|hm }} (partial)</div>
+          {% endif %}
+        </td>
         <td class="small">{{ lv.note }}{% if lv.imported %} <span class="muted">(legacy)</span>{% endif %}</td>
         <td class="small muted">{{ lv.entered_by }}</td>
         <td><form method="post" action="/admin/leave/{{ lv.id }}/delete" class="inline"
@@ -111,6 +146,33 @@
   {% if not pending %}<p class="muted small" style="margin:8px 0 0">No pending leave requests.</p>{% endif %}
 </div>
 
+{% if LEAVE_MANAGEMENT_V2_ENABLED %}
+<div class="card">
+  <h2 style="margin-top:0">Leave balances</h2>
+  <p class="small muted" style="margin:-4px 0 10px">Planned Time is earned automatically based on tenure; Special Paid Time
+  is granted via the button above. Used/Pending/Remaining, not just a single number — a pending request is held out of
+  Remaining before it's even approved. Nothing here blocks recording or approving leave past 0 remaining.</p>
+  <div class="searchbar">
+    <input type="search" data-filter-table="leave-balances-table" placeholder="Search employees…">
+  </div>
+  <table id="leave-balances-table">
+    <thead><tr><th>Employee</th><th>Department</th><th>Planned (rem.)</th><th>Special Paid (rem.)</th><th>Bereavement used</th><th>Unpaid used</th></tr></thead>
+    <tbody>
+      {% for e in emps %}
+      {% set b = balances_v2[e.id] %}
+      <tr>
+        <td><a href="/admin/person/{{ e.id }}">{{ e.name }}</a></td>
+        <td>{{ e.department or '—' }}</td>
+        <td class="nowrap{% if b['Planned Time']['remaining'] is not none and b['Planned Time']['remaining'] < 0 %} b-missing{% endif %}">{{ b['Planned Time']['remaining']|hm }}</td>
+        <td class="nowrap{% if b['Special Paid Time']['remaining'] is not none and b['Special Paid Time']['remaining'] < 0 %} b-missing{% endif %}">{{ b['Special Paid Time']['remaining']|hm }}</td>
+        <td class="nowrap">{{ b['Bereavement Time']['used']|hm }}</td>
+        <td class="nowrap">{{ b['Unpaid Time']['used']|hm }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
 <div class="card">
   <h2 style="margin-top:0">Leave balances</h2>
   <p class="small muted" style="margin:-4px 0 10px">Remaining vs. annual entitlement per employee, for {{ balance_year }}
@@ -136,4 +198,5 @@
     </tbody>
   </table>
 </div>
+{% endif %}
 {% endblock %}

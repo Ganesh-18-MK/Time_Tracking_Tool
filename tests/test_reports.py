@@ -24,6 +24,7 @@ from app.reports import (
     attendance_report,
     departments_list,
     employees_list,
+    feature_usage_report,
     resolve_date_range,
     strikes_report,
     time_by_activity_report,
@@ -409,3 +410,118 @@ class TestTimeFiltersSummary:
         db.commit()
         result = time_filters_summary(db, None, [1, 2], None, None)
         assert result["employees"] == "Asha, Zara"
+
+
+class TestFeatureUsageReport:
+    """Developer Usage Report (Ganesh, 2026-08-21, "as a developer I want
+    to know how many people are using what option") — adoption is % of
+    active TRACKED employees who used a method at least once in the
+    range, not % of rows. See TaskEntry.entry_method's docstring: only
+    stamped on rows created 2026-08-21 onward, so a pre-existing row with
+    entry_method left NULL (the `_entry()` helper above never sets it,
+    matching every historical/imported row) must never be attributed to
+    any method."""
+
+    def _punch(self, db, emp_id, date, in_minute, out_minute=None):
+        base = dt.datetime.combine(date, dt.time())
+        db.add(m.PunchSession(
+            employee_id=emp_id, date=date,
+            punched_in_at=base + dt.timedelta(minutes=in_minute),
+            punched_out_at=(base + dt.timedelta(minutes=out_minute)) if out_minute is not None else None,
+        ))
+
+    def test_counts_each_employee_once_per_method_regardless_of_row_count(self, db):
+        _emp(db, 1, "Asha")
+        _emp(db, 2, "Priya")
+        _project(db, 1, "Acme")
+        _task(db, 1, "Dev")
+        db.commit()
+        d = dt.date(2026, 8, 21)
+        # Asha logs TWO rows via Plan the same day — should still count as 1 adopter
+        db.add(m.TaskEntry(employee_id=1, date=d, project_id=1, task_type_id=1, details="a",
+                            start_minute=540, end_minute=600, entry_method=m.ENTRY_METHOD_PLAN))
+        db.add(m.TaskEntry(employee_id=1, date=d, project_id=1, task_type_id=1, details="b",
+                            start_minute=600, end_minute=660, entry_method=m.ENTRY_METHOD_PLAN))
+        db.add(m.TaskEntry(employee_id=2, date=d, project_id=1, task_type_id=1, details="c",
+                            start_minute=540, end_minute=600, entry_method=m.ENTRY_METHOD_MANUAL))
+        db.commit()
+        result = feature_usage_report(db, d, d)
+        assert result["total_employees"] == 2
+        by_key = {row["key"]: row for row in result["methods"]}
+        assert by_key["plan"]["count"] == 1
+        assert by_key["plan"]["pct"] == 50.0
+        assert by_key["manual_add"]["count"] == 1
+        assert by_key["auto_timer"]["count"] == 0
+
+    def test_null_entry_method_rows_are_excluded_not_counted_as_manual(self, db):
+        _emp(db, 1, "Asha")
+        _project(db, 1, "Acme")
+        _task(db, 1, "Dev")
+        db.commit()
+        d = dt.date(2026, 8, 21)
+        _entry(db, 1, d, 1, 1, 540, 600)  # legacy/pre-tracking row, entry_method NULL
+        db.commit()
+        result = feature_usage_report(db, d, d)
+        assert all(row["count"] == 0 for row in result["methods"])
+
+    def test_punch_session_adoption_counted_independently_of_task_entries(self, db):
+        _emp(db, 1, "Asha")
+        _emp(db, 2, "Priya")
+        db.commit()
+        d = dt.date(2026, 8, 21)
+        self._punch(db, 1, d, 0, 480)
+        db.commit()
+        result = feature_usage_report(db, d, d)
+        assert result["punch"]["count"] == 1
+        assert result["punch"]["pct"] == 50.0
+
+    def test_open_punch_session_still_counts_as_adopted(self, db):
+        _emp(db, 1, "Asha")
+        db.commit()
+        d = dt.date(2026, 8, 21)
+        self._punch(db, 1, d, 0)  # never punched out
+        db.commit()
+        result = feature_usage_report(db, d, d)
+        assert result["punch"]["count"] == 1
+
+    def test_no_tracked_employees_returns_zero_percent_not_a_crash(self, db):
+        result = feature_usage_report(db, dt.date(2026, 8, 21), dt.date(2026, 8, 21))
+        assert result["total_employees"] == 0
+        assert all(row["pct"] == 0.0 for row in result["methods"])
+        assert result["punch"]["pct"] == 0.0
+
+    def test_untracked_or_inactive_employees_excluded_from_denominator(self, db):
+        _emp(db, 1, "Asha")
+        _emp(db, 2, "Untracked", tracked=False)
+        _emp(db, 3, "Inactive", active=False)
+        db.commit()
+        result = feature_usage_report(db, dt.date(2026, 8, 21), dt.date(2026, 8, 21))
+        assert result["total_employees"] == 1
+
+    def test_date_outside_range_is_not_counted(self, db):
+        _emp(db, 1, "Asha")
+        _project(db, 1, "Acme")
+        _task(db, 1, "Dev")
+        db.commit()
+        db.add(m.TaskEntry(employee_id=1, date=dt.date(2026, 8, 1), project_id=1, task_type_id=1,
+                            details="a", start_minute=540, end_minute=600, entry_method=m.ENTRY_METHOD_PLAN))
+        db.commit()
+        result = feature_usage_report(db, dt.date(2026, 8, 21), dt.date(2026, 8, 21))
+        by_key = {row["key"]: row for row in result["methods"]}
+        assert by_key["plan"]["count"] == 0
+
+    def test_per_employee_breakdown_matches_aggregate_counts(self, db):
+        _emp(db, 1, "Asha")
+        _emp(db, 2, "Priya")
+        _project(db, 1, "Acme")
+        _task(db, 1, "Dev")
+        db.commit()
+        d = dt.date(2026, 8, 21)
+        db.add(m.TaskEntry(employee_id=1, date=d, project_id=1, task_type_id=1, details="a",
+                            start_minute=540, end_minute=600, entry_method=m.ENTRY_METHOD_AUTO_TIMER))
+        db.commit()
+        result = feature_usage_report(db, d, d)
+        by_name = {r["employee"].name: r for r in result["employees"]}
+        assert by_name["Asha"]["used"]["auto_timer"] is True
+        assert by_name["Asha"]["used"]["plan"] is False
+        assert by_name["Priya"]["used"]["auto_timer"] is False

@@ -369,3 +369,78 @@ def strikes_report(db: Session, start: dt.date, end: dt.date,
         summary.append({"employee": e, "department": e.department or "—", "strikes": strikes})
     summary.sort(key=lambda r: -r["strikes"])
     return {"mode": "summary", "rows": summary}
+
+
+# ---- Developer Usage Report (Ganesh, 2026-08-21) -----------------------------
+def feature_usage_report(db: Session, start: dt.date, end: dt.date) -> dict:
+    """Adoption of the 3 ways to log a task row — Plan for the Day / Auto
+    time capture / Add Row, see app/models.py's ENTRY_METHOD_* and
+    TaskEntry.entry_method — plus Punch In/Out, over a date range.
+
+    'Adoption' here deliberately means "% of active tracked employees who
+    used it at least once in the range," not "% of rows by method" (a
+    Ganesh decision, 2026-08-21) — the question was about how many
+    PEOPLE have picked up a given way of working, not which method
+    produces more rows once someone has. `entry_method` is only stamped
+    on rows created from 2026-08-21 onward (see TaskEntry's docstring) —
+    every older/imported row has entry_method NULL and is correctly
+    excluded from every method's count here, not folded into any one of
+    them; a date range entirely before that ships everyone at 0%, which
+    is accurate, not a bug to work around."""
+    emps = _tracked_employees(db)
+    emp_ids = [e.id for e in emps]
+    total = len(emp_ids)
+
+    used_by_method: Dict[str, set] = {k: set() for k in m.ENTRY_METHODS}
+    if emp_ids:
+        rows = db.execute(
+            select(m.TaskEntry.employee_id, m.TaskEntry.entry_method)
+            .where(
+                m.TaskEntry.employee_id.in_(emp_ids),
+                m.TaskEntry.date.between(start, end),
+                m.TaskEntry.entry_method.isnot(None),
+            )
+            .distinct()
+        ).all()
+        for emp_id, method in rows:
+            if method in used_by_method:
+                used_by_method[method].add(emp_id)
+
+    used_punch: set = set()
+    if emp_ids:
+        punch_rows = db.execute(
+            select(m.PunchSession.employee_id)
+            .where(m.PunchSession.employee_id.in_(emp_ids), m.PunchSession.date.between(start, end))
+            .distinct()
+        ).all()
+        used_punch = {r[0] for r in punch_rows}
+
+    def _pct(n: int) -> float:
+        return round(100 * n / total, 1) if total else 0.0
+
+    methods = [
+        {
+            "key": k,
+            "label": m.ENTRY_METHOD_LABELS[k],
+            "count": len(used_by_method[k]),
+            "pct": _pct(len(used_by_method[k])),
+        }
+        for k in m.ENTRY_METHODS
+    ]
+    punch = {"count": len(used_punch), "pct": _pct(len(used_punch))}
+
+    employee_rows = [
+        {
+            "employee": e,
+            "used": {k: e.id in used_by_method[k] for k in m.ENTRY_METHODS},
+            "punch": e.id in used_punch,
+        }
+        for e in emps
+    ]
+
+    return {
+        "total_employees": total,
+        "methods": methods,
+        "punch": punch,
+        "employees": employee_rows,
+    }

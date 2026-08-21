@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% set active_nav = 'reports' %}
+{% block title %}Feature Usage · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Feature Usage Report</h1>
+{% if user.is_admin %}<p class="muted small"><a href="/admin/reports">← All reports</a></p>{% endif %}
+<p class="small muted">Adoption of the 3 ways to log a task row, plus Punch In/Out — % of active employees who used each
+  one at least once in the range below (not % of rows). Tracking started 2026-08-21 — anything logged before that has
+  no record of which method created it, so a range entirely before then reads 0% across the board; that's expected,
+  not missing data.</p>
+
+<div class="card">
+  <form method="get" action="/admin/reports/usage" class="formrow" id="filters">
+    <div>
+      <label>Date range</label>
+      <select name="range" id="range-select" onchange="mkToggleCustomRange()">
+        {% for key, plabel, days in range_presets %}
+        <option value="{{ key }}" {{ 'selected' if range == key }}>{{ plabel }}</option>
+        {% endfor %}
+        <option value="custom" {{ 'selected' if range == 'custom' }}>Custom range…</option>
+      </select>
+    </div>
+    <div id="custom-dates" style="{{ '' if range == 'custom' else 'display:none' }}">
+      <label>From</label><input type="date" name="start" value="{{ start }}">
+      <label>To</label><input type="date" name="end" value="{{ end }}">
+    </div>
+    <div><button type="submit">Apply</button></div>
+  </form>
+  <p class="small muted" style="margin-top:8px">Showing {{ resolved_start|mdy }} to {{ resolved_end|mdy }} — {{ result.total_employees }} active tracked employees.
+    <a href="/admin/reports/usage.xlsx?range={{ range }}&start={{ start }}&end={{ end }}">Download Excel</a>
+  </p>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Adoption</h2>
+  <div class="kpis">
+    {% for row in result.methods %}
+    <div class="kpi">
+      <span class="n">{{ row.pct }}%</span>
+      <span class="l">{{ row.label }} ({{ row.count }} of {{ result.total_employees }})</span>
+    </div>
+    {% endfor %}
+    <div class="kpi">
+      <span class="n">{{ result.punch.pct }}%</span>
+      <span class="l">Punch In/Out ({{ result.punch.count }} of {{ result.total_employees }})</span>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="searchbar">
+    <input type="search" data-filter-table="usage-table" placeholder="Search employees…">
+  </div>
+  <table id="usage-table">
+    <thead>
+      <tr>
+        <th>Name</th><th>Department</th>
+        {% for row in result.methods %}<th>{{ row.label }}</th>{% endfor %}
+        <th>Punch In/Out</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in result.employees %}
+      <tr>
+        <td>{% if user.is_admin %}<a href="/admin/person/{{ r.employee.id }}">{{ r.employee.name }}</a>{% else %}{{ r.employee.name }}{% endif %}</td>
+        <td>{{ r.employee.department or '—' }}</td>
+        {% for row in result.methods %}
+        <td>{{ '✓' if r.used[row.key] else '' }}</td>
+        {% endfor %}
+        <td>{{ '✓' if r.punch else '' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">No tracked employees.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+  function mkToggleCustomRange() {
+    var isCustom = document.getElementById('range-select').value === 'custom';
+    document.getElementById('custom-dates').style.display = isCustom ? '' : 'none';
+    if (!isCustom) document.getElementById('filters').submit();
+  }
+</script>
+{% endblock %}

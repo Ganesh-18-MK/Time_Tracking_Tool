@@ -11,7 +11,7 @@
       {% for e in attendance.logged %}<li>{{ e.name }}{% if e.department %} <span class="muted">· {{ e.department }}</span>{% endif %}</li>{% endfor %}
     </ul>
   </details>
-  <details class="kpi">
+  <details class="kpi {{ 'leavek' if attendance.on_leave }}">
     <summary><span class="n">{{ attendance.on_leave|length }}</span><span class="l">On leave today · click to see who</span></summary>
     <ul class="namelist">
       {% for e in attendance.on_leave %}<li>{{ e.name }}{% if e.department %} <span class="muted">· {{ e.department }}</span>{% endif %}</li>{% endfor %}
@@ -42,13 +42,20 @@
   <p class="small muted" style="margin:-4px 0 10px">Present today / total headcount — click a department for its day-by-day grid.</p>
   <div class="deptcards">
     {% if user.is_super_admin %}
-    <a class="deptcard {{ 'active' if show_grid and not dept }}" href="/admin?ym={{ ym }}&dept=">
+    {# Given its own accent treatment, active or not (Ganesh, 2026-08-22) —
+       it's the primary entry point into the grid below and was otherwise
+       getting lost among 9+ same-weight single-employee department tiles. #}
+    <a class="deptcard all {{ 'active' if show_grid and not dept }}" href="/admin?ym={{ ym }}&dept=">
       <div class="n">{{ attendance.logged|length }}<span class="of">/{{ total_emps }}</span></div>
       <div class="l">All departments</div>
     </a>
     {% endif %}
     {% for d in all_depts %}
-    <a class="deptcard {{ 'active' if dept == d }}" href="/admin?ym={{ ym }}&dept={{ d }}">
+    {# Dimmed when nobody from that department has logged in yet today
+       (Ganesh, 2026-08-22) — "0/1" and "3/10" used to carry identical
+       visual weight, so a quick glance at 10 tiles couldn't tell you which
+       teams actually have activity today without reading every number. #}
+    <a class="deptcard {{ 'active' if dept == d }}{{ ' zero' if dept_present.get(d, 0) == 0 }}" href="/admin?ym={{ ym }}&dept={{ d }}">
       <div class="n">{{ dept_present.get(d, 0) }}<span class="of">/{{ dept_counts.get(d, 0) }}</span></div>
       <div class="l">{{ d }}</div>
     </a>
@@ -152,28 +159,42 @@
     {% if not pending_leave_rows and not open_support_rows and not violations %}
     <p class="muted small" style="margin:0">Nothing pending — you're all caught up.</p>
     {% else %}
-    <ul class="namelist" style="padding-left:0;list-style:none">
+    <ul class="namelist" style="padding-left:0;list-style:none;margin-top:0">
+      {% if pending_leave_rows %}
+      <li class="needslist-group">Leave requests ({{ pending_leave_rows|length }})</li>
       {% for lv in pending_leave_rows %}
       <li style="margin-bottom:6px"><span class="badge b-leave">leave</span>
         <a href="/admin/leave">{{ lv.employee.name if lv.employee else lv.employee_id }}</a>
         requested {{ lv.type }} ({{ lv.start_date|mdy }}{% if lv.end_date != lv.start_date %}–{{ lv.end_date|mdy }}{% endif %})</li>
       {% endfor %}
+      {% endif %}
+      {% if open_support_rows %}
+      <li class="needslist-group">Support tickets ({{ open_support_rows|length }})</li>
       {% for q in open_support_rows %}
       <li style="margin-bottom:6px"><span class="badge b-pending">support</span>
         <a href="/admin/support">{{ q.employee.name if q.employee else q.employee_id }}</a>
         — {{ q.message[:60] }}{% if q.message|length > 60 %}…{% endif %}</li>
       {% endfor %}
+      {% endif %}
+      {% if violations %}
+      {# Already sorted worst-first (real violations before shortfalls, then
+         by strikes descending — see admin.dashboard()'s violations.sort()),
+         so the top row here is always the single most urgent case; the
+         group header + bolded count is what gives that hierarchy visually,
+         since every violation row otherwise carries the same red badge. #}
+      <li class="needslist-group">Strikes &amp; shortfalls ({{ violations|length }})</li>
       {% for e, strikes, is_violation in violations %}
       {% if is_violation %}
       <li style="margin-bottom:6px"><span class="badge b-missing">strikes</span>
         <a href="/admin/person/{{ e.id }}?ym={{ ym }}">{{ e.name }}</a>
-        — {{ strikes }} this month (≥ {{ threshold }})</li>
+        — <strong>{{ strikes }}</strong> this month (≥ {{ threshold }})</li>
       {% else %}
       <li style="margin-bottom:6px"><span class="badge b-partial">shortfall</span>
         <a href="/admin/person/{{ e.id }}?ym={{ ym }}">{{ e.name }}</a>
-        — {{ strikes }} open day{{ 's' if strikes != 1 }}, can be compensated</li>
+        — <strong>{{ strikes }}</strong> open day{{ 's' if strikes != 1 }}, can be compensated</li>
       {% endif %}
       {% endfor %}
+      {% endif %}
     </ul>
     {% endif %}
   </div>
@@ -187,7 +208,7 @@
         <tr>
           <td class="small muted nowrap">{{ a.at|mdy_dt }}</td>
           <td class="small">{{ a.actor }}</td>
-          <td class="small">{{ a.action.replace('_', ' ') }}{% if a.entity %} · {{ a.entity }}{% endif %}</td>
+          <td class="small">{{ humanize_audit_action(a.action) }}</td>
         </tr>
         {% endfor %}
       </tbody>

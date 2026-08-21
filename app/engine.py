@@ -83,11 +83,24 @@ def leave_minutes_on(leaves: List[m.LeaveRecord], emp: m.Employee, d: dt.date) -
     rejected self-service leave request must not reduce the target or read
     as Leave. Every admin-entered and imported row defaults to 'approved'
     (see LeaveRecord.status), so this filter changes nothing for existing
-    data; it only matters for the new self-service request flow."""
+    data; it only matters for the new self-service request flow.
+
+    approved_minutes_per_day (Leave Management V2, 2026-08-21) wins over
+    minutes_per_day when set — a partial approval (requirement 6: admin
+    approves fewer hours than requested) must reduce the day's target by
+    only what was actually approved, not the original ask, or the
+    compliance math would silently ignore the partial-approval decision
+    entirely. NULL on every pre-existing row (new column, additive-only),
+    so this is a no-op for anything that isn't a V2 partial approval."""
     total = 0
     for lv in leaves:
         if lv.covers(d) and lv.status == m.LEAVE_APPROVED:
-            total += lv.minutes_per_day if lv.minutes_per_day is not None else emp.daily_target_minutes
+            if lv.approved_minutes_per_day is not None:
+                total += lv.approved_minutes_per_day
+            elif lv.minutes_per_day is not None:
+                total += lv.minutes_per_day
+            else:
+                total += emp.daily_target_minutes
     return min(total, emp.daily_target_minutes)
 
 
@@ -150,6 +163,230 @@ def leave_balance(db: Session, emp: m.Employee, year: Optional[int] = None) -> D
         }
         for t in entitlements
     }
+
+
+# ---- Leave Management V2 (Ganesh, 2026-08-21) -------------------------------
+# See docs/LEAVE_MANAGEMENT_PLAN.md for the full design. Split into pure
+# date/number math (no DB, no Employee object) and thin Session-aware
+# wrappers around it, same "compute_day is pure, recompute_employee is the
+# DB-touching wrapper" shape already used above — the pure functions can be
+# unit tested directly against the minutes table in the plan's §2 without a
+# database or fastapi/sqlalchemy installed.
+
+def full_months_elapsed(start: dt.date, as_of: dt.date) -> int:
+    """How many calendar months are entirely contained in [start, as_of].
+    A month only counts once its LAST day has passed — joining/starting
+    mid-month never earns a partial month (docs/LEAVE_MANAGEMENT_PLAN.md
+    §3: "Recommended: only full completed months count"). E.g. start =
+    2026-01-15 -> the first candidate month is February; February counts
+    once as_of >= 2026-02-28."""
+    if as_of < start:
+        return 0
+    y, mo = start.year, start.month
+    if start.day != 1:
+        mo += 1
+        if mo > 12:
+            mo = 1
+            y += 1
+    count = 0
+    while True:
+        next_y, next_mo = (y + 1, 1) if mo == 12 else (y, mo + 1)
+        month_end = dt.date(next_y, next_mo, 1) - dt.timedelta(days=1)
+        if month_end > as_of:
+            break
+        count += 1
+        y, mo = next_y, next_mo
+    return count
+
+
+def years_of_service_on(start_date: dt.date, as_of: dt.date) -> float:
+    """Date-accurate (not flat days/365) years of tenure as of a given
+    date. Used only to pick a Planned Time accrual band, never stored."""
+    if as_of <= start_date:
+        return 0.0
+    return (as_of - start_date).days / 365.25
+
+
+def _planned_days_per_year(cfg: Dict[str, str], years: float) -> int:
+    if years < 2:
+        key = "planned_days_year_0_2"
+    elif years < 5:
+        key = "planned_days_year_2_5"
+    else:
+        key = "planned_days_year_5_plus"
+    return cfg_int(cfg, key)
+
+
+def planned_time_accrued_minutes_pure(
+    start_date: dt.date,
+    probation_days: int,
+    daily_target_minutes: int,
+    cfg: Dict[str, str],
+    as_of: dt.date,
+) -> int:
+    """Total Planned Time minutes earned to date — a running total, never
+    reset each January (unlike leave_balance() above, by design: Planned
+    Time is earned over an employee's whole tenure, not a per-calendar-
+    year pool). Accrual starts the first full month after probation ends
+    (never backdated into the probation window itself); the band (and
+    therefore the monthly rate) is picked per-month from that month's own
+    years-of-service, so a long-tenured employee's early months accrue at
+    the lower band and later months at whatever band applies then —
+    matches "the longer someone's worked here, the more they earn"
+    literally, not just as a one-time lookup at call time.
+    Rounds to the nearest whole minute (not floor) so a non-8h daily
+    target doesn't get systematically shortchanged by fractional minutes
+    every month — see docs/LEAVE_MANAGEMENT_PLAN.md §2 for why the 8h-day
+    numbers land exactly on 360/440/520 without any rounding at all."""
+    accrual_start = start_date + dt.timedelta(days=probation_days)
+    months = full_months_elapsed(accrual_start, as_of)
+    if months <= 0:
+        return 0
+    total = 0
+    y, mo = accrual_start.year, accrual_start.month
+    if accrual_start.day != 1:
+        mo += 1
+        if mo > 12:
+            mo = 1
+            y += 1
+    for _ in range(months):
+        next_y, next_mo = (y + 1, 1) if mo == 12 else (y, mo + 1)
+        month_end = dt.date(next_y, next_mo, 1) - dt.timedelta(days=1)
+        years = years_of_service_on(start_date, month_end)
+        days_per_year = _planned_days_per_year(cfg, years)
+        total += int(round(days_per_year * daily_target_minutes / 12))
+        y, mo = next_y, next_mo
+    return total
+
+
+def planned_time_accrued_minutes(
+    db: Session, emp: m.Employee, cfg: Optional[Dict[str, str]] = None, as_of: Optional[dt.date] = None
+) -> int:
+    cfg = cfg or get_config(db)
+    as_of = as_of or today_local()
+    if emp.start_date is None:
+        return 0
+    probation_days = emp.probation_days if emp.probation_days is not None else cfg_int(cfg, "probation_days_default")
+    return planned_time_accrued_minutes_pure(emp.start_date, probation_days, emp.daily_target_minutes, cfg, as_of)
+
+
+def is_probation_active(emp: m.Employee, as_of: dt.date, cfg: Dict[str, str]) -> bool:
+    """Requirement: block Planned Time during the waiting period (other
+    types stay available — see LEAVE_TYPES_NO_PROBATION_BLOCK in
+    models.py, checked by the caller, not here)."""
+    if emp.start_date is None:
+        return False
+    probation_days = emp.probation_days if emp.probation_days is not None else cfg_int(cfg, "probation_days_default")
+    return as_of < emp.start_date + dt.timedelta(days=probation_days)
+
+
+def required_notice_working_days(days_requested: int) -> int:
+    """Planned Time notice period (docs/LEAVE_MANAGEMENT_PLAN.md, decided
+    2026-08-20): 1 day -> 2 working days' notice, 2-3 days -> 7 working
+    days, 4+ days -> 3 weeks. The first two tiers are stated in working
+    days explicitly; "3 weeks" is treated as 15 working days (3 x a
+    standard 5-day week) for consistency with the other two tiers rather
+    than 21 *calendar* days, which would be a different, unstated unit —
+    flag this interpretation if a literal calendar-weeks reading was
+    actually intended."""
+    if days_requested <= 1:
+        return 2
+    if days_requested <= 3:
+        return 7
+    return 15
+
+
+def notice_period_satisfied(
+    submitted_on: dt.date, leave_start: dt.date, days_requested: int, emp: m.Employee, holidays: set
+) -> bool:
+    """Working days strictly between submission and the leave's start
+    date, counted with the same is_working_day()/holidays_set() every
+    other compliance calculation in this file uses — a holiday or
+    employee's own non-working day never counts toward satisfying
+    notice."""
+    required = required_notice_working_days(days_requested)
+    d = submitted_on + dt.timedelta(days=1)
+    count = 0
+    while d < leave_start:
+        if is_working_day(emp, d, holidays):
+            count += 1
+        d += dt.timedelta(days=1)
+    return count >= required
+
+
+def effective_leave_type(emp: m.Employee, requested_type: str) -> str:
+    """Requirement: no paid leave while on a PIP — every leave type
+    becomes Unpaid Time for someone with is_on_pip=True, decided at the
+    moment of request (never retroactively rewriting a leave record if
+    the PIP flag changes later — same frozen-history spirit as everything
+    else in this file). Special Paid Time is a management grant, not
+    something an employee requests, so PIP has nothing to override there."""
+    if getattr(emp, "is_on_pip", False) and requested_type != m.LEAVE_SPECIAL_PAID:
+        return m.LEAVE_UNPAID
+    return requested_type
+
+
+def leave_balance_v2(
+    db: Session, emp: m.Employee, as_of: Optional[dt.date] = None, cfg: Optional[Dict[str, str]] = None
+) -> Dict[str, Dict[str, Optional[int]]]:
+    """Used/Pending/Remaining per LEAVE_TYPES_V2 type, all in integer
+    minutes (templates convert to hours for display via the `hm` filter,
+    same as everywhere else). Only Planned Time (accrued) and Special
+    Paid Time (granted, see SpecialPaidGrant) have a real capped
+    entitlement — Unplanned/Unpaid/Bereavement Time have no pool to run
+    out of (PDF: available on request, not accrued), so their
+    "entitlement"/"remaining" are None rather than a fabricated number;
+    Used/Pending are still tracked for all five so an employee can see
+    what they've taken.
+
+    "Used" sums approved_minutes_per_day (falling back to the originally
+    requested minutes_per_day only if a decision was made without setting
+    it, and to the employee's own daily target if that's also unset — same
+    None-means-full-day convention as leave_minutes_on above) — so a
+    partial approval (requirement 6) is reflected correctly instead of
+    quietly still counting the full original request. "Pending" sums
+    still-requested rows at their originally requested amount — held out
+    of "remaining" the moment they're requested, matching the "used and
+    pending shown separately" requirement, not hidden inside a single
+    balance number."""
+    cfg = cfg or get_config(db)
+    as_of = as_of or today_local()
+
+    entitlement: Dict[str, Optional[int]] = {t: None for t in m.LEAVE_TYPES_V2}
+    entitlement[m.LEAVE_PLANNED] = planned_time_accrued_minutes(db, emp, cfg, as_of)
+    granted = db.execute(
+        select(func.sum(m.SpecialPaidGrant.minutes)).where(m.SpecialPaidGrant.employee_id == emp.id)
+    ).scalar() or 0
+    entitlement[m.LEAVE_SPECIAL_PAID] = granted
+
+    used = {t: 0 for t in m.LEAVE_TYPES_V2}
+    pending = {t: 0 for t in m.LEAVE_TYPES_V2}
+    rows = db.execute(
+        select(m.LeaveRecord).where(
+            m.LeaveRecord.employee_id == emp.id,
+            m.LeaveRecord.type.in_(m.LEAVE_TYPES_V2),
+        )
+    ).scalars()
+    for lv in rows:
+        days = (lv.end_date - lv.start_date).days + 1
+        if lv.status == m.LEAVE_APPROVED:
+            if lv.approved_minutes_per_day is not None:
+                per_day = lv.approved_minutes_per_day
+            elif lv.minutes_per_day is not None:
+                per_day = lv.minutes_per_day
+            else:
+                per_day = emp.daily_target_minutes
+            used[lv.type] = used.get(lv.type, 0) + per_day * days
+        elif lv.status == m.LEAVE_REQUESTED:
+            per_day = lv.minutes_per_day if lv.minutes_per_day is not None else emp.daily_target_minutes
+            pending[lv.type] = pending.get(lv.type, 0) + per_day * days
+
+    out: Dict[str, Dict[str, Optional[int]]] = {}
+    for t in m.LEAVE_TYPES_V2:
+        ent = entitlement[t]
+        remaining = None if ent is None else ent - used[t] - pending[t]
+        out[t] = {"entitlement": ent, "used": used[t], "pending": pending[t], "remaining": remaining}
+    return out
 
 
 # ---- core day computation ---------------------------------------------------
@@ -353,6 +590,23 @@ def evaluate_link(db: Session, link: m.CompensationLink) -> None:
     if short_row is not None:
         short_row.compensated = link.fully_compensated
     db.commit()
+
+
+def compensation_window_ok(shortfall_date: dt.date, surplus_date: dt.date) -> bool:
+    """Requirement 9 (Overtime-for-Missed-Hours, employee-requested match,
+    2026-08-21) — docs/LEAVE_MANAGEMENT_PLAN.md §3 names a "3-week/same-
+    calendar-month window" as the validation check at approval time,
+    without spelling out the exact boundary logic anywhere more precise
+    in that doc. Implemented here as either/or, the common shape for this
+    kind of policy: a surplus day is eligible to compensate a shortfall if
+    it's within 21 calendar days of it OR falls in the same calendar
+    month — whichever is more generous for a given pair of dates. Flag
+    this interpretation to Ganesh if the source PDF actually meant
+    something stricter (e.g. AND instead of OR, or calendar weeks instead
+    of a flat 21-day radius)."""
+    if abs((surplus_date - shortfall_date).days) <= 21:
+        return True
+    return surplus_date.year == shortfall_date.year and surplus_date.month == shortfall_date.month
 
 
 def surplus_links_by_date(db: Session, employee_id: int) -> Dict[dt.date, m.CompensationLink]:

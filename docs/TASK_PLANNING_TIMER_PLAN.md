@@ -1,8 +1,49 @@
 # Plan for the Day + Start/Pause/Resume/Stop — Implementation Plan
 
-**Status:** Plan only, nothing built yet. Written 2026-08-20 from a
-conversation relaying input from Ms. Kennedy (via Sruthi) to Ganesh.
-Not started — build when told to.
+**Status:** Built 2026-08-21, live (no feature flag — see why below),
+`py_compile`-clean and render-harness-checked across every relevant
+Today-page state. **Built to a narrower, simpler design than Section 3
+below describes** — Ganesh's actual build request described each
+Start-to-Pause (or Start-to-Stop) segment becoming its OWN ordinary
+TaskEntry row, not one row with summed-up "active minutes" and a
+first-start/last-stop outer span (Section 3.1/3.2's JSON-segments idea).
+That turned out to be the better call anyway: it means every segment is,
+to the rest of the app, indistinguishable from a plain hand-typed row —
+so **Section 2's "why this is the hard part" concern never materialized**,
+and neither `app/engine.py` nor `app/validation.py` needed a single
+change. A task paused over a meeting and resumed after just shows as two
+normal rows in the log, each with its own real clock time, exactly like
+today's Auto time capture already produces one row per Stop. This is also
+why the build shipped without a feature flag, unlike Leave Management
+V2 — CLAUDE.md's "run pytest + verify_strikes" hard rule only triggers on
+`engine.py`/`validation.py`/`legacy/import_legacy.py` changes, none of
+which happened here; the new `PlannedTask` table and the nullable
+`ActiveTaskTimer.planned_task_id` column are purely additive, and every
+Start/Pause/Resume/Stop action runs through the exact same
+`validate_entry()` path a manually-typed row already does. A real
+`pytest tests/ -q` run (particularly the new `tests/test_task_planning.py`)
+before deploy is still good practice — this sandbox has neither
+sqlalchemy nor pytest — but it is not gating this feature behind a flag
+the way it gated Leave V2.
+
+Scope actually built: "Plan for the Day" add form + "Today's Plan" list
+with Start/Pause/Resume/Stop and Details-only inline edit (Section 3.1,
+narrowed), overtime-colored task log rows once the day's target is
+already reached (not in the original plan at all — a later ask), and a
+punch-out reminder popup once Submit Day locks the day while a punch
+session is still open (also not in the original plan). **Not built**:
+admin/lead "plan a task for someone" (3.4), `shift_start_minute` /
+auto-lock the previous day (3.5/3.6), in-app/real reminders (3.7), Plan
+for the Week (3.8), and Submit Day carry-forward for still-open rows
+(3.9) — none of these were part of the actual request; Sections 3.4-3.9
+below are left as-written for future reference if any of them gets asked
+for later, but should be re-scoped against this same "does it actually
+need a new engine/validation concept" question before being built, since
+the segment-per-TaskEntry answer above may simplify some of them too.
+
+Originally written 2026-08-20 from a conversation relaying input from Ms.
+Kennedy (via Sruthi) to Ganesh, before the actual build request came in
+on 2026-08-21.
 
 **Short answer to "are all these possible":** Yes, all of it is
 buildable with what's already in this codebase — no new external

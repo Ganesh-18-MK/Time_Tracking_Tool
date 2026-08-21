@@ -53,7 +53,7 @@ a ramp-up rate (don't set this to 100/second — no real rollout would spike tha
 
 ## The one thing that will silently ruin a run
 
-`app/rate_limit.py`'s per-IP login throttle allows 30 login attempts per 10 minutes from one
+`app/rate_limit.py`'s per-IP login throttle allows 200 login attempts per 10 minutes from one
 IP (see its own docstring — added 2026-08-17 after a TPRM traffic flag). Every simulated user
 in this test shares the one real IP the Locust process runs from. `locustfile.py` already
 logs each simulated user in exactly **once**, in `on_start`, and reuses that session's cookie
@@ -61,6 +61,29 @@ for the rest of the run — never re-login per request/task. If you modify the s
 login call inside a `@task`, you will trip that lockout almost immediately, and every
 subsequent request will fail with "Too many failed attempts" — which will look exactly like
 the app falling over under load, but isn't.
+
+**This also bites you on ramp-up, before you ever change the script.** Even with the
+login-once design above, spawning enough users at once means that many first-time login POSTs
+land inside the first several seconds — all from the same IP. With `IP_MAX_ATTEMPTS` at 200,
+a 100-user run should now stay under the ceiling on its own, but push past ~180-190 total
+logins (EmployeeUser + AdminUser combined) in one 10-minute window and the same failure mode
+comes back: every attempt past the ceiling gets redirected straight back to `/login/employee`,
+and `on_start` raises `RuntimeError: Login failed for loadtestN@example.com`. That's not the
+app struggling under load; it's the security feature you're testing *around* doing exactly its
+job against traffic that looks, from one IP, like credential stuffing.
+
+Fix: start the target instance with `RATE_LIMIT_DISABLED=1` for the duration of the load test
+only. It's a dedicated, off-by-default env var in `app/rate_limit.py` that short-circuits both
+throttle layers — nothing else changes, and `deploy_gcp.sh` never sets it, so there's no risk
+of it leaking into a real deploy. Example (demo DB on port 8128):
+
+```bash
+DATABASE_URL=sqlite:///tms_demo.db AUTH_MODE=password RATE_LIMIT_DISABLED=1 \
+  .venv/bin/python -m demo.run_demo
+```
+
+Do not set `RATE_LIMIT_DISABLED` on anything but a local/staging instance you're personally
+load-testing right now.
 
 ## Reading the results back into a decision
 

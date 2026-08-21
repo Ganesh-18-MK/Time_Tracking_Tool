@@ -146,6 +146,34 @@ class TestLeaveApprovalFilter:
         assert leave_minutes_on(leaves, emp(), MON) == 60
 
 
+class TestPartialApprovalReducesTarget:
+    """Leave Management V2 (2026-08-21, requirement 6): approved_minutes_per_day
+    wins over minutes_per_day when set, so a partial approval actually
+    reduces the day's target by what was approved, not the original ask.
+    NULL on every pre-existing/non-V2 row, so TestLeaveApprovalFilter above
+    (which never sets it) is untouched by this."""
+
+    def _partial(self, requested, approved):
+        return m.LeaveRecord(
+            employee_id=1, start_date=MON, end_date=MON, status=m.LEAVE_APPROVED,
+            minutes_per_day=requested, approved_minutes_per_day=approved,
+        )
+
+    def test_approved_minutes_overrides_requested(self):
+        lv = self._partial(requested=480, approved=240)
+        assert leave_minutes_on([lv], emp(), MON) == 240
+
+    def test_unset_approved_minutes_falls_back_to_requested(self):
+        lv = self._partial(requested=180, approved=None)
+        assert leave_minutes_on([lv], emp(), MON) == 180
+
+    def test_full_day_request_partially_approved(self):
+        # minutes_per_day=None means "full day" was requested; approving
+        # less than the full day must still reduce the target correctly
+        lv = self._partial(requested=None, approved=120)
+        assert leave_minutes_on([lv], emp(target=480), MON) == 120
+
+
 class TestBreakExcess:
     """Break time within the configured allowance is free; time over it
     extends the target, same shape as leave reducing it (engine.compute_day
