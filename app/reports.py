@@ -240,6 +240,96 @@ def time_by_activity_report(
     return {"months": months, "rows": rows, "grand_total": grand_total}
 
 
+def time_by_project_report(
+    db: Session, start: dt.date, end: dt.date,
+    department: Optional[str] = None, employee_ids: Optional[List[int]] = None,
+    project_ids: Optional[List[int]] = None, task_type_ids: Optional[List[int]] = None,
+) -> dict:
+    """Companion view to time_by_activity_report() above, same page/same
+    filters (Ganesh, 2026-08-24: "for each project how much time is taking
+    and how time is splitting into each task of that particular project") —
+    where that one answers "who worked on what, by month", this one answers
+    "which project ate the time, and what was actually done on it". Same
+    TaskEntry source, same department/employee/project/task filter
+    semantics (department and employee_ids narrow *whose* time counts,
+    project_ids/task_type_ids narrow *which* logged rows count at all) —
+    deliberately kept identical to time_by_activity_report's filtering so
+    the two tables on one page always describe the same slice of data.
+
+    Unlike time_by_activity_report, a project with zero matching minutes
+    is NOT included — there are ~300 Project/Employer rows org-wide
+    (client names, mostly), so listing every one regardless of activity
+    (the "show zero-minute employees too" convention that report uses,
+    with ~45 employees) would make this table mostly empty rows instead
+    of useful. Employee scoping still narrows *whose* time counts, same
+    as above; it just doesn't force a zero row for an inactive project.
+
+    {"projects": [{"project": Project, "total": minutes,
+    "tasks": [{"task": TaskType, "minutes": minutes}, ...] sorted by
+    minutes descending}, ...] sorted by total descending, "grand_total":
+    minutes}."""
+    emps = employees_list(db, department)
+    if employee_ids:
+        wanted = set(employee_ids)
+        emps = [e for e in emps if e.id in wanted]
+    emp_ids = [e.id for e in emps]
+
+    by_project_task: Dict[tuple, int] = {}
+    project_totals: Dict[int, int] = {}
+    if emp_ids:
+        q = select(m.TaskEntry).where(
+            m.TaskEntry.employee_id.in_(emp_ids),
+            m.TaskEntry.date.between(start, end),
+        )
+        if project_ids:
+            q = q.where(m.TaskEntry.project_id.in_(project_ids))
+        if task_type_ids:
+            q = q.where(m.TaskEntry.task_type_id.in_(task_type_ids))
+        for row in db.execute(q).scalars():
+            key = (row.project_id, row.task_type_id)
+            by_project_task[key] = by_project_task.get(key, 0) + row.duration_minutes
+            project_totals[row.project_id] = project_totals.get(row.project_id, 0) + row.duration_minutes
+
+    if not project_totals:
+        return {"projects": [], "grand_total": 0, "chart_data": []}
+
+    # One query for every Project/TaskType actually referenced, rather than
+    # N+1 lookups per row above — projects_list()/task_types_list() only
+    # return *active* ones, but a project logged against historically could
+    # since have been deactivated, so this reads them directly by id instead.
+    proj_rows = list(
+        db.execute(select(m.Project).where(m.Project.id.in_(project_totals.keys()))).scalars()
+    )
+    projects_by_id = {p.id: p for p in proj_rows}
+    task_ids = {tid for (_pid, tid) in by_project_task.keys()}
+    task_rows = list(db.execute(select(m.TaskType).where(m.TaskType.id.in_(task_ids))).scalars())
+    tasks_by_id = {t.id: t for t in task_rows}
+
+    projects = []
+    grand_total = 0
+    for pid, total in project_totals.items():
+        proj = projects_by_id.get(pid)
+        if proj is None:  # deleted row, shouldn't happen (Project is soft-delete-only) but don't 500 on it
+            continue
+        tasks = [
+            {"task": tasks_by_id[tid], "minutes": mins}
+            for (ppid, tid), mins in by_project_task.items()
+            if ppid == pid and tid in tasks_by_id
+        ]
+        tasks.sort(key=lambda t: -t["minutes"])
+        projects.append({"project": proj, "total": total, "tasks": tasks})
+        grand_total += total
+    projects.sort(key=lambda p: -p["total"])
+    # Plain (name, minutes) pairs, already sorted busiest-first — a
+    # JSON-safe mirror of `projects` above for the pie chart's `|tojson`
+    # (the Project/TaskType ORM objects in `projects` itself aren't
+    # directly serializable). Kept as a return value rather than built in
+    # the template so there's exactly one place that decides "busiest
+    # first" ordering for this report.
+    chart_data = [{"name": p["project"].name, "minutes": p["total"]} for p in projects]
+    return {"projects": projects, "grand_total": grand_total, "chart_data": chart_data}
+
+
 def time_filters_summary(
     db: Session, department: Optional[str], employee_ids: Optional[List[int]],
     project_ids: Optional[List[int]], task_type_ids: Optional[List[int]],

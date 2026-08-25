@@ -153,6 +153,10 @@ table.grid th, table.grid td { padding: 3px 4px; border: 1px solid #ece5d6; text
 table.grid td.name { text-align: left; position: sticky; left: 0; background: #fff; min-width: 170px;
   font-weight: 600; z-index: 1; }
 table.grid tr.depthead td { background: #efe9db; font-weight: 700; text-align: left; }
+/* By Project report (Ganesh, 2026-08-24) — same shaded group-header
+   treatment as table.grid's depthead above, just not scoped to that
+   specific table. */
+tr.proj-head td { background: #efe9db; font-weight: 700; }
 table.grid td.wkend { background: #f2ede2; color: #b3ab98; }
 .cell { display: block; min-width: 26px; border-radius: 4px; padding: 2px 2px; font-weight: 600; }
 .c-complete { background: var(--ok-bg); color: var(--ok); }

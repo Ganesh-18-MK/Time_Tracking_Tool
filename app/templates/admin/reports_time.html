@@ -69,6 +69,57 @@
   </p>
 </div>
 
+{# By Project (Ganesh, 2026-08-24; moved above the per-employee table
+   2026-08-25 per Ganesh) — same filters as the table below, but grouped
+   the other way: per project, how much time in total, and how that
+   splits across tasks within it. See reports.time_by_project_report().
+   Projects with zero matching minutes aren't listed at all (~300 Project/
+   Employer rows org-wide, mostly client names — unlike the employee table
+   below, an all-zero row here would be noise, not signal). #}
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+    <h2 style="margin:0">By Project</h2>
+    <button type="button" class="small secondary" id="pie-toggle-btn" onclick="toggleProjectPie()">Pie chart</button>
+  </div>
+  <p class="small muted" style="margin:4px 0 10px">Each project's total, broken down by task worked on within it.</p>
+
+  <div id="project-pie-wrap" hidden style="margin-bottom:14px">
+    {% if project_result.chart_data %}
+    <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center">
+      <svg id="project-pie-svg" viewBox="0 0 220 220" width="220" height="220" style="flex-shrink:0"></svg>
+      <div id="project-pie-legend" class="small" style="display:flex;flex-direction:column;gap:4px"></div>
+    </div>
+    <p class="small muted" style="margin-top:8px">Top 8 projects by time in this range; everything else is grouped into "Other".</p>
+    {% else %}
+    <p class="small muted">Nothing to chart for this filter/range.</p>
+    {% endif %}
+  </div>
+
+  <div class="gridwrap">
+    <table id="project-table">
+      <thead><tr><th>Project</th><th>Task</th><th>Time</th></tr></thead>
+      <tbody>
+        {% for p in project_result.projects %}
+        <tr class="proj-head">
+          <td colspan="2"><strong>{{ p.project.name }}</strong></td>
+          <td class="nowrap"><strong>{{ p.total|hm }}</strong></td>
+        </tr>
+        {% for t in p.tasks %}
+        <tr>
+          <td></td>
+          <td class="small" style="padding-left:18px">{{ t.task.name }}</td>
+          <td class="small nowrap">{{ t.minutes|hm }}</td>
+        </tr>
+        {% endfor %}
+        {% else %}
+        <tr><td colspan="3" class="muted">No logged time matches this filter.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="small muted" style="margin-top:8px">Grand total: <strong>{{ project_result.grand_total|hm if project_result.grand_total else '—' }}</strong></p>
+</div>
+
 <div class="card">
   <div class="searchbar">
     <input type="search" data-filter-table="time-table" placeholder="Search employees…">
@@ -103,6 +154,91 @@
   function mkToggleCustomRange() {
     var isCustom = document.getElementById('range-select').value === 'custom';
     document.getElementById('custom-dates').style.display = isCustom ? '' : 'none';
+  }
+
+  // Pie chart (Ganesh, 2026-08-24) — plain inline SVG built by hand, no
+  // charting library: this app has never pulled in a JS dependency for a
+  // single chart before (see msfilter.js/mdy_datepicker.js — everything
+  // here is small hand-rolled vanilla JS), and one pie chart isn't worth
+  // starting now. Colors are a fixed qualitative palette, NOT the app's
+  // semantic status colors (--ok/--warn/--bad/...) — those mean something
+  // specific elsewhere (good/attention/bad) and reusing them for arbitrary
+  // project names would be misleading here.
+  var PIE_COLORS = ['#8a5f38', '#1e7d3f', '#b3261e', '#8a6d00', '#b35c00',
+                     '#3b6ea5', '#7a4f9e', '#4f7a6e', '#a3a3a3'];
+
+  function toggleProjectPie() {
+    var wrap = document.getElementById('project-pie-wrap');
+    var btn = document.getElementById('pie-toggle-btn');
+    var willShow = wrap.hidden;
+    wrap.hidden = !willShow;
+    btn.textContent = willShow ? 'Hide chart' : 'Pie chart';
+    if (willShow && !wrap.dataset.rendered) {
+      renderProjectPie();
+      wrap.dataset.rendered = '1';
+    }
+  }
+
+  function pieEscape(s) {
+    // innerHTML is built as a raw string below, so anything coming from
+    // data (project names are free-typed by whoever created the Project)
+    // needs escaping before it lands in markup — same reasoning as
+    // Jinja's autoescaping elsewhere, just done by hand since this text
+    // is assembled in JS, not rendered by the template.
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function renderProjectPie() {
+    var data = {{ project_result.chart_data|tojson }};
+    if (!data.length) return;
+    var TOP_N = 8;
+    var top = data.slice(0, TOP_N);
+    var restTotal = data.slice(TOP_N).reduce(function (sum, d) { return sum + d.minutes; }, 0);
+    var slices = top.slice();
+    if (restTotal > 0) slices.push({name: 'Other', minutes: restTotal});
+
+    var total = slices.reduce(function (sum, s) { return sum + s.minutes; }, 0);
+    if (total <= 0) return;
+
+    var cx = 110, cy = 110, r = 100;
+    var angle = -Math.PI / 2;  // start at 12 o'clock
+    var svg = document.getElementById('project-pie-svg');
+    var legend = document.getElementById('project-pie-legend');
+    var parts = [];
+    var legendParts = [];
+
+    slices.forEach(function (s, i) {
+      var frac = s.minutes / total;
+      var nextAngle = angle + frac * 2 * Math.PI;
+      var color = PIE_COLORS[i % PIE_COLORS.length];
+      var safeName = pieEscape(s.name);
+      // A single slice covering 100% renders as a degenerate arc (start
+      // === end), so draw a full circle instead of a zero-area path.
+      if (frac >= 0.999) {
+        parts.push('<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + color + '"><title>' +
+          safeName + ': ' + (frac * 100).toFixed(1) + '%</title></circle>');
+      } else {
+        var x1 = cx + r * Math.cos(angle), y1 = cy + r * Math.sin(angle);
+        var x2 = cx + r * Math.cos(nextAngle), y2 = cy + r * Math.sin(nextAngle);
+        var largeArc = (nextAngle - angle) > Math.PI ? 1 : 0;
+        parts.push(
+          '<path d="M' + cx + ',' + cy + ' L' + x1.toFixed(2) + ',' + y1.toFixed(2) +
+          ' A' + r + ',' + r + ' 0 ' + largeArc + ' 1 ' + x2.toFixed(2) + ',' + y2.toFixed(2) +
+          ' Z" fill="' + color + '"><title>' + safeName + ': ' + (frac * 100).toFixed(1) + '%</title></path>'
+        );
+      }
+      angle = nextAngle;
+      var hrs = Math.floor(s.minutes / 60), mins = s.minutes % 60;
+      legendParts.push(
+        '<div style="display:flex;align-items:center;gap:6px">' +
+        '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + color + ';flex-shrink:0"></span>' +
+        '<span>' + safeName + ' — ' + hrs + ':' + (mins < 10 ? '0' : '') + mins +
+        ' (' + (frac * 100).toFixed(0) + '%)</span></div>'
+      );
+    });
+
+    svg.innerHTML = parts.join('');
+    legend.innerHTML = legendParts.join('');
   }
 </script>
 {% endblock %}

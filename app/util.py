@@ -417,19 +417,36 @@ def normalize_title_case(name: str) -> str:
     return " ".join(out)
 
 
+_FIRST_LETTER_RE = re.compile(r"[a-zA-Z]")
+
+
 def capitalize_first(text: str) -> str:
     """'working on india flag' -> 'Working on india flag'. Applied to
     free-text details fields (Plan for the Day, Add Row, Auto time
-    capture) when saved (Ganesh, 2026-08-22) — capitalizes only the very
-    first character of the string; everything else is left exactly as
-    typed. Deliberately NOT normalize_title_case() above — that
-    capitalizes every word and exists for short Project/Task labels, not
-    a typed sentence or multi-line note, where capitalizing every word
-    would read wrong ('Have To Work On The New System'). Caller is
-    expected to have already .strip()'d `text`; this doesn't strip or
-    collapse whitespace itself, so a multi-line paste's later lines are
-    untouched."""
-    return text[:1].upper() + text[1:] if text else text
+    capture) when saved (Ganesh, 2026-08-22) — capitalizes only the first
+    *letter* of each line; everything else is left exactly as typed.
+    Deliberately NOT normalize_title_case() above — that capitalizes
+    every word and exists for short Project/Task labels, not a typed
+    sentence or multi-line note, where capitalizing every word would read
+    wrong ('Have To Work On The New System').
+
+    Per-line, not just the string's first character (Ganesh, 2026-08-22
+    bugfix, same day as the original — real usage turned out to almost
+    always be a manually-typed numbered list with no space after the
+    number, e.g. '1.need to work on X\\n2.reviewed Y', so capitalizing
+    only index 0 capitalized the leading '1' — a no-op — and left every
+    actual word lowercase, making the feature look like it did nothing.
+    Each line now has its first a-z/A-Z character uppercased wherever it
+    falls, so '1.need to work' -> '1.Need to work', '- fixed the bug'
+    -> '- Fixed the bug', and a plain 'working on india flag' still
+    behaves exactly as before. A line with no letters at all (blank, or
+    just punctuation/numbers) is left untouched. Caller is expected to
+    have already .strip()'d `text` as a whole; this doesn't strip or
+    collapse whitespace itself."""
+    if not text:
+        return text
+    return "\n".join(_FIRST_LETTER_RE.sub(lambda m: m.group(0).upper(), line, count=1)
+                      for line in text.split("\n"))
 
 
 # Human-readable labels for AuditLog.action codes (Ganesh, 2026-08-22) —

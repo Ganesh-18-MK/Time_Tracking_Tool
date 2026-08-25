@@ -553,20 +553,150 @@ def recompute_all(db: Session, start: dt.date, end: dt.date) -> int:
 
 
 # ---- compensation ------------------------------------------------------------
-def compensated_dates(db: Session, employee_id: int) -> set:
-    """Shortfall dates whose CompensationLink is fully covered."""
-    out = set()
+def _link_allocated_minutes(db: Session, link: m.CompensationLink) -> int:
+    """This one link's own total consumed minutes, across every surplus day
+    it lists. Reads `surplus_minutes` (the {"YYYY-MM-DD": minutes} JSON dict,
+    added 2026-08-25) when present; falls back to summing each surplus_dates
+    day's FULL variance when surplus_minutes is empty but surplus_dates
+    isn't — that's an old link created before partial allocation existed,
+    and full-day consumption is the correct frozen reading for it, not a
+    gap to backfill (see CompensationLink.surplus_minutes' docstring in
+    app/models.py)."""
+    alloc = json.loads(link.surplus_minutes or "{}")
+    if alloc:
+        return sum(alloc.values())
+    total = 0
+    for iso in json.loads(link.surplus_dates or "[]"):
+        srow = db.execute(
+            select(m.DayStatus).where(
+                m.DayStatus.employee_id == link.employee_id,
+                m.DayStatus.date == dt.date.fromisoformat(iso),
+            )
+        ).scalar_one_or_none()
+        if srow is not None and (srow.variance_minutes or 0) > 0:
+            total += srow.variance_minutes
+    return total
+
+
+def shortfall_allocated_minutes(db: Session, employee_id: int, shortfall_date: dt.date) -> int:
+    """Total minutes linked toward `shortfall_date` across EVERY existing
+    CompensationLink for this employee that targets it — a shortfall day can
+    now be covered by more than one link over time (Ganesh, 2026-08-25: "we
+    can made it by selecting all three but 2 hours are pending... it should
+    become 8/08 -2:00 hours" — i.e. link what you have now, link the rest
+    later), so this sums across all of them rather than assuming exactly
+    one. Used by both evaluate_link() (to set the day's true compensated
+    flag) and add_complink() (to know how much deficit is still open before
+    accepting a new link)."""
+    total = 0
+    for link in db.execute(
+        select(m.CompensationLink).where(
+            m.CompensationLink.employee_id == employee_id,
+            m.CompensationLink.shortfall_date == shortfall_date,
+        )
+    ).scalars():
+        total += _link_allocated_minutes(db, link)
+    return total
+
+
+def allocate_surplus_minutes(
+    db: Session, employee_id: int, shortfall_date: dt.date, surplus_dates: List[str]
+) -> Dict[str, int]:
+    """Given a shortfall day and a date-sorted list of ISO surplus dates an
+    admin/employee ticked, greedily allocate minutes from each day's
+    REMAINING balance (its full variance minus whatever other links have
+    already used, see surplus_minutes_used_by_date) until the shortfall's
+    own remaining deficit (accounting for any earlier links already on this
+    day, see shortfall_allocated_minutes) is covered. Consumes oldest-ticked
+    day first, stops the moment the deficit hits zero — any day ticked
+    beyond that point, or with nothing left, is simply absent from the
+    result rather than an error; the caller decides what an empty vs.
+    partial result means (see app/routes/admin.py's add_complink() and
+    app/routes/employee.py's request_compensation_match(), which both call
+    this so the admin-direct and employee-self-service flows can't drift
+    apart — Ganesh, 2026-08-25)."""
+    short_row = db.execute(
+        select(m.DayStatus).where(m.DayStatus.employee_id == employee_id, m.DayStatus.date == shortfall_date)
+    ).scalar_one_or_none()
+    full_deficit = -(short_row.variance_minutes or 0) if short_row is not None and (short_row.variance_minutes or 0) < 0 else 0
+    deficit_remaining = full_deficit - shortfall_allocated_minutes(db, employee_id, shortfall_date)
+    if deficit_remaining <= 0:
+        return {}
+    used_by_date = surplus_minutes_used_by_date(db, employee_id)
+    allocation: Dict[str, int] = {}
+    for iso in surplus_dates:
+        if deficit_remaining <= 0:
+            break
+        d = dt.date.fromisoformat(iso)
+        srow = db.execute(
+            select(m.DayStatus).where(m.DayStatus.employee_id == employee_id, m.DayStatus.date == d)
+        ).scalar_one_or_none()
+        full_variance = srow.variance_minutes if srow is not None and (srow.variance_minutes or 0) > 0 else 0
+        remaining = full_variance - used_by_date.get(d, 0)
+        if remaining <= 0:
+            continue
+        take = min(remaining, deficit_remaining)
+        allocation[iso] = take
+        deficit_remaining -= take
+    return allocation
+
+
+def shortfall_allocated_minutes_by_date(db: Session, employee_id: int) -> Dict[dt.date, int]:
+    """Same sum as shortfall_allocated_minutes(), batched across every
+    shortfall date this employee has any link for in one query instead of
+    one-per-date (Ganesh, 2026-08-25) — used by the Shortfall day picker on
+    Person Detail and Overtime Management to show each day as fully linked
+    (disabled), partially linked (remaining balance shown), or not linked
+    at all (full deficit shown), replacing the old binary "already linked"
+    flag that didn't distinguish partial from full."""
+    out: Dict[dt.date, int] = {}
     for link in db.execute(
         select(m.CompensationLink).where(m.CompensationLink.employee_id == employee_id)
     ).scalars():
-        if link.fully_compensated:
-            out.add(link.shortfall_date)
+        out[link.shortfall_date] = out.get(link.shortfall_date, 0) + _link_allocated_minutes(db, link)
+    return out
+
+
+def compensated_dates(db: Session, employee_id: int) -> set:
+    """Shortfall dates whose COMBINED linked surplus (summed across every
+    link that targets that date — see shortfall_allocated_minutes(), a day
+    can be partially covered by more than one link now) meets or exceeds
+    that day's deficit. Rewritten 2026-08-25 alongside partial allocation:
+    the old version only checked a single link's own fully_compensated flag,
+    which would have missed (and silently un-flipped, since
+    recompute_employee() calls this on every regular recompute pass) a day
+    that's only fully covered when two or more partial links are added
+    together."""
+    by_date: Dict[dt.date, int] = {}
+    for link in db.execute(
+        select(m.CompensationLink).where(m.CompensationLink.employee_id == employee_id)
+    ).scalars():
+        by_date[link.shortfall_date] = by_date.get(link.shortfall_date, 0) + _link_allocated_minutes(db, link)
+    out = set()
+    for shortfall_date, minutes in by_date.items():
+        srow = db.execute(
+            select(m.DayStatus).where(
+                m.DayStatus.employee_id == employee_id, m.DayStatus.date == shortfall_date,
+            )
+        ).scalar_one_or_none()
+        deficit = -(srow.variance_minutes or 0) if srow is not None and (srow.variance_minutes or 0) < 0 else 0
+        if deficit > 0 and minutes >= deficit:
+            out.add(shortfall_date)
     return out
 
 
 def evaluate_link(db: Session, link: m.CompensationLink) -> None:
-    """A link is fully compensated when the linked surplus days' positive
-    variance covers the shortfall day's deficit."""
+    """Sets two related but distinct things (Ganesh, 2026-08-25, partial
+    allocation): `link.fully_compensated` reflects whether THIS link alone
+    covers the whole shortfall (used for this link's own row badge —
+    fully/partial/pending — and the flash message right after creating it);
+    `DayStatus.compensated` on the shortfall day reflects the TRUE aggregate
+    across every link that targets that day, via shortfall_allocated_minutes
+    (so if a second, later link finishes off a day two earlier partial
+    links started, the day correctly flips to compensated without needing
+    its own fully_compensated to be True). Before this rewrite there was
+    only ever one link per shortfall day in practice, so these two were
+    always the same number — now they can differ."""
     short_row = db.execute(
         select(m.DayStatus).where(
             m.DayStatus.employee_id == link.employee_id,
@@ -576,19 +706,11 @@ def evaluate_link(db: Session, link: m.CompensationLink) -> None:
     deficit = 0
     if short_row is not None and (short_row.variance_minutes or 0) < 0:
         deficit = -(short_row.variance_minutes or 0)
-    surplus = 0
-    for iso in json.loads(link.surplus_dates or "[]"):
-        srow = db.execute(
-            select(m.DayStatus).where(
-                m.DayStatus.employee_id == link.employee_id,
-                m.DayStatus.date == dt.date.fromisoformat(iso),
-            )
-        ).scalar_one_or_none()
-        if srow is not None and (srow.variance_minutes or 0) > 0:
-            surplus += srow.variance_minutes
-    link.fully_compensated = deficit > 0 and surplus >= deficit
+    own_surplus = _link_allocated_minutes(db, link)
+    link.fully_compensated = deficit > 0 and own_surplus >= deficit
     if short_row is not None:
-        short_row.compensated = link.fully_compensated
+        total = shortfall_allocated_minutes(db, link.employee_id, link.shortfall_date)
+        short_row.compensated = deficit > 0 and total >= deficit
     db.commit()
 
 
@@ -609,13 +731,37 @@ def compensation_window_ok(shortfall_date: dt.date, surplus_date: dt.date) -> bo
     return surplus_date.year == shortfall_date.year and surplus_date.month == shortfall_date.month
 
 
-def surplus_links_by_date(db: Session, employee_id: int) -> Dict[dt.date, m.CompensationLink]:
-    out: Dict[dt.date, m.CompensationLink] = {}
+def surplus_minutes_used_by_date(db: Session, employee_id: int) -> Dict[dt.date, int]:
+    """How many minutes of each surplus day are already spoken for across
+    every existing link for this employee — replaces surplus_links_by_date()
+    (Ganesh, 2026-08-25: a surplus day used to be blocked entirely the
+    moment it appeared in any link, even if only part of its variance was
+    needed; now the remaining minutes = that day's full variance minus
+    what this function reports used, and it stays pickable until that hits
+    zero). Old-format links (no surplus_minutes, see
+    CompensationLink.surplus_minutes' docstring) count as having used the
+    FULL day for every date in their surplus_dates — same frozen-history
+    fallback _link_allocated_minutes() uses elsewhere, just broken out
+    per-day here instead of summed into one link total."""
+    out: Dict[dt.date, int] = {}
     for link in db.execute(
         select(m.CompensationLink).where(m.CompensationLink.employee_id == employee_id)
     ).scalars():
-        for iso in json.loads(link.surplus_dates or "[]"):
-            out[dt.date.fromisoformat(iso)] = link
+        alloc = json.loads(link.surplus_minutes or "{}")
+        if alloc:
+            for iso, minutes in alloc.items():
+                d = dt.date.fromisoformat(iso)
+                out[d] = out.get(d, 0) + minutes
+        else:
+            for iso in json.loads(link.surplus_dates or "[]"):
+                d = dt.date.fromisoformat(iso)
+                srow = db.execute(
+                    select(m.DayStatus).where(
+                        m.DayStatus.employee_id == employee_id, m.DayStatus.date == d,
+                    )
+                ).scalar_one_or_none()
+                if srow is not None and (srow.variance_minutes or 0) > 0:
+                    out[d] = out.get(d, 0) + srow.variance_minutes
     return out
 
 

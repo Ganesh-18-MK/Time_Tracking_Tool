@@ -977,6 +977,21 @@ class CompensationLink(Base):
     employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True)
     shortfall_date: Mapped[dt.date] = mapped_column(Date)
     surplus_dates: Mapped[str] = mapped_column(Text, default="[]")  # JSON list of ISO dates
+    # Partial allocation (Ganesh, 2026-08-25) — how many minutes of EACH
+    # surplus day in surplus_dates this particular link actually consumed,
+    # as a JSON {"YYYY-MM-DD": minutes} dict. Before this, a link always
+    # consumed a surplus day's *entire* variance and blocked it from ever
+    # being reused, even if the shortfall only needed part of it (see
+    # engine.evaluate_link()/surplus_minutes_used_by_date()). A brand-new
+    # nullable column with a default is picked up automatically by the
+    # additive-migration guard in app/db.py — no rm tms.db needed. NOT
+    # backfilled on purpose: an existing link created before this change has
+    # "{}" here, and every read site (evaluate_link, surplus_minutes_used_by_
+    # date, shortfall_total_allocated_minutes) falls back to the old
+    # whole-day-sum behavior whenever this is empty but surplus_dates isn't
+    # — that fallback IS the correct, frozen historical reading for those
+    # rows, not a gap to fill in; don't add an ensure_* backfill for it.
+    surplus_minutes: Mapped[str] = mapped_column(Text, default="{}")
     note: Mapped[str] = mapped_column(Text, default="")
     linked_by: Mapped[str] = mapped_column(String(120), default="")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)

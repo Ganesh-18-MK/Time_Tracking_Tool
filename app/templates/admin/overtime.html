@@ -76,7 +76,15 @@
           <select name="shortfall_date" required>
             <option value="">— choose —</option>
             {% for r in link_shortfalls %}
+            {% set deficit = -(r.variance_minutes or 0) %}
+            {% set remaining = deficit - link_shortfall_allocated_by_date.get(r.date, 0) %}
+            {% if remaining <= 0 %}
+            <option value="" disabled style="text-decoration:line-through">✓ {{ r.date|mdy }} ({{ r.variance_minutes|hm_signed }}) — already linked</option>
+            {% elif remaining < deficit %}
+            <option value="{{ r.date.isoformat() }}">{{ r.date|mdy }} ({{ remaining|hm }} remaining of {{ deficit|hm }} — partially linked)</option>
+            {% else %}
             <option value="{{ r.date.isoformat() }}">{{ r.date|mdy }} ({{ r.variance_minutes|hm_signed }})</option>
+            {% endif %}
             {% endfor %}
           </select>
         </div>
@@ -85,16 +93,23 @@
           {% if link_surpluses %}
           <div>
             {% for s in link_surpluses %}
-            <label style="display:inline-block;margin:2px 10px 2px 0">
-              <input type="checkbox" name="surplus_dates" value="{{ s.date.isoformat() }}">
+            {% set remaining = (s.variance_minutes or 0) - link_surplus_used_by_date.get(s.date, 0) %}
+            <label style="display:inline-block;margin:2px 10px 2px 0{{ ' text-decoration:line-through;opacity:.6' if remaining <= 0 }}">
+              <input type="checkbox" name="surplus_dates" value="{{ s.date.isoformat() }}" {{ 'disabled' if remaining <= 0 }}>
+              {% if remaining <= 0 %}
+              ✓ {{ s.date|mdy }} — fully used
+              {% elif remaining < s.variance_minutes %}
+              {{ s.date|mdy }} ({{ remaining|hm }} left of {{ s.variance_minutes|hm_signed }})
+              {% else %}
               {{ s.date|mdy }} ({{ s.variance_minutes|hm_signed }})
+              {% endif %}
             </label>
             {% endfor %}
           </div>
           {% else %}<p class="muted small" style="margin:4px 0">No surplus days for {{ link_target.name }} this month yet.</p>{% endif %}
         </div>
         <div><label>Note</label><input name="note"></div>
-        <div><button class="small" {% if not link_shortfalls %}disabled title="No shortfall days for {{ link_target.name }} this month"{% endif %}>Link</button></div>
+        <div><button class="small" {% if not link_has_unlinked_shortfall %}disabled title="No shortfall days left to link for {{ link_target.name }} this month"{% endif %}>Link</button></div>
       </form>
     {% endif %}
   </details>

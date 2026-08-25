@@ -57,17 +57,30 @@
   <h2>Request an Overtime ↔ Missed Hours match</h2>
   <p class="small muted">Missed part of a day but made it up with extra time on another day (within about
     3 weeks, or the same calendar month)? Request a match here — an admin approves or declines it.</p>
+  <p class="small muted" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <span>Showing {{ month_label(year, month) }}</span>
+    <a class="btn secondary small" href="/overtime?ym={{ prev_ym }}">← prev</a>
+    <a class="btn secondary small" href="/overtime?ym={{ next_ym }}">next →</a>
+  </p>
   {% if not match_shortfalls %}
-  <p class="small muted">No missed-hours days in the last 60 days to match.</p>
+  <p class="small muted">No missed-hours days in {{ month_label(year, month) }} to match.</p>
   {% elif not match_surpluses %}
-  <p class="small muted">No overtime/surplus days in the last 60 days available to match against.</p>
+  <p class="small muted">No overtime/surplus days in {{ month_label(year, month) }} available to match against.</p>
   {% else %}
   <form method="post" action="/leave/match-request" class="formrow">
     <div>
       <label>Missed Hours day</label>
       <select name="shortfall_date">
         {% for r in match_shortfalls %}
+        {% set deficit = -(r.variance_minutes or 0) %}
+        {% set remaining = deficit - match_shortfall_allocated_by_date.get(r.date, 0) %}
+        {% if remaining <= 0 %}
+        <option value="" disabled style="text-decoration:line-through">✓ {{ r.date|mdy }} ({{ r.variance_minutes|hm_signed }}) — already matched</option>
+        {% elif remaining < deficit %}
+        <option value="{{ r.date.isoformat() }}">{{ r.date|mdy }} ({{ remaining|hm }} remaining of {{ deficit|hm }})</option>
+        {% else %}
         <option value="{{ r.date.isoformat() }}">{{ r.date|mdy }} ({{ r.variance_minutes|hm_signed }})</option>
+        {% endif %}
         {% endfor %}
       </select>
     </div>
@@ -75,9 +88,16 @@
       <label>Overtime day(s) to match against</label>
       <div class="formrow" style="gap:10px">
         {% for r in match_surpluses %}
-        <label class="small" style="display:flex;align-items:center;gap:4px;font-weight:normal">
-          <input type="checkbox" name="surplus_dates" value="{{ r.date.isoformat() }}">
+        {% set remaining = (r.variance_minutes or 0) - match_surplus_used_by_date.get(r.date, 0) %}
+        <label class="small" style="display:flex;align-items:center;gap:4px;font-weight:normal{{ ';text-decoration:line-through;opacity:.6' if remaining <= 0 }}">
+          <input type="checkbox" name="surplus_dates" value="{{ r.date.isoformat() }}" {{ 'disabled' if remaining <= 0 }}>
+          {% if remaining <= 0 %}
+          ✓ {{ r.date|mdy }} — fully used
+          {% elif remaining < r.variance_minutes %}
+          {{ r.date|mdy }} ({{ remaining|hm }} left of {{ r.variance_minutes|hm_signed }})
+          {% else %}
           {{ r.date|mdy }} ({{ r.variance_minutes|hm_signed }})
+          {% endif %}
         </label>
         {% endfor %}
       </div>

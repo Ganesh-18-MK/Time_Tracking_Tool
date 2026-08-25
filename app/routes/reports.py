@@ -92,12 +92,17 @@ def reports_time(
         db, ctx["resolved_start"], ctx["resolved_end"], department=ctx["dept"] or None,
         employee_ids=emp or None, project_ids=project or None, task_type_ids=task or None,
     )
+    project_result = reports.time_by_project_report(
+        db, ctx["resolved_start"], ctx["resolved_end"], department=ctx["dept"] or None,
+        employee_ids=emp or None, project_ids=project or None, task_type_ids=task or None,
+    )
     filters_summary = reports.time_filters_summary(db, ctx["dept"], emp, project, task)
     ctx.pop("emp", None)
     return render(
         request, "admin/reports_time.html",
         {
-            "user": admin, "result": result, "emp": emp, "project": project, "task": task,
+            "user": admin, "result": result, "project_result": project_result,
+            "emp": emp, "project": project, "task": task,
             "projects": reports.projects_list(db), "tasks": reports.task_types_list(db),
             "filters_summary": filters_summary,
             **ctx,

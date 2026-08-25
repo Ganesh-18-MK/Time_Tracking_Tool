@@ -1687,22 +1687,28 @@ def request_compensation_match(
     if not surplus:
         flash(request, "Pick at least one overtime day to match against.", "err")
         return RedirectResponse("/overtime", status_code=303)
-    # a surplus day backs at most one shortfall — same invariant
-    # add_complink() already enforces for admin-direct links.
-    taken = engine.surplus_links_by_date(db, user.id)
-    clash = [s for s in surplus if dt.date.fromisoformat(s) in taken]
-    if clash:
-        flash(request, f"Already matched to another day: {', '.join(clash)}", "err")
+    # Partial allocation (Ganesh, 2026-08-25) — same shared
+    # engine.allocate_surplus_minutes() add_complink() uses, computed and
+    # stored right now (at request time) rather than deferred to approval,
+    # so a ticked surplus day is claimed the moment it's requested — same
+    # "immediate claim" timing the old whole-day version already had (it
+    # never filtered by link status either), just minute-accurate now
+    # instead of blocking the whole day.
+    allocation = engine.allocate_surplus_minutes(db, user.id, shortfall, surplus)
+    if not allocation:
+        flash(request, "None of the selected day(s) have any overtime hours left to match — pick a different day.", "err")
         return RedirectResponse("/overtime", status_code=303)
     link = m.CompensationLink(
-        employee_id=user.id, shortfall_date=shortfall, surplus_dates=json.dumps(surplus),
+        employee_id=user.id, shortfall_date=shortfall,
+        surplus_dates=json.dumps(sorted(allocation.keys())),
+        surplus_minutes=json.dumps(allocation),
         note=note.strip(), linked_by=user.name,
         status=m.LEAVE_REQUESTED, requested_by_employee=True,
     )
     db.add(link)
     db.commit()
     audit(db, user.name, "compensation_match_requested", "CompensationLink", link.id,
-          {"shortfall": shortfall_date, "surplus": surplus})
+          {"shortfall": shortfall_date, "allocation": allocation})
     flash(request, "Match request submitted — an admin will review it.", "ok")
     return RedirectResponse("/overtime", status_code=303)
 
@@ -1716,6 +1722,7 @@ def request_compensation_match(
 @router.get("/overtime")
 def my_overtime(
     request: Request,
+    ym: Optional[str] = None,
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -1732,33 +1739,44 @@ def my_overtime(
         # here from /leave (Ganesh, 2026-08-22: "this should be not in
         # leave management... it should be in overtime management", the
         # same call he made for the admin-side decision card). The
-        # employee's own recent shortfall (Missed Hours) and surplus
-        # (Overtime) days, same window CompensationLink already reasons
-        # about, so they're picking from real days rather than typing
-        # dates blind. 60 days back is a plain, generous window — no
-        # requirement pinned an exact number, and it's cheap to widen
-        # later if needed.
+        # employee's own shortfall (Missed Hours) and surplus (Overtime)
+        # days, same idea CompensationLink already reasons about, so
+        # they're picking from real days rather than typing dates blind.
+        # Switched from a fixed 60-day rolling window to one-calendar-
+        # month-at-a-time with prev/next navigation (Ganesh, 2026-08-25 —
+        # "why its showing previous month" against the old rolling window;
+        # this now matches the admin-side pickers on Person Detail and
+        # Overtime Management, which were always month-scoped) — see
+        # app/util.py's parse_ym()/prev_next_month() for the same pattern
+        # used elsewhere (my_month(), overtime_page()).
+        from app.util import parse_ym, prev_next_month
+
         today = today_local()
-        window_start = today - dt.timedelta(days=60)
+        year, month = parse_ym(ym, default=today)
+        first, last = engine.month_range(year, month)
         recent_statuses = list(
             db.execute(
                 select(m.DayStatus).where(
                     m.DayStatus.employee_id == user.id,
-                    m.DayStatus.date.between(window_start, today),
+                    m.DayStatus.date.between(first, min(last, today)),
                 )
             ).scalars()
         )
         cfg = engine.get_config(db)
         comp_erases = cfg.get("comp_erases_strike") == "1"
-        taken_surplus = engine.surplus_links_by_date(db, user.id)
+        # Partial allocation (Ganesh, 2026-08-25) — a shortfall/surplus day
+        # is no longer hidden the instant it appears in any link; the
+        # template shows its remaining balance instead, same treatment the
+        # admin-side pickers got (app/templates/admin/person.html,
+        # admin/overtime.html). See engine.shortfall_allocated_minutes_by_
+        # date()/surplus_minutes_used_by_date().
+        match_shortfall_allocated_by_date = engine.shortfall_allocated_minutes_by_date(db, user.id)
+        match_surplus_used_by_date = engine.surplus_minutes_used_by_date(db, user.id)
         match_shortfalls = [
             r for r in recent_statuses
             if (r.variance_minutes or 0) < 0 and r.effective_status(comp_erases) in m.STRIKE_STATUSES
         ]
-        match_surpluses = [
-            r for r in recent_statuses
-            if (r.variance_minutes or 0) > 0 and r.date not in taken_surplus
-        ]
+        match_surpluses = [r for r in recent_statuses if (r.variance_minutes or 0) > 0]
         match_links = list(
             db.execute(
                 select(m.CompensationLink)
@@ -1768,10 +1786,17 @@ def my_overtime(
         )
         ctx["match_shortfalls"] = sorted(match_shortfalls, key=lambda r: r.date, reverse=True)
         ctx["match_surpluses"] = sorted(match_surpluses, key=lambda r: r.date, reverse=True)
+        ctx["match_shortfall_allocated_by_date"] = match_shortfall_allocated_by_date
+        ctx["match_surplus_used_by_date"] = match_surplus_used_by_date
         ctx["match_links"] = [
             (lk, [dt.date.fromisoformat(x) for x in json.loads(lk.surplus_dates or "[]")])
             for lk in match_links
         ]
+        (py, pm), (ny, nm) = prev_next_month(year, month)
+        ctx["year"] = year
+        ctx["month"] = month
+        ctx["prev_ym"] = f"{py}-{pm:02d}"
+        ctx["next_ym"] = f"{ny}-{nm:02d}"
     return render(request, "overtime.html", ctx)
 
 

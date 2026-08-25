@@ -3,7 +3,7 @@ lists, leave + compensation, config, audit."""
 import datetime as dt
 import io
 import json
-from typing import Optional
+from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse, StreamingResponse
@@ -25,6 +25,7 @@ from app.util import (
     FormError,
     ROLE_EMPLOYEE,
     audit,
+    fmt_hm,
     next_employee_code,
     overtime_row_flags,
     parse_date_field,
@@ -239,6 +240,8 @@ def _shortfalls_surpluses(statuses, comp_erases: bool):
     return shortfalls, surpluses
 
 
+
+
 # --------------------------------------------------------------------------
 # Person detail: full log, ledger, leave history, overrides, comp links
 # --------------------------------------------------------------------------
@@ -331,6 +334,8 @@ def person(
     comp_erases = cfg.get("comp_erases_strike") == "1"
     strikes = engine.strikes_in(statuses, comp_erases)
     shortfalls, surpluses = _shortfalls_surpluses(statuses, comp_erases)
+    shortfall_allocated_by_date = engine.shortfall_allocated_minutes_by_date(db, emp.id)
+    surplus_used_by_date = engine.surplus_minutes_used_by_date(db, emp.id)
     comp = compensation.monthly_summary(db, emp, year, month, today)
     (py, pm), (ny, nm) = prev_next_month(year, month)
     return render(
@@ -355,6 +360,8 @@ def person(
             "threshold": engine.cfg_int(cfg, "strike_threshold"),
             "comp_erases": comp_erases,
             "shortfalls": shortfalls,
+            "shortfall_allocated_by_date": shortfall_allocated_by_date,
+            "surplus_used_by_date": surplus_used_by_date,
             "surpluses": surpluses,
             "comp": comp,
             "year": year,
@@ -502,16 +509,47 @@ def add_complink(
     if not surplus:
         flash(request, "Pick at least one surplus day.", "err")
         return RedirectResponse(dest, status_code=303)
-    # a surplus day backs at most one shortfall (keeps the math honest)
-    taken = engine.surplus_links_by_date(db, emp_id)
-    clash = [s for s in surplus if dt.date.fromisoformat(s) in taken]
-    if clash:
-        flash(request, f"Surplus day(s) already linked to another shortfall: {', '.join(clash)}", "err")
+
+    # Partial allocation (Ganesh, 2026-08-25) — replaces the old whole-day
+    # "surplus day already linked to another shortfall" clash rejection.
+    # A surplus day can now back more than one shortfall over time (just
+    # not more minutes than it actually has), and a shortfall can be
+    # covered by more than one link (e.g. link what's available now, link
+    # the rest later once there's more overtime to draw on). See
+    # engine.evaluate_link()/shortfall_allocated_minutes()/
+    # surplus_minutes_used_by_date() for the read side of this same model.
+    short_row = db.execute(
+        select(m.DayStatus).where(m.DayStatus.employee_id == emp_id, m.DayStatus.date == shortfall)
+    ).scalar_one_or_none()
+    full_deficit = -(short_row.variance_minutes or 0) if short_row is not None and (short_row.variance_minutes or 0) < 0 else 0
+    deficit_remaining = full_deficit - engine.shortfall_allocated_minutes(db, emp_id, shortfall)
+    if full_deficit <= 0:
+        flash(request, f"{shortfall_date} isn't a shortfall day — nothing to link.", "err")
         return RedirectResponse(dest, status_code=303)
+    if deficit_remaining <= 0:
+        flash(request, f"{shortfall_date} is already fully compensated — nothing left to link.", "err")
+        return RedirectResponse(dest, status_code=303)
+
+    # Ticked days are consumed oldest-first (surplus is already date-sorted
+    # above) until the remaining deficit is covered; a day with nothing left
+    # (or ticked past the point the deficit's already met) is simply left
+    # untouched — skipped, not blocked or errored on — so it stays 100%
+    # available for a future link rather than being wasted or rejected. See
+    # engine.allocate_surplus_minutes() — shared with the employee
+    # self-service match-request flow (app/routes/employee.py) so the two
+    # can't drift apart.
+    allocation = engine.allocate_surplus_minutes(db, emp_id, shortfall, surplus)
+    deficit_remaining -= sum(allocation.values())
+
+    if not allocation:
+        flash(request, "None of the selected surplus day(s) have any hours left to link — pick a different day.", "err")
+        return RedirectResponse(dest, status_code=303)
+
     link = m.CompensationLink(
         employee_id=emp_id,
         shortfall_date=shortfall,
-        surplus_dates=json.dumps(surplus),
+        surplus_dates=json.dumps(sorted(allocation.keys())),
+        surplus_minutes=json.dumps(allocation),
         note=note.strip(),
         linked_by=admin.name,
     )
@@ -520,16 +558,21 @@ def add_complink(
     engine.evaluate_link(db, link)
     audit(
         db, admin.name, "compensation_link", "CompensationLink", link.id,
-        {"shortfall": shortfall_date, "surplus": surplus, "fully": link.fully_compensated,
+        {"shortfall": shortfall_date, "allocation": allocation, "fully": link.fully_compensated,
          "note": note.strip()},
     )
-    flash(
-        request,
-        "Compensation link created"
-        + (" — shortfall fully covered, day now reads Complete."
-           if link.fully_compensated else " — not yet fully covered (kept as-is)."),
-        "ok",
-    )
+    # deficit_remaining here is the state AFTER this new link (it started
+    # from shortfall_allocated_minutes(), which already accounted for any
+    # earlier links on this same day) — that's the day's true aggregate
+    # outcome, which is what short_row.compensated now reflects too. Don't
+    # use link.fully_compensated for this message: it's this ONE link's own
+    # coverage, correctly False for a second link that finishes off a day
+    # an earlier partial link started, even though the day itself is done.
+    if deficit_remaining <= 0:
+        detail = " — shortfall fully covered, day now reads Complete."
+    else:
+        detail = f" — {fmt_hm(deficit_remaining)} still short; link more surplus day(s) to finish covering it."
+    flash(request, "Compensation link created" + detail, "ok")
     return RedirectResponse(dest, status_code=303)
 
 
@@ -602,10 +645,23 @@ def approve_complink(
         {"shortfall": link.shortfall_date.isoformat(), "surplus": [s.isoformat() for s in surplus_dates],
          "fully": link.fully_compensated, "review_note": review_note.strip()},
     )
+    # Same reasoning as add_complink()'s flash message (Ganesh, 2026-08-25):
+    # the day's TRUE aggregate state (across every link that targets it, not
+    # just this one) is what actually matters here, in case this request
+    # happens to be the one that finishes off a day an earlier link already
+    # partially covered.
+    short_row = db.execute(
+        select(m.DayStatus).where(m.DayStatus.employee_id == link.employee_id, m.DayStatus.date == link.shortfall_date)
+    ).scalar_one_or_none()
+    day_deficit = 0
+    if short_row is not None and (short_row.variance_minutes or 0) < 0:
+        day_deficit = -(short_row.variance_minutes or 0)
+    day_remaining = day_deficit - engine.shortfall_allocated_minutes(db, link.employee_id, link.shortfall_date)
     flash(
         request,
         "Match approved"
-        + (" — shortfall fully covered, day now reads Complete." if link.fully_compensated
+        + (" — shortfall fully covered, day now reads Complete." if day_deficit > 0 and day_remaining <= 0
+           else f" — {fmt_hm(day_remaining)} still short; another link can finish covering it." if day_remaining > 0
            else " — not yet fully covered (kept as-is)."),
         "ok",
     )
@@ -1936,6 +1992,8 @@ def overtime_page(
         ]
 
     link_shortfalls, link_surpluses = [], []
+    link_shortfall_allocated_by_date: Dict[dt.date, int] = {}
+    link_surplus_used_by_date: Dict[dt.date, int] = {}
     if link_target is not None:
         if first <= today:
             engine.recompute_employee(db, link_target, first, min(last, today), cfg)
@@ -1946,6 +2004,17 @@ def overtime_page(
             ).scalars()
         )
         link_shortfalls, link_surpluses = _shortfalls_surpluses(target_statuses, cfg.get("comp_erases_strike") == "1")
+        link_shortfall_allocated_by_date = engine.shortfall_allocated_minutes_by_date(db, link_target.id)
+        link_surplus_used_by_date = engine.surplus_minutes_used_by_date(db, link_target.id)
+    # Whether at least one shortfall day still has any deficit left to link
+    # — used to disable the Link button below the same way `link_shortfalls`
+    # alone used to, but now correctly ignores a day that's shown-but-
+    # disabled in the dropdown because it's already fully linked (partial
+    # allocation, Ganesh, 2026-08-25 — see link_shortfall_allocated_by_date).
+    link_has_unlinked_shortfall = any(
+        -(r.variance_minutes or 0) > link_shortfall_allocated_by_date.get(r.date, 0)
+        for r in link_shortfalls
+    )
 
     return render(
         request, "admin/overtime.html",
@@ -1953,6 +2022,9 @@ def overtime_page(
             "user": admin, "emps": emps, "pending": pending, "approved": approved,
             "comp_links": comp_links, "overtime_rows": overtime_rows, "pending_matches": pending_matches,
             "link_target": link_target, "link_shortfalls": link_shortfalls, "link_surpluses": link_surpluses,
+            "link_shortfall_allocated_by_date": link_shortfall_allocated_by_date,
+            "link_surplus_used_by_date": link_surplus_used_by_date,
+            "link_has_unlinked_shortfall": link_has_unlinked_shortfall,
             "year": year, "month": month, "ym": f"{year}-{month:02d}",
             "prev_ym": f"{py}-{pm:02d}", "next_ym": f"{ny}-{nm:02d}",
         },
