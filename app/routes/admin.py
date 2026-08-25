@@ -1951,11 +1951,17 @@ def overtime_page(
     year, month = parse_ym(ym)
     first, last = engine.month_range(year, month)
     today = today_local()
-    att = reports.attendance_report(db, first, min(last, today))
-    overtime_rows = [r for r in att["rows"] if r["overtime_minutes"] > 0]
-    if scope is not None:
-        overtime_rows = [r for r in overtime_rows if r["employee"].id in scope]
-    overtime_rows.sort(key=lambda r: r["overtime_minutes"], reverse=True)
+    # "Who worked overtime" (Ganesh, 2026-08-25: "overtime from punch in
+    # punched out time is not requere... we are considering only based on
+    # task log times") — switched from reports.attendance_report()'s
+    # Punch-In/Out-based overtime figure to reports.task_log_overtime_
+    # report(), which sums each employee's positive DayStatus.variance_
+    # minutes instead (the same "surplus" figure the Compensation Links
+    # picker above already uses) so the two sections on this page agree on
+    # what "overtime" means. Already scoped via `emps` (led_by()), so no
+    # separate scope filter needed here unlike the old attendance_report()
+    # path.
+    overtime_rows = reports.task_log_overtime_report(db, first, min(last, today), [e.id for e in emps])
     (py, pm), (ny, nm) = prev_next_month(year, month)
 
     # Employee picker for the Compensation links quick-link flow above

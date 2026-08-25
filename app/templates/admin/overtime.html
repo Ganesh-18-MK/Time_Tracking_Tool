@@ -66,8 +66,11 @@
     </form>
 
     {% if link_target %}
-      <p class="small muted" style="margin:10px 0 6px">{{ link_target.name }} — {{ month_label(year, month) }}
-        (use ← prev / next → below to pick a different month before linking).</p>
+      <p class="small muted" style="margin:10px 0 6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span>{{ link_target.name }} — {{ month_label(year, month) }}</span>
+        <a class="btn secondary small" href="/admin/overtime?ym={{ prev_ym }}&employee_id={{ link_target.id }}">← prev</a>
+        <a class="btn secondary small" href="/admin/overtime?ym={{ next_ym }}&employee_id={{ link_target.id }}">next →</a>
+      </p>
       <form method="post" action="/admin/person/{{ link_target.id }}/complink" class="formrow">
         <input type="hidden" name="ym" value="{{ ym }}">
         <input type="hidden" name="return_to" value="overtime">
@@ -113,33 +116,6 @@
       </form>
     {% endif %}
   </details>
-</div>
-
-<div class="card">
-  <h2>Who worked overtime — {{ month_label(year, month) }}</h2>
-  <p class="small muted" style="margin:-4px 0 10px">From completed Punch In/Out vs. each day's target — same figures
-    Reports → Attendance computes. "Approved" only counts overtime on days inside one of that employee's approved
-    date ranges above; the rest is worked but not (yet) pre-approved.</p>
-  <p style="margin:0 0 10px">
-    <a class="btn secondary small" href="/admin/overtime?ym={{ prev_ym }}{% if link_target %}&employee_id={{ link_target.id }}{% endif %}">← prev</a>
-    <a class="btn secondary small" href="/admin/overtime?ym={{ next_ym }}{% if link_target %}&employee_id={{ link_target.id }}{% endif %}">next →</a>
-  </p>
-  {% if overtime_rows %}
-  <table>
-    <thead><tr><th>Employee</th><th>Department</th><th>Overtime worked</th><th>Approved</th><th>Not yet approved</th></tr></thead>
-    <tbody>
-      {% for r in overtime_rows %}
-      <tr>
-        <td><a href="/admin/person/{{ r.employee.id }}">{{ r.employee.name }}</a></td>
-        <td>{{ r.department }}</td>
-        <td class="nowrap"><strong>{{ r.overtime_minutes|hm }}</strong></td>
-        <td class="nowrap">{{ r.approved_overtime_minutes|hm if r.approved_overtime_minutes else '—' }}</td>
-        <td class="nowrap">{{ (r.overtime_minutes - r.approved_overtime_minutes)|hm if r.overtime_minutes > r.approved_overtime_minutes else '—' }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}<p class="muted small">No overtime worked this month yet.</p>{% endif %}
 </div>
 
 <div class="card">
@@ -270,5 +246,33 @@
     </tbody>
   </table>
   {% if not pending %}<p class="muted small" style="margin:8px 0 0">No pending overtime requests.</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Who worked overtime — {{ month_label(year, month) }}</h2>
+  <p class="small muted" style="margin:-4px 0 10px">From logged task-log hours vs. each day's target — the same
+    "surplus" figure the Compensation Links picker above sums per day (not Punch In/Out time; this app tracks
+    overtime by what's logged, not by the punch clock). "Approved" only counts surplus on days inside one of that
+    employee's approved date ranges above; the rest is worked but not (yet) pre-approved.</p>
+  <p style="margin:0 0 10px">
+    <a class="btn secondary small" href="/admin/overtime?ym={{ prev_ym }}{% if link_target %}&employee_id={{ link_target.id }}{% endif %}">← prev</a>
+    <a class="btn secondary small" href="/admin/overtime?ym={{ next_ym }}{% if link_target %}&employee_id={{ link_target.id }}{% endif %}">next →</a>
+  </p>
+  {% if overtime_rows %}
+  <table>
+    <thead><tr><th>Employee</th><th>Department</th><th>Overtime worked</th><th>Approved</th><th>Not yet approved</th></tr></thead>
+    <tbody>
+      {% for r in overtime_rows %}
+      <tr>
+        <td><a href="/admin/person/{{ r.employee.id }}">{{ r.employee.name }}</a></td>
+        <td>{{ r.department }}</td>
+        <td class="nowrap"><strong>{{ r.overtime_minutes|hm }}</strong></td>
+        <td class="nowrap">{{ r.approved_overtime_minutes|hm if r.approved_overtime_minutes else '—' }}</td>
+        <td class="nowrap">{{ (r.overtime_minutes - r.approved_overtime_minutes)|hm if r.overtime_minutes > r.approved_overtime_minutes else '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted small">No overtime worked this month yet.</p>{% endif %}
 </div>
 {% endblock %}

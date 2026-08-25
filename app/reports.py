@@ -431,6 +431,55 @@ def attendance_report(db: Session, start: dt.date, end: dt.date,
     return {"mode": "summary", "rows": summary}
 
 
+def task_log_overtime_report(db: Session, start: dt.date, end: dt.date, employee_ids: List[int]) -> List[dict]:
+    """Who worked overtime, driven by logged TASK-LOG hours
+    (DayStatus.variance_minutes — the same "surplus" figure the
+    Compensation Links picker already sums per employee) instead of
+    completed Punch In/Out time. Backs Overtime Management's "Who worked
+    overtime" table (Ganesh, 2026-08-25: "overtime from punch in punched
+    out time is not requere... we are considering only based on task log
+    times") — a deliberately separate function from attendance_report()
+    rather than a flag on it, since Reports -> Attendance's own "Overtime"
+    column stays Punch-based on purpose (that's what its docstring/PRD
+    grounding is actually about); this answers a different question ("who
+    logged more task-log hours than their target") for this one table only.
+
+    Reuses _approved_overtime_ranges()/_date_is_approved() unchanged — the
+    approved/not-yet-approved split is still whole-day, OvertimeApproval-
+    range based, just applied against variance-minutes instead of
+    punch-minutes. Employees with zero task-log surplus in range are
+    excluded (same as the table's previous Punch-based behavior), and
+    takes an explicit employee_ids list rather than department/employee_id
+    like attendance_report() does, since Overtime Management scopes by
+    led_by() (per-person "reports to me"), not by department."""
+    if not employee_ids:
+        return []
+    _ensure_fresh(db, start, end)
+    approved_ranges = _approved_overtime_ranges(db, start, end, employee_ids)
+    by_emp = _rows_by_employee(db, start, end, employee_ids)
+    rows = []
+    for emp_id, statuses in by_emp.items():
+        total = 0
+        approved_total = 0
+        emp_ranges = approved_ranges.get(emp_id, [])
+        emp = None
+        for r in statuses:
+            emp = r.employee
+            v = r.variance_minutes or 0
+            if v <= 0:
+                continue
+            total += v
+            if _date_is_approved(emp_ranges, r.date):
+                approved_total += v
+        if total > 0 and emp is not None:
+            rows.append({
+                "employee": emp, "department": emp.department or "—",
+                "overtime_minutes": total, "approved_overtime_minutes": approved_total,
+            })
+    rows.sort(key=lambda r: r["overtime_minutes"], reverse=True)
+    return rows
+
+
 def strikes_report(db: Session, start: dt.date, end: dt.date,
                     department: Optional[str] = None, employee_id: Optional[int] = None) -> dict:
     """{"mode": "daily", "employee": Employee, "rows": [{"date","status"}],
