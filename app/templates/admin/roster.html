@@ -7,8 +7,8 @@
   <a class="btn secondary small" href="/admin/roster/bulk-upload">Bulk upload employees</a>
 </div>
 <p class="small">
-  <a href="/admin/roster?show=active" class="{{ 'muted' if show != 'active' }}">Active</a> ·
-  <a href="/admin/roster?show=all" class="{{ 'muted' if show != 'all' }}">All (incl. deactivated)</a>
+  <a href="/admin/roster?show=active" class="{{ 'muted' if show != 'active' }}">Active Employees</a> ·
+  <a href="/admin/roster?show=ex" class="{{ 'muted' if show != 'ex' }}">Ex-Employees</a>
 </p>
 
 <div class="card">
@@ -108,7 +108,7 @@
     {% endif %}
     <div><button>Add</button></div>
   </form>
-  <p class="small muted">Deactivated people keep all history (the tracker's GONE section) but drop out of compliance runs — use Edit → untick Active.</p>
+  <p class="small muted">Deactivated people keep all history (the tracker's GONE section) but drop out of compliance runs — use Edit → untick Active. They move to the <strong>Ex-Employees</strong> list above, not deleted or hidden.</p>
 </div>
 
 <script>

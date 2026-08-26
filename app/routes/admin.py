@@ -705,8 +705,19 @@ def roster(
 ):
     q = select(m.Employee).order_by(m.Employee.active.desc(), m.Employee.department, m.Employee.name)
     emps = list(db.execute(q).scalars())
+    # Two distinct lists, not "active" vs. "everyone mixed together" (Ganesh,
+    # 2026-08-25 — "when i offboard the employee the offboarded employees
+    # should be under deactivated list, options should be active-Employees
+    # and Ex-Employees"): offboarding someone now visibly moves them into
+    # their own Ex-Employees view instead of just quietly sinking to the
+    # bottom of one combined table. `show="all"` (the old value) is no
+    # longer offered from the toggle above, but still falls through to
+    # "everyone, active first" here rather than erroring, in case a bookmark
+    # or old link still points at it.
     if show == "active":
         emps = [e for e in emps if e.active]
+    elif show == "ex":
+        emps = [e for e in emps if not e.active]
 
     # department pill row above the table — counts reflect whatever's
     # actually listed (respects the active/all toggle above)
