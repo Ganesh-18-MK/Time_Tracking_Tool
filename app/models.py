@@ -1077,4 +1077,13 @@ CONFIG_DEFAULTS = {
     "planned_days_year_0_2": "9",      # 0-2 years' experience
     "planned_days_year_2_5": "11",     # 2-5 years' experience
     "planned_days_year_5_plus": "13",  # 5+ years' experience
+    # Unplanned Time annual cap (Ganesh, 2026-08-27 — policy clarification
+    # from management: unlike Unpaid/Bereavement Time, which stay
+    # uncapped/available-on-request, Unplanned Time IS a real pool that
+    # resets every calendar year, not accrued over tenure like Planned
+    # Time). Hours/year, not minutes — see leave_balance_v2()'s docstring
+    # in engine.py for how this is applied and why it resets on a
+    # calendar-year boundary instead of running for an employee's whole
+    # tenure the way Planned Time's entitlement does.
+    "unplanned_hours_year_cap": "40",
 }

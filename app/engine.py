@@ -331,13 +331,28 @@ def leave_balance_v2(
 ) -> Dict[str, Dict[str, Optional[int]]]:
     """Used/Pending/Remaining per LEAVE_TYPES_V2 type, all in integer
     minutes (templates convert to hours for display via the `hm` filter,
-    same as everywhere else). Only Planned Time (accrued) and Special
-    Paid Time (granted, see SpecialPaidGrant) have a real capped
-    entitlement — Unplanned/Unpaid/Bereavement Time have no pool to run
-    out of (PDF: available on request, not accrued), so their
-    "entitlement"/"remaining" are None rather than a fabricated number;
-    Used/Pending are still tracked for all five so an employee can see
-    what they've taken.
+    same as everywhere else). Planned Time (accrued over tenure), Special
+    Paid Time (granted, see SpecialPaidGrant), and — as of 2026-08-27 —
+    Unplanned Time (a flat calendar-year pool, policy clarification from
+    management) have a real capped entitlement; Unpaid/Bereavement Time
+    still have no pool to run out of (PDF: available on request, not
+    accrued), so their "entitlement"/"remaining" stay None rather than a
+    fabricated number. Used/Pending are still tracked for all five so an
+    employee can see what they've taken.
+
+    Unplanned Time's cap (Config.unplanned_hours_year_cap, hours/year) is
+    deliberately NOT accrued like Planned Time — it's the full year's
+    amount available from day one and resets every January 1st, so its
+    "used"/"pending" below are scoped to leave whose start_date falls in
+    the same calendar year as `as_of`, unlike every other type here whose
+    used/pending are an all-time running sum (correct for them, since
+    Planned Time's entitlement is itself already a cumulative tenure
+    total with no yearly reset, and Unpaid/Bereavement/Special Paid have
+    no cap for a reset to apply to). Once exhausted, the PDF/manager
+    guidance is that the employee requests Unpaid Time (or, rarely,
+    Special Paid Time via a management grant) instead — there's no
+    "borrow from next year" mechanism, so this function does not clamp or
+    carry over a negative remaining balance across the year boundary.
 
     "Used" sums approved_minutes_per_day (falling back to the originally
     requested minutes_per_day only if a decision was made without setting
@@ -354,6 +369,7 @@ def leave_balance_v2(
 
     entitlement: Dict[str, Optional[int]] = {t: None for t in m.LEAVE_TYPES_V2}
     entitlement[m.LEAVE_PLANNED] = planned_time_accrued_minutes(db, emp, cfg, as_of)
+    entitlement[m.LEAVE_UNPLANNED] = cfg_int(cfg, "unplanned_hours_year_cap") * 60
     granted = db.execute(
         select(func.sum(m.SpecialPaidGrant.minutes)).where(m.SpecialPaidGrant.employee_id == emp.id)
     ).scalar() or 0
@@ -368,6 +384,10 @@ def leave_balance_v2(
         )
     ).scalars()
     for lv in rows:
+        if lv.type == m.LEAVE_UNPLANNED and lv.start_date.year != as_of.year:
+            # Unplanned's cap resets every calendar year — a prior (or
+            # future) year's requests never count against this year's pool.
+            continue
         days = (lv.end_date - lv.start_date).days + 1
         if lv.status == m.LEAVE_APPROVED:
             if lv.approved_minutes_per_day is not None:
@@ -716,18 +736,22 @@ def evaluate_link(db: Session, link: m.CompensationLink) -> None:
 
 def compensation_window_ok(shortfall_date: dt.date, surplus_date: dt.date) -> bool:
     """Requirement 9 (Overtime-for-Missed-Hours, employee-requested match,
-    2026-08-21) — docs/LEAVE_MANAGEMENT_PLAN.md §3 names a "3-week/same-
-    calendar-month window" as the validation check at approval time,
-    without spelling out the exact boundary logic anywhere more precise
-    in that doc. Implemented here as either/or, the common shape for this
-    kind of policy: a surplus day is eligible to compensate a shortfall if
-    it's within 21 calendar days of it OR falls in the same calendar
-    month — whichever is more generous for a given pair of dates. Flag
-    this interpretation to Ganesh if the source PDF actually meant
-    something stricter (e.g. AND instead of OR, or calendar weeks instead
-    of a flat 21-day radius)."""
-    if abs((surplus_date - shortfall_date).days) <= 21:
-        return True
+    2026-08-21) — docs/LEAVE_MANAGEMENT_PLAN.md §3 named a "3-week/same-
+    calendar-month window" without spelling out the exact boundary logic,
+    so this originally allowed either/or (within 21 calendar days OR same
+    calendar month, whichever was more generous). Management confirmed
+    (Ganesh, 2026-08-27) the real policy is stricter than that guess: a
+    match is only available within the same calendar month, full stop —
+    the 21-day allowance is gone, since it let a pair of dates that
+    straddled a month boundary (e.g. missed hours on the 31st, made up on
+    the 2nd) match when the policy doesn't intend that. Only
+    approve_complink (app/routes/admin.py) actually calls this — by
+    design, not an oversight: it's the gate on the employee-requested
+    self-service flow (request_compensation_match), re-verified
+    server-side at approval regardless of what the employee ticked.
+    add_complink, the admin-direct linking path, deliberately does NOT
+    call this — an admin linking days themselves is exercising their own
+    discretion, not subject to the self-service window restriction."""
     return surplus_date.year == shortfall_date.year and surplus_date.month == shortfall_date.month
 
 
