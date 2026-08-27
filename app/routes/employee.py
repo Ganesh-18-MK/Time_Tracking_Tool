@@ -40,6 +40,7 @@ from app.validation import (
     entry_details_edit_error,
     gap_flags,
     suggest_non_overlapping_start,
+    task_allowed_for_project,
     validate_entry,
 )
 
@@ -392,14 +393,44 @@ def _pending_edit_notices(db: Session, user: m.Employee) -> list:
     return notices
 
 
-def _combo_items(objs, assigned_ids: set) -> list:
+def _task_project_links(db: Session) -> dict:
+    """task_type_id -> sorted [project_id, ...] for every task that has at
+    least one ProjectTask row (Ganesh, 2026-08-27 — see that model's
+    docstring). A task_type_id absent from this dict has NO links, which
+    combo.js/validation.task_allowed_for_project() both treat the same
+    way: unrestricted, pickable under every project."""
+    out: dict = {}
+    for pid, tid in db.execute(select(m.ProjectTask.project_id, m.ProjectTask.task_type_id)).all():
+        out.setdefault(tid, []).append(pid)
+    return out
+
+
+def _combo_items(objs, assigned_ids: set, project_links: Optional[dict] = None) -> list:
     """ORM rows -> plain {id, name} dicts for the searchable-combo widget
     (see today.html/combo.js), with whatever this employee is assigned to
     (Ganesh, 2026-08-01: team-lead project/task assignment) sorted first
     and starred — advisory only, everything else stays just as pickable,
-    only the ordering/label changes."""
-    starred = [{"id": o.id, "name": f"★ {o.name}"} for o in objs if o.id in assigned_ids]
-    rest = [{"id": o.id, "name": o.name} for o in objs if o.id not in assigned_ids]
+    only the ordering/label changes.
+
+    project_links (Ganesh, 2026-08-27, task items only) adds a
+    "project_ids" key combo.js reads to filter the Task combo down to
+    whatever's valid for the currently-selected Project — see
+    _task_project_links() above and ProjectTask's docstring in
+    app/models.py. None/omitted means "every project" (no restriction),
+    same convention task_allowed_for_project() uses server-side so the
+    UI filter and the real enforcement can't disagree."""
+    def _item(o):
+        d = {"id": o.id, "name": o.name}
+        if project_links is not None:
+            d["project_ids"] = project_links.get(o.id)  # None if unrestricted
+        return d
+
+    starred = [_item(o) for o in objs if o.id in assigned_ids]
+    rest = [_item(o) for o in objs if o.id not in assigned_ids]
+    # starring still prefixes the display name, applied after _item() so
+    # project_ids travels with it either way
+    for d in starred:
+        d["name"] = f"★ {d['name']}"
     return starred + rest
 
 
@@ -429,6 +460,7 @@ def today_page(
             select(m.TaskAssignment.task_type_id).where(m.TaskAssignment.employee_id == user.id)
         ).all()
     }
+    task_project_links = _task_project_links(db)
     ctx = _day_context(db, user, day, cfg)
     last_end = max((e.end_minute for e in ctx["entries"]), default=None)
 
@@ -535,7 +567,7 @@ def today_page(
             # (Ganesh, 2026-08-01) sort first and get a ★ — advisory only,
             # everything else stays just as pickable.
             "projects": _combo_items(projects, assigned_project_ids),
-            "tasks": _combo_items(tasks, assigned_task_ids),
+            "tasks": _combo_items(tasks, assigned_task_ids, task_project_links),
             "max_row_minutes": engine.cfg_int(cfg, "max_row_minutes"),
             "gap_minutes": engine.cfg_int(cfg, "gap_flag_minutes"),
         }
@@ -1005,6 +1037,13 @@ def add_plan(
     task = db.get(m.TaskType, task_type_id)
     if project is None or not project.active or task is None or not task.active:
         flash(request, "Choose a Project and Task before adding a plan.", "err")
+        return RedirectResponse("/today", status_code=303)
+    # Project-scoped tasks (Ganesh, 2026-08-27) — same
+    # validation.task_allowed_for_project() validate_entry() uses, checked
+    # here too for immediate feedback rather than only discovering the
+    # mismatch once this plan is Started/finished into a real TaskEntry.
+    if not task_allowed_for_project(db, project_id, task_type_id):
+        flash(request, f"'{task.name}' isn't set up for '{project.name}' — choose a different task.", "err")
         return RedirectResponse("/today", status_code=303)
     cleaned = capitalize_first(details.strip())
     if not cleaned:
@@ -1909,6 +1948,7 @@ def suggest_list_item(
     request: Request,
     kind: str = Form(...),
     name: str = Form(...),
+    project_id: int = Form(0),
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -1927,7 +1967,17 @@ def suggest_list_item(
     someone later typing 'leads console' collide into the same pending
     row instead of creating two near-duplicate suggestions, even though
     Project.name/TaskType.name's own unique constraint is case-sensitive
-    at the database level."""
+    at the database level.
+
+    Ganesh, 2026-08-27: a suggested Task now also requires an existing,
+    approved, active Project — same project-scoping every other task
+    creation path (Lists page, bulk upload) now goes through (see
+    ProjectTask's docstring in app/models.py). The ProjectTask link is
+    created right away, even while the TaskType itself is still pending —
+    there's no separate approval step for the link; approving the
+    suggestion (suggestion_approve() in app/routes/admin.py) only flips
+    TaskType.status, it doesn't touch ProjectTask. A suggested Project
+    doesn't need this — project_id is ignored/blank for kind=project."""
     name = normalize_title_case(name)
     if not name:
         flash(request, "Enter a name before suggesting it.", "err")
@@ -1936,13 +1986,23 @@ def suggest_list_item(
     if model is None:
         flash(request, "Unknown suggestion type.", "err")
         return RedirectResponse("/today", status_code=303)
+    project = None
+    if kind == "task":
+        project = db.get(m.Project, project_id) if project_id else None
+        if project is None or not project.active or project.status != m.LIST_APPROVED:
+            flash(request, "Choose which Project this task is for before suggesting it.", "err")
+            return RedirectResponse("/today", status_code=303)
     existing = db.execute(
         select(model).where(func.lower(model.name) == name.lower())
     ).scalar_one_or_none()
     if existing is not None:
         flash(request, f"'{existing.name}' already exists — pick it from the list instead of suggesting it again.", "err")
         return RedirectResponse("/today", status_code=303)
-    db.add(model(name=name, active=True, status=m.LIST_PENDING, created_by_employee_id=user.id))
+    item = model(name=name, active=True, status=m.LIST_PENDING, created_by_employee_id=user.id)
+    db.add(item)
+    if kind == "task":
+        db.flush()  # need item.id for the ProjectTask link below
+        db.add(m.ProjectTask(project_id=project.id, task_type_id=item.id, created_by=user.name))
     db.commit()
     label = "Project" if kind == "project" else "Task"
     flash(request, f"{label} '{name}' suggested — a team lead will review it before it's usable.", "ok")

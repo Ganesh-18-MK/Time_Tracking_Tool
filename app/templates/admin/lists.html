@@ -22,7 +22,15 @@ Deactivating hides a value from new entries without breaking old rows.</p>
     <table id="projects-table">
       {% for p in projects %}
       <tr {% if not p.active %}style="opacity:.5"{% endif %}>
-        <td>{{ p.name }}</td>
+        <td>{{ p.name }}
+          <details class="details-edit inline">
+            <summary class="small muted">✎ rename</summary>
+            <form method="post" action="/admin/lists/project/{{ p.id }}/rename" style="margin-top:6px;display:flex;gap:6px;align-items:flex-start">
+              <input name="name" value="{{ p.name }}" style="min-width:180px" required>
+              <button class="small">Save</button>
+            </form>
+          </details>
+        </td>
         <td class="right"><form method="post" action="/admin/lists/project/{{ p.id }}/toggle" class="inline">
           <button class="small secondary">{{ 'Deactivate' if p.active else 'Reactivate' }}</button></form></td>
       </tr>
@@ -31,18 +39,55 @@ Deactivating hides a value from new entries without breaking old rows.</p>
   </div>
   <div class="card">
     <h2>Tasks ({{ tasks|selectattr('active')|list|length }} active)</h2>
+    <!-- Project-scoped tasks (Ganesh, 2026-08-27) — a new task now needs
+         its (first) Project picked here too; a task with zero linked
+         projects stays usable under every project until narrowed via its
+         own "Manage projects" panel below (see ProjectTask's docstring in
+         app/models.py). -->
     <form method="post" action="/admin/lists/add" class="formrow">
       <input type="hidden" name="kind" value="task">
-      <div style="flex:1"><input name="name" placeholder="Add task type" style="width:100%"></div>
+      <div style="flex:1 1 200px"><input name="name" placeholder="Add task type" style="width:100%"></div>
+      <div class="combo" id="combo-add-task-project" data-placeholder="a project" style="flex:1 1 200px">
+        <input type="text" class="combo-input" autocomplete="off" placeholder="Project it's for…" required>
+        <input type="hidden" name="project_id">
+        <div class="combo-menu" hidden></div>
+      </div>
       <div><button class="small">Add</button></div>
     </form>
     <div class="searchbar">
       <input type="search" data-filter-table="tasks-table" placeholder="Search tasks…">
     </div>
     <table id="tasks-table">
+      <thead><tr><th>Task</th><th>Projects</th><th></th></tr></thead>
       {% for t in tasks %}
+      {% set linked = task_project_ids.get(t.id, []) %}
       <tr {% if not t.active %}style="opacity:.5"{% endif %}>
-        <td>{{ t.name }}</td>
+        <td>{{ t.name }}
+          <details class="details-edit inline">
+            <summary class="small muted">✎ rename</summary>
+            <form method="post" action="/admin/lists/task/{{ t.id }}/rename" style="margin-top:6px;display:flex;gap:6px;align-items:flex-start">
+              <input name="name" value="{{ t.name }}" style="min-width:180px" required>
+              <button class="small">Save</button>
+            </form>
+          </details>
+        </td>
+        <td class="small muted">
+          <details>
+            <summary style="cursor:pointer">{{ 'every project' if not linked else linked|length ~ ' project(s)' }} — manage</summary>
+            <div style="margin-top:6px">
+              <input type="search" class="ms-search" data-filter-checkboxes="ms-task-{{ t.id }}" placeholder="Search projects…">
+              <form method="post" action="/admin/lists/task/{{ t.id }}/projects">
+                <div class="ms-box" id="ms-task-{{ t.id }}" style="max-height:180px">
+                  {% for p in projects if p.active %}
+                  <label class="ms-opt"><input type="checkbox" name="project_ids" value="{{ p.id }}" {{ 'checked' if p.id in linked }}>{{ p.name }}</label>
+                  {% endfor %}
+                </div>
+                <p class="small muted" style="margin:4px 0">Nothing checked = usable under every project.</p>
+                <button class="small">Save</button>
+              </form>
+            </div>
+          </details>
+        </td>
         <td class="right"><form method="post" action="/admin/lists/task/{{ t.id }}/toggle" class="inline">
           <button class="small secondary">{{ 'Deactivate' if t.active else 'Reactivate' }}</button></form></td>
       </tr>
@@ -50,4 +95,12 @@ Deactivating hides a value from new entries without breaking old rows.</p>
     </table>
   </div>
 </div>
+<!-- msfilter.js (checkbox-list search, powers each task's "manage" panel
+     above) is already loaded globally by base.html; combo.js (the
+     Project picker on the Add-task form) is not, since this is the only
+     admin page that needs it. -->
+<script src="/static/combo.js?v={{ static_version }}"></script>
+<script>
+initCombo(document.getElementById('combo-add-task-project'), {{ active_projects_json|tojson }});
+</script>
 {% endblock %}

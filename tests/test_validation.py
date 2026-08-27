@@ -132,6 +132,38 @@ class TestSuggestionStatus:
         assert "Project/Employer" in errs(*db, project_id=4)
 
 
+class TestProjectScopedTasks:
+    """ProjectTask (Ganesh, 2026-08-27, see that model's docstring in
+    app/models.py) — a task with NO links is unrestricted (every existing
+    fixture row here, e.g. TaskType id=1 "Check emails", has none, which
+    is exactly what keeps every other test class in this file passing
+    unmodified). These tests add a second Project + a linked TaskType to
+    exercise the actual restriction."""
+
+    @pytest.fixture()
+    def db(self, db):
+        s, emp = db
+        s.add(m.Project(id=5, name="Second Client, Inc."))
+        s.add(m.TaskType(id=3, name="Client-Specific Task"))
+        s.commit()
+        s.add(m.ProjectTask(project_id=1, task_type_id=3, created_by="test"))
+        s.commit()
+        return s, emp
+
+    def test_unrestricted_task_usable_under_any_project(self, db):
+        s, emp = db
+        v(s, emp, project_id=1, task_type_id=1)  # TaskType id=1 has no links
+        v(s, emp, project_id=5, task_type_id=1)  # still fine under the other project too
+
+    def test_restricted_task_usable_under_its_linked_project(self, db):
+        s, emp = db
+        v(s, emp, project_id=1, task_type_id=3)  # linked to project 1 above
+
+    def test_restricted_task_rejected_under_an_unlinked_project(self, db):
+        s, emp = db
+        assert "isn't set up for this Project" in errs(s, emp, project_id=5, task_type_id=3)
+
+
 class TestOverlaps:
     def test_overlap_rejected(self, db):
         s, emp = db

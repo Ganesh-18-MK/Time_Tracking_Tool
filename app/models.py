@@ -406,6 +406,43 @@ class TaskAssignment(Base):
     task_type = relationship("TaskType")
 
 
+class ProjectTask(Base):
+    """Which Task Types are valid for a given Project/Employer (Ganesh,
+    2026-08-27 — "for each task the task should be different in projects").
+    Unlike ProjectAssignment/TaskAssignment above (advisory-only, never
+    blocks), this one IS enforced: app/validation.py's
+    task_allowed_for_project() rejects a TaskEntry/PlannedTask whose
+    project+task pair isn't either linked here or, for a task with NO
+    links at all, unrestricted (see that function's docstring for exactly
+    why "zero links = every project" rather than "zero links = no
+    project"). Many-to-many by design — the same task name can be linked
+    to several different projects (a client's "PWD JD" task and a
+    different client's "PWD JD" task both point at the one TaskType row;
+    they don't need separate rows unless the names themselves differ),
+    and a project can have as many linked tasks as it needs.
+
+    Existing tasks/projects created before this feature has zero rows
+    here for every one of them — that's what preserves today's "any task,
+    any project" behavior until an admin (via Lists -> a task's "Manage
+    projects" action, or the Tasks bulk-upload sheet's new Project Name
+    column) deliberately narrows a task down to specific project(s). This
+    is a one-way narrowing an admin opts into per task, not a migration
+    this feature runs automatically — nobody can guess which of ~38 tasks
+    belongs to which of ~300 real projects except the admin."""
+
+    __tablename__ = "project_tasks"
+    __table_args__ = (UniqueConstraint("project_id", "task_type_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    task_type_id: Mapped[int] = mapped_column(ForeignKey("task_types.id"), index=True)
+    created_by: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    project = relationship("Project")
+    task_type = relationship("TaskType")
+
+
 # Feature-usage tracking (Ganesh, 2026-08-21, "as a developer I want to
 # know how many people are using what option") — which of the 3 ways a
 # TaskEntry row got created. Set at each of the three creation call sites

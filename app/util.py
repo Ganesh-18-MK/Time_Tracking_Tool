@@ -637,12 +637,33 @@ def audit(
     entity_id: str = "",
     detail: Optional[dict] = None,
 ) -> None:
+    """Bug fix (Ganesh, 2026-08-27 — reported via Teams: a generic "Something
+    went wrong" 500 on Projects & Tasks -> Add, reproducible "several times",
+    plus once on Deactivate; the item was actually saved either way, only
+    the audit-log write that immediately follows blew up). Root cause:
+    AuditLog.actor/action/entity/entity_id are all VARCHAR(N) columns, but
+    call sites across this app (lists_add, lists_toggle,
+    suggestion_approve/edit, and others) pass raw free-text — most often a
+    Project/Employer or Task name typed by an admin or employee — straight
+    through as entity_id with no length check. SQLite (local dev) has no
+    real column-length enforcement, so this was invisible there; Postgres
+    (the real production database, see CLAUDE.md's GCP deploy notes) DOES
+    enforce it and raises a hard error the instant a name runs past 60
+    characters, which is neither caught nor validated against anywhere
+    upstream — it surfaces as this handler's generic error page even
+    though the actual Project/TaskType/etc. row had already committed
+    successfully one line earlier (exactly what "it appears to add the
+    projects" anyway was describing). Truncating defensively here, in the
+    one shared helper, fixes every call site at once rather than needing
+    each one individually capped and re-capped forever as new ones are
+    added — this is intentionally a blunt safety net, not a validation
+    rule; nothing upstream needs to change to start relying on it."""
     db.add(
         m.AuditLog(
-            actor=actor,
-            action=action,
-            entity=entity,
-            entity_id=str(entity_id),
+            actor=actor[:120],
+            action=action[:60],
+            entity=entity[:60],
+            entity_id=str(entity_id)[:60],
             detail=json.dumps(detail or {}, default=str),
         )
     )

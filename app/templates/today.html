@@ -536,15 +536,25 @@
 {% if not day_locked %}
 <details class="card">
   <summary style="cursor:pointer;font-weight:600">Don't see your project or task? Suggest a new one</summary>
-  <form method="post" action="/suggestions" class="formrow" style="margin-top:10px">
+  <form method="post" action="/suggestions" class="formrow" style="margin-top:10px" id="suggest-form">
     <div>
       <label>Type</label>
-      <select name="kind">
+      <select name="kind" id="suggest-kind">
         <option value="project">Project/Employer</option>
         <option value="task">Task</option>
       </select>
     </div>
     <div style="flex:1 1 240px"><label>Name</label><input name="name" required style="width:100%"></div>
+    <!-- Project-scoped tasks (Ganesh, 2026-08-27) — a suggested Task must
+         say which existing, approved Project it's for, same as a task an
+         admin adds directly via Lists. Only shown/required for kind=task;
+         see the script below for the toggle. -->
+    <div class="combo" id="combo-suggest-project" data-placeholder="a project" hidden>
+      <label>Project (for this task)</label>
+      <input type="text" class="combo-input" autocomplete="off" placeholder="Type to search…">
+      <input type="hidden" name="project_id">
+      <div class="combo-menu" hidden></div>
+    </div>
     <div><button class="secondary">Suggest</button></div>
   </form>
   <p class="small muted" style="margin:3px 0 0">It stays hidden and can't be used on any entry — not even your own —
@@ -553,21 +563,55 @@
 
 <script src="/static/combo.js?v={{ static_version }}"></script>
 <script>
-initCombo(document.getElementById('combo-project'), {{ projects|tojson }}, {{ reopen_project_id|tojson }});
-initCombo(document.getElementById('combo-task'), {{ tasks|tojson }}, {{ reopen_task_type_id|tojson }});
+// Project-scoped tasks (Ganesh, 2026-08-27) — initProjectTaskCombo() wires
+// each Project/Task pair together so picking a project narrows the task
+// pool to what's actually linked to it (see combo.js and
+// validation.task_allowed_for_project(), which enforces the same rule
+// server-side). All 3 pairs on this page (Add Row, Auto time capture
+// timer, Plan for the Day) get the identical treatment.
+initProjectTaskCombo(
+  document.getElementById('combo-project'), document.getElementById('combo-task'),
+  {{ projects|tojson }}, {{ tasks|tojson }}, {{ reopen_project_id|tojson }}, {{ reopen_task_type_id|tojson }}
+);
 {% if not active_timer %}
 // only present when no timer is currently running (see the Start Timer
 // form further up the page — it's replaced by a Stop/Cancel widget
 // instead, whenever a timer is already active)
-initCombo(document.getElementById('combo-timer-project'), {{ projects|tojson }});
-initCombo(document.getElementById('combo-timer-task'), {{ tasks|tojson }});
+initProjectTaskCombo(
+  document.getElementById('combo-timer-project'), document.getElementById('combo-timer-task'),
+  {{ projects|tojson }}, {{ tasks|tojson }}
+);
 {% endif %}
 {% if day == today %}
 // Plan for the Day (Ganesh, 2026-08-21) — combo-plan-* only exist in the
 // DOM when day == today (see the Task Planning section above), same
 // guard as combo-timer-* above.
-initCombo(document.getElementById('combo-plan-project'), {{ projects|tojson }});
-initCombo(document.getElementById('combo-plan-task'), {{ tasks|tojson }});
+initProjectTaskCombo(
+  document.getElementById('combo-plan-project'), document.getElementById('combo-plan-task'),
+  {{ projects|tojson }}, {{ tasks|tojson }}
+);
+{% endif %}
+
+{% if not day_locked %}
+// "Suggest a new task" needs a Project too (Ganesh, 2026-08-27) — only
+// shown/required when Type=Task; combo.js's form-submit check skips a
+// combo whose root is currently .hidden, so toggling that attribute here
+// is what actually turns the requirement on/off.
+(function () {
+  const kindSelect = document.getElementById('suggest-kind');
+  const projectField = document.getElementById('combo-suggest-project');
+  initCombo(projectField, {{ projects|tojson }});
+  function sync() {
+    const isTask = kindSelect.value === 'task';
+    projectField.hidden = !isTask;
+    if (!isTask) {
+      projectField.querySelector('.combo-input').value = '';
+      projectField.querySelector('input[type="hidden"]').value = '';
+    }
+  }
+  kindSelect.addEventListener('change', sync);
+  sync();
+})();
 {% endif %}
 
 (function () {

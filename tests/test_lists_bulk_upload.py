@@ -15,9 +15,11 @@ from app import models as m
 from app.db import Base
 from app.lists_bulk_upload import (
     HEADERS,
+    TASK_PROJECT_HEADER,
     build_existing_workbook,
     build_sample_workbook,
     process_upload,
+    read_task_rows,
     read_upload_names,
 )
 
@@ -72,6 +74,48 @@ class TestReadUploadNames:
         assert names == [(2, "File review")]
 
 
+def _task_sheet(*rows):
+    """rows are (task_name, project_name) pairs — the Tasks sheet's real
+    two-column shape (Ganesh, 2026-08-27), see read_task_rows()."""
+    wb = Workbook()
+    ws = wb.active
+    ws.append([HEADERS["task"], TASK_PROJECT_HEADER])
+    for task_name, project_name in rows:
+        ws.append([task_name, project_name])
+    return wb
+
+
+class TestReadTaskRows:
+    """Project-scoped tasks (Ganesh, 2026-08-27) — the Tasks sheet's own
+    two-column reader, separate from read_upload_names() above (which
+    still only handles the Projects sheet's single column)."""
+
+    def test_happy_path(self):
+        wb = _task_sheet(("File review", "Acme Corp."), ("PWD JD", "Beta LLC"))
+        rows, err = read_task_rows(wb)
+        assert err is None
+        assert rows == [(2, "File review", "Acme Corp."), (3, "PWD JD", "Beta LLC")]
+
+    def test_same_task_multiple_project_rows(self):
+        wb = _task_sheet(("File review", "Acme Corp."), ("File review", "Beta LLC"))
+        rows, err = read_task_rows(wb)
+        assert err is None
+        assert rows == [(2, "File review", "Acme Corp."), (3, "File review", "Beta LLC")]
+
+    def test_fully_blank_row_skipped_silently(self):
+        wb = _task_sheet(("File review", "Acme Corp."), ("", ""))
+        rows, err = read_task_rows(wb)
+        assert err is None
+        assert rows == [(2, "File review", "Acme Corp.")]
+
+    def test_missing_project_name_column_is_a_header_error(self):
+        wb = Workbook()
+        wb.active.append([HEADERS["task"]])
+        rows, err = read_task_rows(wb)
+        assert rows == []
+        assert err is not None and TASK_PROJECT_HEADER in err
+
+
 class TestProcessUpload:
     def test_new_names_are_added(self, db):
         from sqlalchemy import select
@@ -100,16 +144,6 @@ class TestProcessUpload:
         assert len(result["skipped"]) == 1
         assert "duplicate" in result["skipped"][0]["reason"].lower()
 
-    def test_task_kind_writes_to_task_type_not_project(self, db):
-        wb = _sheet("Task Name", "File review")
-        result = process_upload(db, wb, "task")
-        assert result["added"] == 1
-        from sqlalchemy import select
-        tasks = list(db.execute(select(m.TaskType)).scalars())
-        projects = list(db.execute(select(m.Project)).scalars())
-        assert [t.name for t in tasks] == ["File review"]
-        assert projects == []
-
     def test_header_error_short_circuits_before_touching_the_db(self, db):
         wb = _sheet("Wrong Column", "x")
         result = process_upload(db, wb, "project")
@@ -125,6 +159,72 @@ class TestProcessUpload:
         result = process_upload(db, wb, "project")
         assert result["added"] == 0
         assert len(result["skipped"]) == 1
+
+
+class TestProcessTaskUpload:
+    """Project-scoped tasks (Ganesh, 2026-08-27) — each Tasks-sheet row is
+    now a (task, project) pair; see app/lists_bulk_upload.py's module
+    docstring and ProjectTask's docstring in app/models.py."""
+
+    def test_new_task_creates_task_and_links_it(self, db):
+        db.add(m.Project(name="Acme Corp."))
+        db.commit()
+        wb = _task_sheet(("File review", "Acme Corp."))
+        result = process_upload(db, wb, "task")
+        assert result["header_error"] is None
+        assert result["added"] == 1
+        from sqlalchemy import select
+        task = db.execute(select(m.TaskType)).scalar_one()
+        assert task.name == "File review"
+        link = db.execute(select(m.ProjectTask)).scalar_one()
+        assert link.task_type_id == task.id
+
+    def test_same_task_linked_to_two_projects_creates_task_once(self, db):
+        db.add(m.Project(name="Acme Corp."))
+        db.add(m.Project(name="Beta LLC"))
+        db.commit()
+        wb = _task_sheet(("File review", "Acme Corp."), ("File review", "Beta LLC"))
+        result = process_upload(db, wb, "task")
+        assert result["added"] == 2  # 2 links
+        from sqlalchemy import select
+        tasks = list(db.execute(select(m.TaskType)).scalars())
+        assert len(tasks) == 1  # task created only once
+        links = list(db.execute(select(m.ProjectTask)).scalars())
+        assert len(links) == 2
+
+    def test_project_not_found_is_skipped_with_reason(self, db):
+        wb = _task_sheet(("File review", "Nonexistent Client"))
+        result = process_upload(db, wb, "task")
+        assert result["added"] == 0
+        assert len(result["skipped"]) == 1
+        assert "not found" in result["skipped"][0]["reason"].lower()
+        from sqlalchemy import select
+        assert list(db.execute(select(m.TaskType)).scalars()) == []
+
+    def test_already_linked_pair_is_skipped_not_duplicated(self, db):
+        from sqlalchemy import select
+        db.add(m.Project(name="Acme Corp."))
+        db.commit()
+        proj = db.execute(select(m.Project)).scalar_one()
+        task = m.TaskType(name="File review")
+        db.add(task)
+        db.commit()
+        db.add(m.ProjectTask(project_id=proj.id, task_type_id=task.id, created_by="test"))
+        db.commit()
+        wb = _task_sheet(("File review", "Acme Corp."))
+        result = process_upload(db, wb, "task")
+        assert result["added"] == 0
+        assert len(result["skipped"]) == 1
+        assert "already linked" in result["skipped"][0]["reason"].lower()
+
+    def test_missing_project_name_cell_is_skipped(self, db):
+        db.add(m.Project(name="Acme Corp."))
+        db.commit()
+        wb = _task_sheet(("File review", ""))
+        result = process_upload(db, wb, "task")
+        assert result["added"] == 0
+        assert len(result["skipped"]) == 1
+        assert "missing" in result["skipped"][0]["reason"].lower()
 
 
 class TestSampleAndExistingWorkbooks:

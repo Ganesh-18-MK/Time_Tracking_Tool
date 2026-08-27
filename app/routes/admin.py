@@ -1073,7 +1073,24 @@ def lists_page(
 ):
     projects = list(db.execute(select(m.Project).order_by(m.Project.active.desc(), m.Project.name)).scalars())
     tasks = list(db.execute(select(m.TaskType).order_by(m.TaskType.active.desc(), m.TaskType.name)).scalars())
-    return render(request, "admin/lists.html", {"user": admin, "projects": projects, "tasks": tasks}, db=db)
+    # Project-scoped tasks (Ganesh, 2026-08-27) — task_project_ids feeds
+    # both the read-only "Projects" column and the pre-checked state of
+    # each task's "Manage projects" panel below. A task_type_id absent
+    # here (empty list) has no links yet, i.e. still unrestricted — see
+    # ProjectTask's docstring in app/models.py.
+    task_project_ids: Dict[int, list] = {t.id: [] for t in tasks}
+    for tid, pid in db.execute(select(m.ProjectTask.task_type_id, m.ProjectTask.project_id)).all():
+        task_project_ids.setdefault(tid, []).append(pid)
+    return render(
+        request, "admin/lists.html",
+        {
+            "user": admin, "projects": projects, "tasks": tasks, "task_project_ids": task_project_ids,
+            # plain {id, name} dicts for the Add-task Project combo picker's
+            # script tag — tojson (app/templating.py) refuses raw ORM rows.
+            "active_projects_json": [{"id": p.id, "name": p.name} for p in projects if p.active],
+        },
+        db=db,
+    )
 
 
 @router.post("/lists/add")
@@ -1081,19 +1098,71 @@ def lists_add(
     request: Request,
     kind: str = Form(...),
     name: str = Form(...),
+    project_id: int = Form(0),
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     model = m.Project if kind == "project" else m.TaskType
     name = name.strip()
-    if name:
-        exists = db.execute(select(model).where(model.name == name)).scalar_one_or_none()
-        if exists is None:
-            db.add(model(name=name))
-            db.commit()
-            audit(db, admin.name, f"add_{kind}", kind, name, {})
-        else:
-            flash(request, f"'{name}' already exists.", "err")
+    if not name:
+        return RedirectResponse("/admin/lists", status_code=303)
+    # Project-scoped tasks (Ganesh, 2026-08-27) — adding a task here now
+    # requires picking the (first) project it belongs to, same as a
+    # suggested task now requires (see suggest_list_item() in
+    # app/routes/employee.py) and the Tasks bulk-upload sheet's new
+    # Project Name column. To link the same task name to MORE projects
+    # later, use that task's "Manage projects" panel (lists_task_projects
+    # below) rather than re-adding it here — the name is still unique.
+    project = None
+    if kind == "task":
+        project = db.get(m.Project, project_id) if project_id else None
+        if project is None:
+            flash(request, "Choose which Project this task belongs to.", "err")
+            return RedirectResponse("/admin/lists", status_code=303)
+    exists = db.execute(select(model).where(model.name == name)).scalar_one_or_none()
+    if exists is None:
+        item = model(name=name)
+        db.add(item)
+        if kind == "task":
+            db.flush()  # need item.id for the ProjectTask link below
+            db.add(m.ProjectTask(project_id=project.id, task_type_id=item.id, created_by=admin.name))
+        db.commit()
+        audit(db, admin.name, f"add_{kind}", kind, name, {"project": project.name if project else None})
+    else:
+        flash(request, f"'{name}' already exists.", "err")
+    return RedirectResponse("/admin/lists", status_code=303)
+
+
+@router.post("/lists/task/{task_id}/projects")
+def lists_task_projects(
+    task_id: int,
+    request: Request,
+    project_ids: list = Form([]),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Replace-all save of one task's linked projects (Ganesh, 2026-08-27)
+    — same "replace-all: simplest correct way to sync a set of checkboxes"
+    pattern assignments_save() already uses below. Saving with every box
+    unchecked returns the task to unrestricted (usable under every
+    project) rather than usable under none — an empty ProjectTask set
+    means "no restriction", not "restricted to nothing" (see that model's
+    docstring), so there's no separate "clear" action needed."""
+    task = db.get(m.TaskType, task_id)
+    if task is None:
+        return RedirectResponse("/admin/lists", status_code=303)
+    db.execute(delete(m.ProjectTask).where(m.ProjectTask.task_type_id == task_id))
+    added = 0
+    for pid in project_ids:
+        db.add(m.ProjectTask(project_id=int(pid), task_type_id=task_id, created_by=admin.name))
+        added += 1
+    db.commit()
+    audit(db, admin.name, "task_projects_save", "TaskType", task.name, {"project_count": added})
+    flash(
+        request,
+        f"'{task.name}' is now {'usable under every project' if added == 0 else f'linked to {added} project(s)'}.",
+        "ok",
+    )
     return RedirectResponse("/admin/lists", status_code=303)
 
 
@@ -1114,9 +1183,13 @@ def lists_bulk_upload_page(
 def lists_bulk_upload_sample(
     kind: str,
     admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
 ):
     buf = io.BytesIO()
-    lists_bulk_upload.build_sample_workbook(kind).save(buf)
+    # db (Ganesh, 2026-08-27) — the Tasks sample template's "Projects"
+    # reference sheet needs real project names, not placeholders; see
+    # lists_bulk_upload.build_sample_workbook()'s docstring.
+    lists_bulk_upload.build_sample_workbook(kind, db).save(buf)
     buf.seek(0)
     filename = "projects_upload_template.xlsx" if kind == "project" else "tasks_upload_template.xlsx"
     return StreamingResponse(
@@ -1199,6 +1272,72 @@ def lists_toggle(
     return RedirectResponse("/admin/lists", status_code=303)
 
 
+@router.post("/lists/{kind}/{item_id}/rename")
+def lists_rename(
+    kind: str,
+    item_id: int,
+    request: Request,
+    name: str = Form(...),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Rename a live Project/Task from the Lists page (Norine, via Teams,
+    2026-08-27: "can we add something to edit a project name and task
+    name. maybe only by SuperAdmin in case there's a mistake" — e.g. she
+    deactivated a project rather than fix it because there was no way to
+    correct a typo'd name). SuperAdmin-only, same gating every other route
+    on this page already uses (require_super_admin), not require_admin —
+    matches what she asked for exactly.
+
+    Deliberately a separate route from suggestion_edit() above, not a
+    reuse of it — that one is scoped ONLY to still-pending suggestions
+    (see its own docstring) and 403s outside a department-scoped admin's
+    team; this one works on ANY Project/TaskType regardless of status
+    (approved, pending, even rejected) or who created it, since a plain
+    admin-added value (no suggestion involved at all) has no "pending"
+    state to be scoped to in the first place. It does reuse the same
+    original_name/edited_by/edited_at/employee_notified_at columns those
+    suggestion routes already added to both models, though — renaming
+    something here that happens to be an approved former employee
+    suggestion still surfaces the "an admin rewrote your suggestion"
+    banner via _pending_edit_notices() (app/routes/employee.py), for free,
+    since that function only ever filters on created_by_employee_id +
+    edited_at + employee_notified_at, never on status.
+
+    Renaming is safe to do on a live value: every relationship that
+    matters (TaskEntry.project_id/task_type_id, ProjectTask, leave/
+    compensation records, etc.) is keyed by id, never by name — the name
+    is purely a display string everywhere else in the app, so nothing
+    downstream needs to be touched or re-pointed."""
+    model = m.Project if kind == "project" else m.TaskType
+    item = db.get(model, item_id)
+    if item is None:
+        return RedirectResponse("/admin/lists", status_code=303)
+    new_name = name.strip()
+    if not new_name:
+        flash(request, "Enter a name.", "err")
+        return RedirectResponse("/admin/lists", status_code=303)
+    existing = db.execute(
+        select(model).where(func.lower(model.name) == new_name.lower(), model.id != item.id)
+    ).scalar_one_or_none()
+    if existing is not None:
+        flash(request, f"'{existing.name}' already exists — pick a different name.", "err")
+        return RedirectResponse("/admin/lists", status_code=303)
+    old_name = item.name
+    if old_name == new_name:
+        return RedirectResponse("/admin/lists", status_code=303)
+    if item.original_name is None:
+        item.original_name = old_name  # only ever captured once, same convention suggestion_edit() uses
+    item.name = new_name
+    item.edited_by = admin.name
+    item.edited_at = dt.datetime.utcnow()
+    item.employee_notified_at = None
+    db.commit()
+    audit(db, admin.name, f"rename_{kind}", kind, item.name, {"from": old_name, "to": new_name})
+    flash(request, f"Renamed '{old_name}' to '{new_name}'.", "ok")
+    return RedirectResponse("/admin/lists", status_code=303)
+
+
 # --------------------------------------------------------------------------
 # Suggestions (Ganesh, 2026-08-01) — employee/lead-suggested Projects/Tasks
 # awaiting review. Deliberately require_admin, not require_super_admin,
@@ -1263,11 +1402,28 @@ def suggestions_page(
 ):
     projects, tasks = _pending_suggestions(db, admin)
     approved_projects, approved_tasks = _approved_suggestions(db, admin)
+    # Project-scoped tasks (Ganesh, 2026-08-27) — every suggested task now
+    # carries a ProjectTask link set at suggestion time (see
+    # suggest_list_item() in app/routes/employee.py), so an admin
+    # reviewing it can see which project it was meant for instead of just
+    # a bare name. One task suggestion -> one project by construction
+    # (suggest_list_item only ever creates one link), but read as a list
+    # for display consistency with the Lists page's own "N project(s)".
+    all_task_ids = [t.id for t in tasks] + [t.id for t in approved_tasks]
+    task_suggestion_projects: Dict[int, list] = {tid: [] for tid in all_task_ids}
+    if all_task_ids:
+        for tid, pname in db.execute(
+            select(m.ProjectTask.task_type_id, m.Project.name)
+            .join(m.Project, m.Project.id == m.ProjectTask.project_id)
+            .where(m.ProjectTask.task_type_id.in_(all_task_ids))
+        ).all():
+            task_suggestion_projects.setdefault(tid, []).append(pname)
     return render(
         request, "admin/suggestions.html",
         {
             "user": admin, "projects": projects, "tasks": tasks,
             "approved_projects": approved_projects, "approved_tasks": approved_tasks,
+            "task_suggestion_projects": task_suggestion_projects,
         }, db=db,
     )
 

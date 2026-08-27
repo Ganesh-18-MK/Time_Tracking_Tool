@@ -20,6 +20,31 @@ class EntryError(Exception):
         self.errors = errors
 
 
+def task_allowed_for_project(db: Session, project_id: int, task_type_id: int) -> bool:
+    """Project-scoped tasks (Ganesh, 2026-08-27) — see ProjectTask's
+    docstring in app/models.py for the full model. A task with NO
+    ProjectTask rows at all is unrestricted (True for every project) —
+    that's what keeps every task/project combo that existed before this
+    feature working exactly as it did, since none of them have any links
+    yet. A task with one or more ProjectTask rows is restricted to
+    exactly those projects — True only if this specific pair is one of
+    them. Shared by validate_entry() (the real gate — TaskEntry rows, via
+    add_entry/_finish_task_timer) and add_plan() (lighter-weight,
+    immediate feedback when planning) so the two can't drift apart, same
+    reasoning as this file's other shared helpers."""
+    has_any_link = db.execute(
+        select(m.ProjectTask.id).where(m.ProjectTask.task_type_id == task_type_id)
+    ).first() is not None
+    if not has_any_link:
+        return True
+    return db.execute(
+        select(m.ProjectTask.id).where(
+            m.ProjectTask.task_type_id == task_type_id,
+            m.ProjectTask.project_id == project_id,
+        )
+    ).first() is not None
+
+
 def earliest_allowed_date(
     emp: m.Employee, today: dt.date, backdate_working_days: int, holidays: set
 ) -> dt.date:
@@ -125,6 +150,12 @@ def validate_entry(
         errors.append("That Task is still awaiting admin approval.")
     elif task is None or not task.active or task.status != m.LIST_APPROVED:
         errors.append("Choose a Task from the list.")
+    elif project is not None and not task_allowed_for_project(db, project_id, task_type_id):
+        # Project-scoped tasks (Ganesh, 2026-08-27) — only checked once both
+        # project and task independently passed their own checks above, so
+        # this never masks the more basic "pick something real" errors with
+        # a confusing pairing message.
+        errors.append("That Task isn't set up for this Project — choose a different task, or ask an admin to link them under Lists.")
 
     # --- details ----------------------------------------------------------------
     if len((details or "").strip()) < cfg_int(cfg, "min_details_chars"):

@@ -4,7 +4,8 @@
 {% block content %}
 <h1>Bulk upload — Projects &amp; Tasks</h1>
 <p class="muted small"><a href="/admin/lists">← Back to Projects &amp; Tasks</a></p>
-<p class="small muted">Each sheet is a single column, one name per row — add-only. A name already
+<p class="small muted">Projects is a single column, one name per row. Tasks is two columns —
+one row per Task + Project pair (see its template for why). Both are add-only: a value/link already
 on the list is skipped, not duplicated; nothing here renames or deactivates a value.</p>
 
 <div class="cols">
@@ -24,7 +25,9 @@ on the list is skipped, not duplicated; nothing here renames or deactivates a va
 
   <div class="card">
     <h2 style="margin-top:0">Tasks</h2>
-    <p class="small muted">Column header: <strong>Task Name</strong>.</p>
+    <p class="small muted">Columns: <strong>Task Name</strong> and <strong>Project Name</strong> (must match an
+      existing project exactly — the template includes a Projects sheet to check against). One row per task+project
+      pair; list the same task on more than one row to link it to more than one project.</p>
     <p>
       <a class="btn secondary small" href="/admin/lists/bulk-upload/sample.xlsx?kind=task">Download blank template</a>
       <a class="btn secondary small" href="/admin/lists/bulk-upload/existing.xlsx?kind=task">Download current list</a>
@@ -40,7 +43,7 @@ on the list is skipped, not duplicated; nothing here renames or deactivates a va
 {% if result %}
 <div class="card" style="max-width:760px">
   <h2 style="margin-top:0">Result — {{ 'Projects' if result_kind == 'project' else 'Tasks' }}</h2>
-  <p>{{ result.added }} added.</p>
+  <p>{{ result.added }} {{ 'added.' if result_kind == 'project' else 'task+project link(s) added.' }}</p>
   {% if result.skipped %}
   <table>
     <thead><tr><th>Row</th><th>Name</th><th>Reason skipped</th></tr></thead>

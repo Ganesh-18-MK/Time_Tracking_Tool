@@ -67,11 +67,12 @@
   <h2>Tasks ({{ tasks|length }} pending)</h2>
   {% if tasks %}
   <table>
-    <thead><tr><th>Name</th><th>Suggested by</th><th>Department</th><th>When</th><th>Decision</th></tr></thead>
+    <thead><tr><th>Name</th><th>Project</th><th>Suggested by</th><th>Department</th><th>When</th><th>Decision</th></tr></thead>
     <tbody>
       {% for t in tasks %}
       <tr>
         <td>{{ t.name }}</td>
+        <td class="small">{{ task_suggestion_projects.get(t.id, [])|join(', ') or '—' }}</td>
         <td>{{ t.created_by.name if t.created_by else '—' }}</td>
         <td>{{ (t.created_by.department or '—') if t.created_by else '—' }}</td>
         <td class="small nowrap">{{ t.created_at|mdy_dt }} UTC</td>
@@ -103,11 +104,12 @@
   <h2>Approved tasks ({{ approved_tasks|length }})</h2>
   {% if approved_tasks %}
   <table>
-    <thead><tr><th>Name</th><th>Suggested by</th><th>Department</th><th>Approved by</th><th>When</th></tr></thead>
+    <thead><tr><th>Name</th><th>Project</th><th>Suggested by</th><th>Department</th><th>Approved by</th><th>When</th></tr></thead>
     <tbody>
       {% for t in approved_tasks %}
       <tr>
         <td>{{ t.name }}{% if t.original_name %} <span class="muted small">(was "{{ t.original_name }}")</span>{% endif %}</td>
+        <td class="small">{{ task_suggestion_projects.get(t.id, [])|join(', ') or '—' }}</td>
         <td>{{ t.created_by.name if t.created_by else '—' }}</td>
         <td>{{ (t.created_by.department or '—') if t.created_by else '—' }}</td>
         <td class="small muted">{{ t.reviewed_by }}</td>
