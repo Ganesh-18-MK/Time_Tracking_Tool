@@ -128,6 +128,18 @@ form.inline { display: inline; }
 .formrow { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
 .formrow > div { display: flex; flex-direction: column; }
 .formrow label { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+/* Case Type / Client (Ganesh, 2026-08-28 bugfix) — `.formrow > div`'s own
+   `display: flex` above is an author-stylesheet rule, so it silently beats
+   the browser's built-in `[hidden] { display: none }` (a user-agent rule —
+   author rules always win over UA ones regardless of specificity), meaning
+   a plain `<div hidden>` direct child of a .formrow never actually
+   disappeared, just kept rendering as an empty flex item. Client's wrapper
+   divs (today.html) hit this immediately — visible with no data even on a
+   non-Case-Type project. This one rule fixes it everywhere a .formrow
+   child uses `hidden`, including the pre-existing "Suggest a new task"
+   Project picker (#combo-suggest-project), which had the exact same latent
+   bug, just never surfaced since it sits inside a collapsed <details>. */
+.formrow > div[hidden] { display: none; }
 
 .badge { display: inline-block; border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 600; }
 .b-complete { background: var(--ok-bg); color: var(--ok); }

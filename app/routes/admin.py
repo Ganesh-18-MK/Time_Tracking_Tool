@@ -115,22 +115,24 @@ def dashboard(
     # used. Violations are computed org-wide from all_emps (not the
     # dept-filtered `emps`) since this is meant to surface everything that
     # needs a look, regardless of which department card was last clicked.
-    pending_leave_rows, open_support_rows, violations, recent_audit = [], [], [], []
+    pending_leave_rows, open_support_rows, violations, recent_audit, unlock_requests = [], [], [], [], []
     if not show_grid:
-        pending_leave_rows = list(
-            db.execute(
-                select(m.LeaveRecord)
-                .where(m.LeaveRecord.status == m.LEAVE_REQUESTED)
-                .order_by(m.LeaveRecord.created_at)
-                .limit(5)
-            ).scalars()
-        )
-        # Support Inbox and Audit Log are super-admin-only screens (see
-        # require_super_admin) — a department-scoped admin doesn't get
-        # these landing-page previews either, since neither can be safely
-        # scoped to "their department only" (support queries aren't
-        # department-tagged, and audit entries span every entity type).
+        # Leave Management is now Super-Admin-only (Ganesh, 2026-08-28 —
+        # narrowed the department-scoped Team Lead's access to 5 specific
+        # screens, Leave not among them), so this landing-page preview is
+        # skipped entirely for a department-scoped admin the same way
+        # Support Inbox/Audit Log/Unlock requests already were below —
+        # showing "leave requests need attention" to someone with no
+        # route left to act on them would be a dead end, not a signal.
         if scope is None:
+            pending_leave_rows = list(
+                db.execute(
+                    select(m.LeaveRecord)
+                    .where(m.LeaveRecord.status == m.LEAVE_REQUESTED)
+                    .order_by(m.LeaveRecord.created_at)
+                    .limit(5)
+                ).scalars()
+            )
             open_support_rows = list(
                 db.execute(
                     select(m.SupportQuery)
@@ -142,9 +144,20 @@ def dashboard(
             recent_audit = list(
                 db.execute(select(m.AuditLog).order_by(m.AuditLog.at.desc()).limit(8)).scalars()
             )
-        else:
-            scoped_ids = {e.id for e in all_emps}
-            pending_leave_rows = [lv for lv in pending_leave_rows if lv.employee_id in scoped_ids]
+            # Unlock requests (Ganesh, 2026-08-27) — super-admin-only
+            # preview, same reasoning as Support Inbox/Audit Log just
+            # above: only a super admin can actually act on one (see
+            # unlock_day/reject_unlock_request's require_super_admin), so
+            # there's no meaningful department-scoped version to show a
+            # Team Lead instead.
+            unlock_requests = list(
+                db.execute(
+                    select(m.UnlockRequest)
+                    .where(m.UnlockRequest.status == m.LEAVE_REQUESTED)
+                    .order_by(m.UnlockRequest.created_at)
+                    .limit(5)
+                ).scalars()
+            )
         # Ganesh, 2026-08-01: also surface anyone sitting on an open (not
         # yet compensation-linked) shortfall day, not just employees who've
         # already crossed the strike threshold — so an admin can catch and
@@ -197,6 +210,7 @@ def dashboard(
             "open_support_rows": open_support_rows,
             "violations": violations,
             "recent_audit": recent_audit,
+            "unlock_requests": unlock_requests,
             "dept": dept or "",
             "exceptions": exceptions,
             "threshold": threshold,
@@ -276,6 +290,19 @@ def person(
             .order_by(m.DayStatus.date)
         ).scalars()
     )
+    # Unlock requests (Ganesh, 2026-08-27) — surfaced right next to the
+    # existing per-day unlock control below, so an admin has the
+    # employee's own note in view before typing their unlock reason.
+    pending_unlocks_by_date = {
+        r.date: r
+        for r in db.execute(
+            select(m.UnlockRequest).where(
+                m.UnlockRequest.employee_id == emp.id,
+                m.UnlockRequest.date.between(first, last),
+                m.UnlockRequest.status == m.LEAVE_REQUESTED,
+            )
+        ).scalars()
+    }
     ledger = engine.running_ledger(db, emp, first, min(last, today))
     subs = {
         s.date: s
@@ -345,6 +372,7 @@ def person(
             "user": admin,
             "emp": emp,
             "statuses": statuses,
+            "pending_unlocks_by_date": pending_unlocks_by_date,
             "ledger": ledger,
             "balance": ledger[-1]["balance"] if ledger else 0,
             "subs": subs,
@@ -400,6 +428,23 @@ def unlock_day(
     else:
         sub.locked = False
         sub.unlock_count += 1
+        # Unlock requests (Ganesh, 2026-08-27) — auto-resolve any pending
+        # request for this exact employee+date the moment the day actually
+        # gets unlocked, whether the admin arrived here via the request
+        # queue or just unlocked directly without noticing a request
+        # existed. One decision (locked or not), not two things that can
+        # disagree — see UnlockRequest's docstring in app/models.py.
+        req = db.execute(
+            select(m.UnlockRequest).where(
+                m.UnlockRequest.employee_id == emp_id, m.UnlockRequest.date == day,
+                m.UnlockRequest.status == m.LEAVE_REQUESTED,
+            )
+        ).scalar_one_or_none()
+        if req is not None:
+            req.status = m.LEAVE_APPROVED
+            req.reviewed_by = admin.name
+            req.reviewed_at = dt.datetime.utcnow()
+            req.review_note = reason
         db.commit()
         # every unlock is logged: who, when, what (PRD §4)
         audit(
@@ -407,6 +452,34 @@ def unlock_day(
             {"reason": reason, "unlock_count": sub.unlock_count},
         )
         flash(request, f"Unlocked {date} — the employee can now edit and resubmit.", "ok")
+    return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+
+
+@router.post("/unlock-request/{req_id}/reject")
+def reject_unlock_request(
+    req_id: int,
+    request: Request,
+    review_note: str = Form(""),
+    ym: str = Form(""),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Decline an unlock request without unlocking the day (Ganesh,
+    2026-08-27) — e.g. the day's fine as it is, or the correction should
+    happen a different way. No DaySubmission change at all; the request
+    just stops showing up as pending."""
+    req = db.get(m.UnlockRequest, req_id)
+    if req is None:
+        return RedirectResponse("/admin", status_code=303)
+    emp_id = req.employee_id
+    if req.status == m.LEAVE_REQUESTED:
+        req.status = m.LEAVE_REJECTED
+        req.reviewed_by = admin.name
+        req.reviewed_at = dt.datetime.utcnow()
+        req.review_note = review_note.strip()
+        db.commit()
+        audit(db, admin.name, "reject_unlock_request", "UnlockRequest", f"{emp_id}:{req.date}", {"note": review_note.strip()})
+        flash(request, "Unlock request declined.", "ok")
     return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
 
 
@@ -1068,7 +1141,7 @@ def roster_bulk_upload(
 @router.get("/lists")
 def lists_page(
     request: Request,
-    admin: m.Employee = Depends(require_super_admin),
+    admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     projects = list(db.execute(select(m.Project).order_by(m.Project.active.desc(), m.Project.name)).scalars())
@@ -1081,10 +1154,24 @@ def lists_page(
     task_project_ids: Dict[int, list] = {t.id: [] for t in tasks}
     for tid, pid in db.execute(select(m.ProjectTask.task_type_id, m.ProjectTask.project_id)).all():
         task_project_ids.setdefault(tid, []).append(pid)
+    # Department-scoped projects (Ganesh, 2026-08-28) — project_department_
+    # names feeds both the read-only department badges and the pre-checked
+    # state of each project's "Manage departments" panel below. A
+    # project.id absent here (empty list) has no links yet, i.e. still
+    # unrestricted — see ProjectDepartment's docstring in app/models.py.
+    # all_departments is every department name currently in use by an
+    # active/tracked employee (reports.departments_list) — this app has no
+    # canonical department table, so that's the same source of truth the
+    # Dashboard/Roster/Reports department pickers already use.
+    project_department_names: Dict[int, list] = {p.id: [] for p in projects}
+    for pid, dept in db.execute(select(m.ProjectDepartment.project_id, m.ProjectDepartment.department)).all():
+        project_department_names.setdefault(pid, []).append(dept)
+    all_departments = [d for d in reports.departments_list(db) if d != "—"]
     return render(
         request, "admin/lists.html",
         {
             "user": admin, "projects": projects, "tasks": tasks, "task_project_ids": task_project_ids,
+            "project_department_names": project_department_names, "all_departments": all_departments,
             # plain {id, name} dicts for the Add-task Project combo picker's
             # script tag — tojson (app/templating.py) refuses raw ORM rows.
             "active_projects_json": [{"id": p.id, "name": p.name} for p in projects if p.active],
@@ -1099,7 +1186,8 @@ def lists_add(
     kind: str = Form(...),
     name: str = Form(...),
     project_id: int = Form(0),
-    admin: m.Employee = Depends(require_super_admin),
+    is_case_type: str = Form(""),
+    admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     model = m.Project if kind == "project" else m.TaskType
@@ -1122,6 +1210,11 @@ def lists_add(
     exists = db.execute(select(model).where(model.name == name)).scalar_one_or_none()
     if exists is None:
         item = model(name=name)
+        if kind == "project":
+            # Case Type (Ganesh, 2026-08-28) — settable at creation by
+            # whoever can add a project (both admin tiers, same as the
+            # rest of Add); see Project.is_case_type's docstring.
+            item.is_case_type = is_case_type == "on"
         db.add(item)
         if kind == "task":
             db.flush()  # need item.id for the ProjectTask link below
@@ -1166,6 +1259,54 @@ def lists_task_projects(
     return RedirectResponse("/admin/lists", status_code=303)
 
 
+@router.post("/lists/project/{project_id}/departments")
+def lists_project_departments(
+    project_id: int,
+    request: Request,
+    departments: list = Form([]),
+    other_department: str = Form(""),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Replace-all save of one project's linked departments (Ganesh,
+    2026-08-28 — see ProjectDepartment's docstring in app/models.py).
+    Same "replace-all: simplest correct way to sync a set of checkboxes"
+    pattern lists_task_projects() above and assignments_save() below both
+    use. Saving with every box unchecked (and no free-text addition)
+    returns the project to unrestricted (usable by every department)
+    rather than usable by none — an empty ProjectDepartment set means "no
+    restriction", not "restricted to nobody" (see that model's
+    docstring), so there's no separate "clear" action needed.
+
+    other_department (Ganesh, 2026-08-28) — department has no canonical
+    list anywhere in this app (see reports.departments_list()'s own
+    docstring-adjacent reasoning), so the checkbox list is only ever
+    "departments currently in use by an active employee" — this free-text
+    box covers a department that doesn't have any active employees typed
+    into Employee.department yet, without needing a separate admin screen
+    to pre-declare department names before they can be used here."""
+    project = db.get(m.Project, project_id)
+    if project is None:
+        return RedirectResponse("/admin/lists", status_code=303)
+    names = {d.strip() for d in departments if d and d.strip()}
+    extra = other_department.strip()
+    if extra:
+        names.add(extra)
+    db.execute(delete(m.ProjectDepartment).where(m.ProjectDepartment.project_id == project_id))
+    added = 0
+    for dept in names:
+        db.add(m.ProjectDepartment(project_id=project_id, department=dept, created_by=admin.name))
+        added += 1
+    db.commit()
+    audit(db, admin.name, "project_departments_save", "Project", project.name, {"department_count": added})
+    flash(
+        request,
+        f"'{project.name}' is now {'available to every department' if added == 0 else f'restricted to {added} department(s)'}.",
+        "ok",
+    )
+    return RedirectResponse("/admin/lists", status_code=303)
+
+
 # --------------------------------------------------------------------------
 # Bulk upload (Projects & Tasks -> Bulk upload) — one column per sheet,
 # add-only; parsing rules live in app/lists_bulk_upload.py
@@ -1173,7 +1314,7 @@ def lists_task_projects(
 @router.get("/lists/bulk-upload")
 def lists_bulk_upload_page(
     request: Request,
-    admin: m.Employee = Depends(require_super_admin),
+    admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     return render(request, "admin/lists_bulk_upload.html", {"user": admin, "result": None, "result_kind": None}, db=db)
@@ -1182,7 +1323,7 @@ def lists_bulk_upload_page(
 @router.get("/lists/bulk-upload/sample.xlsx")
 def lists_bulk_upload_sample(
     kind: str,
-    admin: m.Employee = Depends(require_super_admin),
+    admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     buf = io.BytesIO()
@@ -1202,7 +1343,7 @@ def lists_bulk_upload_sample(
 @router.get("/lists/bulk-upload/existing.xlsx")
 def lists_bulk_upload_existing(
     kind: str,
-    admin: m.Employee = Depends(require_super_admin),
+    admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     buf = io.BytesIO()
@@ -1221,7 +1362,7 @@ def lists_bulk_upload_post(
     request: Request,
     kind: str = Form(...),
     file: UploadFile = File(...),
-    admin: m.Employee = Depends(require_super_admin),
+    admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     if kind not in ("project", "task"):
@@ -1240,14 +1381,24 @@ def lists_bulk_upload_post(
     if result["header_error"]:
         flash(request, result["header_error"], "err")
         return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
-    if result["added"]:
+    # Department-scoped projects (Ganesh, 2026-08-28) — a Projects upload
+    # can also add department links (to brand-new or already-existing
+    # projects) without necessarily creating any new project rows, so
+    # anything_added has to count both, not just result["added"] alone —
+    # otherwise a file that only added department scoping would audit as
+    # a no-op and flash red even though it changed something real.
+    dept_links_added = result.get("department_links_added", 0)
+    anything_added = result["added"] or dept_links_added
+    if anything_added:
         audit(db, admin.name, f"lists_bulk_upload_{kind}", kind, "",
-              {"added": result["added"], "skipped": len(result["skipped"])})
+              {"added": result["added"], "department_links_added": dept_links_added, "skipped": len(result["skipped"])})
     label = "project(s)" if kind == "project" else "task(s)"
     summary = f"{result['added']} {label} added."
+    if dept_links_added:
+        summary += f" {dept_links_added} department link(s) added."
     if result["skipped"]:
         summary += f" {len(result['skipped'])} row(s) skipped — see details below."
-    flash(request, summary, "ok" if result["added"] else "err")
+    flash(request, summary, "ok" if anything_added else "err")
     return render(
         request, "admin/lists_bulk_upload.html",
         {"user": admin, "result": result, "result_kind": kind}, db=db,
@@ -1269,6 +1420,28 @@ def lists_toggle(
         item.active = not item.active
         db.commit()
         audit(db, admin.name, f"toggle_{kind}", kind, item.name, {"active": item.active})
+    return RedirectResponse("/admin/lists", status_code=303)
+
+
+@router.post("/lists/project/{project_id}/case-type/toggle")
+def lists_project_case_type_toggle(
+    project_id: int,
+    request: Request,
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Flip Project.is_case_type on an existing project (Ganesh,
+    2026-08-28 — see that column's docstring). Super-Admin-only, same
+    tier as lists_toggle/lists_rename above — a department admin can mark
+    Case Type at creation time (see lists_add's is_case_type form field,
+    reachable by both tiers), but changing it on a LIVE project later is
+    the same "corrects existing data, not just adds new" category as
+    Rename/Deactivate, so it stays narrow on purpose."""
+    project = db.get(m.Project, project_id)
+    if project is not None:
+        project.is_case_type = not project.is_case_type
+        db.commit()
+        audit(db, admin.name, "toggle_case_type", "project", project.name, {"is_case_type": project.is_case_type})
     return RedirectResponse("/admin/lists", status_code=303)
 
 
@@ -1651,7 +1824,7 @@ def assignments_save(
 @router.get("/leave")
 def leave_page(
     request: Request,
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     # Department-scoped admin (team lead) — Leave Requests is one of the
@@ -1794,7 +1967,7 @@ def leave_approve(
     request: Request,
     review_note: str = Form(""),
     approved_hours: str = Form(""),  # V2 only — requirement 6, partial approval
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     lv = db.get(m.LeaveRecord, leave_id)
@@ -1851,7 +2024,7 @@ def leave_reject(
     leave_id: int,
     request: Request,
     review_note: str = Form(""),
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     lv = db.get(m.LeaveRecord, leave_id)
@@ -1884,7 +2057,7 @@ def leave_add(
     hours: str = Form(""),
     note: str = Form(""),
     relation: str = Form(""),  # V2 only
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     emp = db.get(m.Employee, employee_id)
@@ -1946,7 +2119,7 @@ def leave_add(
 def leave_delete(
     leave_id: int,
     request: Request,
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     lv = db.get(m.LeaveRecord, leave_id)
@@ -2048,7 +2221,7 @@ def overtime_page(
     request: Request,
     ym: Optional[str] = None,
     employee_id: Optional[int] = None,
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     scope = led_by(admin, db)  # None => Super Admin, sees/can act on everyone
@@ -2219,7 +2392,7 @@ def overtime_approve(
     ot_id: int,
     request: Request,
     review_note: str = Form(""),
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     ot = db.get(m.OvertimeApproval, ot_id)
@@ -2243,7 +2416,7 @@ def overtime_reject(
     ot_id: int,
     request: Request,
     review_note: str = Form(""),
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     ot = db.get(m.OvertimeApproval, ot_id)
@@ -2269,7 +2442,7 @@ def overtime_grant(
     start_date: str = Form(...),
     end_date: str = Form(""),
     note: str = Form(""),
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     """A Lead/Admin approving overtime *without* a preceding employee
@@ -2309,7 +2482,7 @@ def overtime_grant(
 def overtime_delete(
     ot_id: int,
     request: Request,
-    admin: m.Employee = Depends(require_admin),
+    admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     ot = db.get(m.OvertimeApproval, ot_id)

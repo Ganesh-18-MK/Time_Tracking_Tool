@@ -45,6 +45,33 @@ def task_allowed_for_project(db: Session, project_id: int, task_type_id: int) ->
     ).first() is not None
 
 
+def project_allowed_for_department(db: Session, project_id: int, department: str) -> bool:
+    """Department-scoped projects (Ganesh, 2026-08-28) — see
+    ProjectDepartment's docstring in app/models.py for the full feature.
+    A project with NO ProjectDepartment rows at all is unrestricted (True
+    for every department) — same "zero links = unrestricted" convention
+    task_allowed_for_project() above already established for tasks; this
+    is what keeps every one of the ~300 existing projects working exactly
+    as before. A project with one or more ProjectDepartment rows is
+    restricted to exactly those departments — True only if this
+    employee's department is one of them. Shared by validate_entry() (the
+    real gate) and add_plan() (lighter-weight, immediate feedback) so the
+    two can't drift apart, same reasoning task_allowed_for_project()'s own
+    docstring gives."""
+    has_any_link = db.execute(
+        select(m.ProjectDepartment.id).where(m.ProjectDepartment.project_id == project_id)
+    ).first() is not None
+    if not has_any_link:
+        return True
+    dept = department or "—"
+    return db.execute(
+        select(m.ProjectDepartment.id).where(
+            m.ProjectDepartment.project_id == project_id,
+            m.ProjectDepartment.department == dept,
+        )
+    ).first() is not None
+
+
 def earliest_allowed_date(
     emp: m.Employee, today: dt.date, backdate_working_days: int, holidays: set
 ) -> dt.date:
@@ -144,6 +171,15 @@ def validate_entry(
         errors.append("That Project/Employer is still awaiting admin approval.")
     elif project is None or not project.active or project.status != m.LIST_APPROVED:
         errors.append("Choose a Project/Employer from the list.")
+    elif not acting_admin and not project_allowed_for_department(db, project_id, emp.department):
+        # Department-scoped projects (Ganesh, 2026-08-28) — only checked
+        # once the project has independently passed the checks above, same
+        # "don't mask the more basic pick-something-real errors" ordering
+        # task_allowed_for_project()'s own check below uses. acting_admin
+        # bypasses this the same way it already bypasses the backdate
+        # window above — an admin acting on a day isn't the employee whose
+        # department this is scoping against.
+        errors.append("That Project/Employer isn't available to your department — ask an admin to add it under Lists.")
 
     task = db.get(m.TaskType, task_type_id) if task_type_id else None
     if task is not None and task.active and task.status == m.LIST_PENDING:

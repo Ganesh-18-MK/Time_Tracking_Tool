@@ -9,7 +9,6 @@ from markupsafe import Markup
 from sqlalchemy import func, select
 
 from app import models as m
-from app.auth import led_by
 from app.util import (
     STATUS_LABELS,
     STATUS_NAMES,
@@ -146,11 +145,14 @@ def _admin_nav_badges(db, user) -> dict:
     needing to remember to add it.
 
     A department-scoped admin (is_admin=True, is_super_admin=False — see
-    Employee.is_super_admin docstring) only ever sees Leave Requests for
-    their own department, so their badge is scoped to match — otherwise
-    it would count pending leave they have no way to act on. Support
-    Inbox is super-admin-only and isn't even in their nav, so its count
-    is skipped for them entirely."""
+    Employee.is_super_admin docstring) no longer has Leave Management or
+    Overtime Management in their nav at all (Ganesh, 2026-08-28 — narrowed
+    to the 5-item Team Lead access list: Add Project/Task names, Assign,
+    Approve suggestions, View task logs, View reports), so this function
+    skips computing pending_leave/pending_overtime for them entirely —
+    those counts would have nowhere to display and no action they could
+    take. Support Inbox is likewise super-admin-only and isn't in their
+    nav, so its count is skipped for them too."""
     def _pending_overtime_count(employee_ids=None) -> int:
         # employee_ids=None -> org-wide (super admin, unscoped like
         # app/auth.py led_by() itself); otherwise only requests from that
@@ -211,19 +213,9 @@ def _admin_nav_badges(db, user) -> dict:
 
     if getattr(user, "is_admin", False) and not getattr(user, "is_super_admin", False):
         dept = user.department or "—"
-        pending_leave = db.execute(
-            select(func.count())
-            .select_from(m.LeaveRecord)
-            .join(m.Employee, m.Employee.id == m.LeaveRecord.employee_id)
-            .where(
-                m.LeaveRecord.status == m.LEAVE_REQUESTED,
-                func.coalesce(func.nullif(m.Employee.department, ""), "—") == dept,
-            )
-        ).scalar() or 0
         return {
-            "pending_leave": pending_leave, "open_support": 0,
+            "open_support": 0,
             "pending_suggestions": _pending_suggestions_count(dept),
-            "pending_overtime": _pending_overtime_count(led_by(user, db)),
         }
     pending_leave = db.execute(
         select(func.count()).select_from(m.LeaveRecord).where(

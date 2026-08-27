@@ -84,11 +84,24 @@
       render();
     }
 
-    input.addEventListener("focus", () => {
+    function showAll() {
       filtered = items;
       active = -1;
       render();
-    });
+    }
+
+    input.addEventListener("focus", showAll);
+    // Case Type / Client (Ganesh, 2026-08-28 bugfix) — once something's
+    // picked, the input keeps focus (select()'s mousedown uses
+    // preventDefault specifically so the click doesn't blur it first —
+    // see the comment on that handler below), so a second click to pick a
+    // DIFFERENT item was a no-op: it's not a new focus event, and menu was
+    // left hidden by select(). The employee's only way back in was to
+    // delete the typed text first, since that's what fires the `input`
+    // listener below. A plain click should always be able to reopen the
+    // full list, same as focusing an empty field does, regardless of
+    // whether the field already holds a confirmed selection.
+    input.addEventListener("click", showAll);
     input.addEventListener("input", filter);
     input.addEventListener("keydown", (e) => {
       if (menu.hidden && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
@@ -175,17 +188,54 @@
    * allTasks items carry a "project_ids" key: null/undefined means
    * unrestricted, an array means restricted to exactly those project ids
    * (see _combo_items() in app/routes/employee.py).
+   *
+   * Case Type / Client (Ganesh, 2026-08-28) — two optional trailing args,
+   * clientWrap (the field's wrapper element, `hidden` by default in the
+   * markup — see today.html) and preselectClientValue (a failed-submit
+   * re-show, same idea as preselectProjectId/preselectTaskId above).
+   * allProjects items carry an "is_case_type" key (see _combo_items());
+   * picking a project with is_case_type=true reveals clientWrap and marks
+   * its input required, same "field appears + becomes required based on
+   * another field's selection" pattern the Suggest-a-new-task Project
+   * picker already established (see combo-menu's submit-time check
+   * above) — just driven from here instead of a plain JS show/hide, since
+   * this one depends on which SPECIFIC project was picked, not a fixed
+   * Type toggle. Hiding it clears the value, same reasoning: a script
+   * that hides a field is responsible for not silently submitting it.
    */
-  function initProjectTaskCombo(projectRoot, taskRoot, allProjects, allTasks, preselectProjectId, preselectTaskId) {
+  function initProjectTaskCombo(
+    projectRoot, taskRoot, allProjects, allTasks,
+    preselectProjectId, preselectTaskId, clientWrap, preselectClientValue
+  ) {
     function tasksFor(projectId) {
       if (projectId === undefined || projectId === null || projectId === "") return allTasks;
       return allTasks.filter(
         (t) => !t.project_ids || t.project_ids.some((pid) => String(pid) === String(projectId))
       );
     }
+    function updateClientVisibility(item) {
+      if (!clientWrap) return;
+      const input = clientWrap.querySelector('input[name="client"]');
+      const show = !!(item && item.is_case_type);
+      clientWrap.hidden = !show;
+      if (input) {
+        input.required = show;
+        if (!show) input.value = "";
+      }
+    }
     const taskCombo = initCombo(taskRoot, tasksFor(preselectProjectId), preselectTaskId);
+    const preselected =
+      preselectProjectId !== undefined && preselectProjectId !== null && preselectProjectId !== ""
+        ? allProjects.find((p) => String(p.id) === String(preselectProjectId))
+        : null;
+    updateClientVisibility(preselected);
+    if (clientWrap && preselected && preselected.is_case_type && preselectClientValue) {
+      const input = clientWrap.querySelector('input[name="client"]');
+      if (input) input.value = preselectClientValue;
+    }
     initCombo(projectRoot, allProjects, preselectProjectId, (item) => {
       taskCombo.setItems(tasksFor(item.id));
+      updateClientVisibility(item);
     });
   }
 

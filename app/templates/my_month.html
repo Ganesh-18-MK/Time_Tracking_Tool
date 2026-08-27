@@ -128,7 +128,7 @@
                 <td class="nowrap">{{ e.start_minute|clock }}</td>
                 <td class="nowrap">{{ e.end_minute|clock }}</td>
                 <td class="nowrap">{{ e.duration_minutes|hm }}</td>
-                <td>{{ e.project.name }}</td>
+                <td>{{ e.project.name }}{% if e.client %}<div class="small muted">Client: {{ e.client }}</div>{% endif %}</td>
                 <td>{{ e.task_type.name }}</td>
                 <td style="white-space:pre-wrap">{{ e.details }}</td>
               </tr>

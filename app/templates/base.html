@@ -44,16 +44,12 @@
          (reverted) sidebar attempt. Same .navdrop pattern already used for
          Reports before, just three dropdowns now instead of one. #}
       <a href="/admin" class="{{ 'on' if active_nav == 'dash' }}">Dashboard</a>
-      <a href="/admin/leave" class="{{ 'on' if active_nav == 'admin_leave' }}">Leave Management{% if nav_badges and nav_badges.pending_leave %}<span class="navbadge">{{ nav_badges.pending_leave }}</span>{% endif %}</a>
-      <a href="/admin/overtime" class="{{ 'on' if active_nav == 'admin_overtime' }}">Overtime Management{% if nav_badges and nav_badges.pending_overtime %}<span class="navbadge">{{ nav_badges.pending_overtime }}</span>{% endif %}</a>
       <details class="navdrop">
         <summary class="{{ 'on' if active_nav in ('suggestions', 'assignments', 'lists') }}">Projects &amp; Task Management ▾{% if nav_badges and nav_badges.pending_suggestions %}<span class="navbadge">{{ nav_badges.pending_suggestions }}</span>{% endif %}</summary>
         <div class="navdrop-menu">
           <a href="/admin/suggestions">Suggestions{% if nav_badges and nav_badges.pending_suggestions %}<span class="navbadge">{{ nav_badges.pending_suggestions }}</span>{% endif %}</a>
           <a href="/admin/assignments">Assignments</a>
-          {% if user.is_super_admin %}
           <a href="/admin/lists">Projects &amp; Tasks</a>
-          {% endif %}
         </div>
       </details>
       <details class="navdrop">
@@ -69,6 +65,8 @@
         </div>
       </details>
       {% if user.is_super_admin %}
+      <a href="/admin/leave" class="{{ 'on' if active_nav == 'admin_leave' }}">Leave Management{% if nav_badges and nav_badges.pending_leave %}<span class="navbadge">{{ nav_badges.pending_leave }}</span>{% endif %}</a>
+      <a href="/admin/overtime" class="{{ 'on' if active_nav == 'admin_overtime' }}">Overtime Management{% if nav_badges and nav_badges.pending_overtime %}<span class="navbadge">{{ nav_badges.pending_overtime }}</span>{% endif %}</a>
       <a href="/admin/roster" class="{{ 'on' if active_nav == 'roster' }}">Employee Management</a>
       <details class="navdrop">
         <summary class="{{ 'on' if active_nav in ('config', 'admin_holidays') }}">Settings &amp; Configurations ▾</summary>

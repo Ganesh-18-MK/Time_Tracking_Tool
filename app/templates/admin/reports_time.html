@@ -164,8 +164,14 @@
   // semantic status colors (--ok/--warn/--bad/...) — those mean something
   // specific elsewhere (good/attention/bad) and reusing them for arbitrary
   // project names would be misleading here.
-  var PIE_COLORS = ['#8a5f38', '#1e7d3f', '#b3261e', '#8a6d00', '#b35c00',
-                     '#3b6ea5', '#7a4f9e', '#4f7a6e', '#a3a3a3'];
+  // Lightened (Ganesh, 2026-08-27: "colors are dark make it light colors")
+  // — same 9-hue qualitative palette, same hue order (so anyone comparing
+  // against an older screenshot still recognizes which slice moved where),
+  // just each one lifted toward pastel. Legend text/hover-title text color
+  // comes from the page's own CSS, not these fills (see the swatch/title
+  // markup below), so lightening never hurts readability there.
+  var PIE_COLORS = ['#c9a583', '#8fcba0', '#e8a29d', '#e0c669', '#f0b380',
+                     '#a9c7e0', '#c9aed9', '#a8cec4', '#d4d4d4'];
 
   function toggleProjectPie() {
     var wrap = document.getElementById('project-pie-wrap');

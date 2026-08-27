@@ -39,6 +39,7 @@ from app.validation import (
     earliest_gap_window,
     entry_details_edit_error,
     gap_flags,
+    project_allowed_for_department,
     suggest_non_overlapping_start,
     task_allowed_for_project,
     validate_entry,
@@ -115,6 +116,7 @@ class _BreakLogRow:
         self.details = b.break_type + (f" — {self.break_notes}" if self.break_notes else "")
         self.project = SimpleNamespace(name="General")
         self.task_type = SimpleNamespace(name="Break")
+        self.client = ""  # Case Type / Client (Ganesh, 2026-08-28) — a break is never case work
 
     @property
     def duration_minutes(self) -> int:
@@ -185,6 +187,16 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
     sub = db.execute(
         select(m.DaySubmission).where(
             m.DaySubmission.employee_id == emp.id, m.DaySubmission.date == date
+        )
+    ).scalar_one_or_none()
+    # Unlock requests (Ganesh, 2026-08-27) — only relevant to the lock
+    # banner on a locked day, but cheap enough to just always fetch here
+    # alongside `sub` rather than adding a second conditional query at
+    # each of today_page()'s call sites.
+    pending_unlock_request = db.execute(
+        select(m.UnlockRequest).where(
+            m.UnlockRequest.employee_id == emp.id, m.UnlockRequest.date == date,
+            m.UnlockRequest.status == m.LEAVE_REQUESTED,
         )
     ).scalar_one_or_none()
     leaves = list(
@@ -315,6 +327,7 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
         "display_entries": _merge_entries_and_breaks(entries, completed_breaks, gap_windows),
         "total": total,
         "sub": sub,
+        "pending_unlock_request": pending_unlock_request,
         "target": target,
         "leave_min": leave_min,
         "flags": flags,
@@ -352,6 +365,17 @@ def _visible_projects_and_tasks(db: Session, user: m.Employee):
             .order_by(m.Project.name)
         ).scalars()
     )
+    # Department-scoped projects (Ganesh, 2026-08-28) — see
+    # ProjectDepartment's docstring in app/models.py. A project absent
+    # from project_depts has no links at all (unrestricted, visible to
+    # every department); one WITH links is filtered down to just this
+    # employee's own department. validate_entry() enforces the identical
+    # rule server-side (validation.project_allowed_for_department()), so
+    # this filter can't disagree with it — same "UI convenience, not the
+    # only gate" relationship the suggestion-approval filter above has.
+    project_depts = _project_department_links(db)
+    emp_dept = user.department or "—"
+    projects = [p for p in projects if p.id not in project_depts or emp_dept in project_depts[p.id]]
     tasks = list(
         db.execute(
             select(m.TaskType)
@@ -393,6 +417,18 @@ def _pending_edit_notices(db: Session, user: m.Employee) -> list:
     return notices
 
 
+def _project_department_links(db: Session) -> dict:
+    """project_id -> sorted [department, ...] for every project that has
+    at least one ProjectDepartment row (Ganesh, 2026-08-28 — see that
+    model's docstring). A project_id absent from this dict has no links,
+    which means unrestricted — visible to every department — same
+    convention _task_project_links() below uses for tasks."""
+    out: dict = {}
+    for pid, dept in db.execute(select(m.ProjectDepartment.project_id, m.ProjectDepartment.department)).all():
+        out.setdefault(pid, []).append(dept)
+    return out
+
+
 def _task_project_links(db: Session) -> dict:
     """task_type_id -> sorted [project_id, ...] for every task that has at
     least one ProjectTask row (Ganesh, 2026-08-27 — see that model's
@@ -418,11 +454,19 @@ def _combo_items(objs, assigned_ids: set, project_links: Optional[dict] = None) 
     _task_project_links() above and ProjectTask's docstring in
     app/models.py. None/omitted means "every project" (no restriction),
     same convention task_allowed_for_project() uses server-side so the
-    UI filter and the real enforcement can't disagree."""
+    UI filter and the real enforcement can't disagree.
+
+    Case Type / Client (Ganesh, 2026-08-28) — project items (only; a
+    TaskType has no such column) also carry "is_case_type" straight off
+    Project.is_case_type, so combo.js's initProjectTaskCombo can reveal
+    the paired Client field the moment a case-type project is picked. See
+    Project.is_case_type's docstring in app/models.py."""
     def _item(o):
         d = {"id": o.id, "name": o.name}
         if project_links is not None:
             d["project_ids"] = project_links.get(o.id)  # None if unrestricted
+        if hasattr(o, "is_case_type"):
+            d["is_case_type"] = bool(o.is_case_type)
         return d
 
     starred = [_item(o) for o in objs if o.id in assigned_ids]
@@ -441,6 +485,7 @@ def today_page(
     reopen_project_id: Optional[str] = None,
     reopen_task_type_id: Optional[str] = None,
     reopen_details: Optional[str] = None,
+    reopen_client: Optional[str] = None,
     reopen_start: Optional[str] = None,
     reopen_end: Optional[str] = None,
     user: m.Employee = Depends(current_user),
@@ -555,6 +600,7 @@ def today_page(
             "reopen_project_id": reopen_project_id,
             "reopen_task_type_id": reopen_task_type_id,
             "reopen_details": reopen_details,
+            "reopen_client": reopen_client,
             "reopen_end": reopen_end or (
                 f"{gap_prefill_end // 60:02d}:{gap_prefill_end % 60:02d}" if gap_prefill_end is not None else None
             ),
@@ -575,6 +621,25 @@ def today_page(
     return render(request, "today.html", ctx)
 
 
+def _client_required_error(project: Optional[m.Project], client: str) -> Optional[str]:
+    """Case Type / Client (Ganesh, 2026-08-28) — the one server-side rule
+    this feature needs: if the selected project is flagged is_case_type
+    (see that column's docstring in app/models.py), Client can't be
+    blank. Deliberately a plain route-level helper, not part of
+    app/validation.py's validate_entry() — this is a simple presence
+    check tied to which project was picked, not a PRD §4 entry rule like
+    overlap/gap/cap/backdate, so keeping it here means this feature never
+    touches validation.py and isn't gated by the pytest+verify_strikes
+    hard rule. Called from every place a Client value can first be set:
+    add_entry, start_task_timer, stop_task_timer (top-up, in case Start
+    left it blank), and add_plan — NOT from _finish_task_timer, since by
+    the time a segment finishes, Client was already required at whichever
+    of those entry points started it."""
+    if project is not None and project.is_case_type and not client.strip():
+        return f"'{project.name}' is a Case Type project — enter the Client."
+    return None
+
+
 @router.post("/entries")
 def add_entry(
     request: Request,
@@ -582,6 +647,7 @@ def add_entry(
     project_id: int = Form(0),
     task_type_id: int = Form(0),
     details: str = Form(""),
+    client: str = Form(""),
     start_time: str = Form(...),
     end_time: str = Form(...),
     user: m.Employee = Depends(current_user),
@@ -603,6 +669,7 @@ def add_entry(
                 "reopen_project_id": project_id or "",
                 "reopen_task_type_id": task_type_id or "",
                 "reopen_details": details,
+                "reopen_client": client,
                 "reopen_start": start_value,
                 "reopen_end": end_time,
             }
@@ -615,6 +682,11 @@ def add_entry(
     except (ValueError, IndexError):
         flash(request, "Enter valid start and end times.", "err")
         return _reopen(start_time)
+    project = db.get(m.Project, project_id) if project_id else None
+    client_err = _client_required_error(project, client)
+    if client_err:
+        flash(request, client_err, "err")
+        return _reopen(start_time)
     try:
         validate_entry(
             db, user, day, project_id, task_type_id, details, start_minute, end_minute, cfg
@@ -626,6 +698,7 @@ def add_entry(
                 project_id=project_id,
                 task_type_id=task_type_id,
                 details=capitalize_first(details.strip()),
+                client=client.strip(),
                 start_minute=start_minute,
                 end_minute=end_minute,
                 entry_method=m.ENTRY_METHOD_MANUAL,
@@ -841,6 +914,16 @@ def _finish_task_timer(db: Session, user: m.Employee, timer: m.ActiveTaskTimer, 
     ENTRY_METHOD_AUTO_TIMER."""
     now = now_local()
     end_minute = clamp_break_end(timer.start_minute, now.hour * 60 + now.minute)
+    # Case Type / Client (Ganesh, 2026-08-28) — defense-in-depth, mirrors
+    # the same multi-layer-check precedent task_allowed_for_project()
+    # already set (checked at add_plan() AND again inside validate_entry
+    # below). start_task_timer/add_plan already require Client up front
+    # for a case-type project, so this should never actually trip in
+    # practice — it's here in case some future path ever creates an
+    # ActiveTaskTimer without going through either of those.
+    client_err = _client_required_error(db.get(m.Project, timer.project_id), timer.client)
+    if client_err:
+        return False, client_err
     try:
         validate_entry(
             db, user, timer.date, timer.project_id, timer.task_type_id,
@@ -851,6 +934,7 @@ def _finish_task_timer(db: Session, user: m.Employee, timer: m.ActiveTaskTimer, 
     db.add(m.TaskEntry(
         employee_id=user.id, date=timer.date, project_id=timer.project_id,
         task_type_id=timer.task_type_id, details=capitalize_first(timer.details.strip()),
+        client=timer.client.strip(),
         start_minute=timer.start_minute, end_minute=end_minute,
         entry_method=m.ENTRY_METHOD_PLAN if timer.planned_task_id else m.ENTRY_METHOD_AUTO_TIMER,
     ))
@@ -894,6 +978,7 @@ def start_task_timer(
     project_id: int = Form(...),
     task_type_id: int = Form(...),
     details: str = Form(""),
+    client: str = Form(""),
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -917,11 +1002,21 @@ def start_task_timer(
     if project is None or not project.active or task is None or not task.active:
         flash(request, "Choose a Project and Task before starting the timer.", "err")
         return RedirectResponse("/today", status_code=303)
+    # Case Type / Client (Ganesh, 2026-08-28) — required immediately here,
+    # unlike Details on this same form (which stays "optional now, needed
+    # by Stop"): which client the work is for is normally known before
+    # you start the clock, same reasoning add_entry/add_plan already
+    # apply to their own Client field, so all 3 entry points are
+    # consistent about when this is asked for.
+    client_err = _client_required_error(project, client)
+    if client_err:
+        flash(request, client_err, "err")
+        return RedirectResponse("/today", status_code=303)
 
     now = now_local()
     db.add(m.ActiveTaskTimer(
         employee_id=user.id, date=today, project_id=project_id, task_type_id=task_type_id,
-        details=details.strip(), start_minute=now.hour * 60 + now.minute,
+        details=details.strip(), client=client.strip(), start_minute=now.hour * 60 + now.minute,
         started_at=dt.datetime.utcnow(),
     ))
     db.commit()
@@ -1027,6 +1122,7 @@ def add_plan(
     project_id: int = Form(...),
     task_type_id: int = Form(...),
     details: str = Form(""),
+    client: str = Form(""),
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -1044,6 +1140,17 @@ def add_plan(
     # mismatch once this plan is Started/finished into a real TaskEntry.
     if not task_allowed_for_project(db, project_id, task_type_id):
         flash(request, f"'{task.name}' isn't set up for '{project.name}' — choose a different task.", "err")
+        return RedirectResponse("/today", status_code=303)
+    # Department-scoped projects (Ganesh, 2026-08-28) — same
+    # validation.project_allowed_for_department() validate_entry() uses,
+    # checked here too for immediate feedback (mirrors the
+    # task_allowed_for_project check right above).
+    if not project_allowed_for_department(db, project_id, user.department):
+        flash(request, f"'{project.name}' isn't available to your department.", "err")
+        return RedirectResponse("/today", status_code=303)
+    client_err = _client_required_error(project, client)
+    if client_err:
+        flash(request, client_err, "err")
         return RedirectResponse("/today", status_code=303)
     cleaned = capitalize_first(details.strip())
     if not cleaned:
@@ -1072,7 +1179,7 @@ def add_plan(
 
     db.add(m.PlannedTask(
         employee_id=user.id, date=today, project_id=project_id,
-        task_type_id=task_type_id, details=cleaned, status=m.PLAN_PLANNED,
+        task_type_id=task_type_id, details=cleaned, client=client.strip(), status=m.PLAN_PLANNED,
         created_by_employee_id=user.id,
     ))
     punched_in_now = False
@@ -1168,7 +1275,7 @@ def start_plan(
     now = now_local()
     db.add(m.ActiveTaskTimer(
         employee_id=user.id, date=today_local(), project_id=plan.project_id,
-        task_type_id=plan.task_type_id, details=plan.details,
+        task_type_id=plan.task_type_id, details=plan.details, client=plan.client,
         start_minute=now.hour * 60 + now.minute, started_at=dt.datetime.utcnow(),
         planned_task_id=plan.id,
     ))
@@ -1369,6 +1476,50 @@ def submit_day(
         + (f" {carried} unfinished plan{'s' if carried != 1 else ''} carried to tomorrow." if carried else ""),
         "ok",
     )
+    return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
+
+
+@router.post("/unlock-request")
+def request_unlock(
+    request: Request,
+    date: str = Form(...),
+    note: str = Form(""),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """"Ask an admin to unlock" button on a locked day's lock banner
+    (Ganesh, 2026-08-27 — before this, the only way to ask was outside
+    the app entirely). Note is optional (AskUserQuestion, 2026-08-27:
+    lowest-friction, same call as the existing Overtime<->Missed-Hours
+    match request's own optional note) — a blank note still creates a
+    perfectly actionable request, since the admin reviewing it can already
+    see exactly what's in the task log for that day."""
+    try:
+        day = parse_date_field(date)
+    except FormError as e:
+        flash(request, e.message, "err")
+        return RedirectResponse("/today", status_code=303)
+    sub = db.execute(
+        select(m.DaySubmission).where(
+            m.DaySubmission.employee_id == user.id, m.DaySubmission.date == day
+        )
+    ).scalar_one_or_none()
+    if sub is None or not sub.locked:
+        flash(request, "That day isn't locked — nothing to request.", "err")
+        return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
+    already = db.execute(
+        select(m.UnlockRequest).where(
+            m.UnlockRequest.employee_id == user.id, m.UnlockRequest.date == day,
+            m.UnlockRequest.status == m.LEAVE_REQUESTED,
+        )
+    ).scalar_one_or_none()
+    if already is not None:
+        flash(request, "You already have a pending unlock request for that day.", "err")
+        return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
+    db.add(m.UnlockRequest(employee_id=user.id, date=day, note=note.strip()))
+    db.commit()
+    audit(db, user.name, "unlock_requested", "UnlockRequest", f"{user.id}:{day.isoformat()}", {"note": note.strip()})
+    flash(request, "Unlock request sent — an admin will review it.", "ok")
     return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
 
 

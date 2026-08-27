@@ -1,8 +1,10 @@
 """app/auth.py's department-scoping helper (Ganesh, 2026-07-31) — the
 single place that decides whether an admin sees every department (super
-admin) or only their own (department-scoped admin/team lead). Dashboard,
-Leave Requests, and Reports all key off this one function; a bug here
-would silently under- or over-scope every one of those screens at once."""
+admin) or only their own (department-scoped admin/team lead). Dashboard
+and Reports key off this one function; a bug here would silently under-
+or over-scope either of those screens. (Leave Requests used to as well,
+until the 2026-08-28 access-narrowing made Leave Management Super-Admin-
+only — see app/auth.py's require_super_admin docstring.)"""
 from types import SimpleNamespace
 
 from app.auth import admin_department_scope

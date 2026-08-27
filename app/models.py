@@ -126,17 +126,27 @@ class Employee(Base):
     employee_code: Mapped[Optional[str]] = mapped_column(String(20), unique=True, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
-    # Two-tier admin (Ganesh, 2026-07-31): is_admin alone now means
-    # "department-scoped admin / team lead" — sees Dashboard, Leave
-    # Requests, and Reports, filtered to their own Employee.department
-    # only. is_super_admin=True is the org-wide tier that sees every
-    # department and every other admin screen (Roster, Settings, Audit
-    # Log, Support Inbox, Projects & Tasks, bulk uploads, person-detail
-    # overrides/unlocks/compensation links) — see app/auth.py
-    # require_super_admin and app/util.py ensure_super_admin_backfill
-    # (existing admins are auto-promoted to super_admin on upgrade so
-    # nobody who could see everything before this column existed loses
-    # access silently).
+    # Two-tier admin (Ganesh, 2026-07-31; access list narrowed 2026-08-28).
+    # is_admin alone now means "department-scoped admin / team lead",
+    # restricted to exactly 5 capabilities, all filtered to their own
+    # Employee.department (or per-person reports_to_id for Assignments):
+    # add Project/Task names (Lists "Add" form + bulk upload — but not
+    # Deactivate/Reactivate/Rename), assign Projects/Tasks to their team,
+    # approve suggested Project/Task names from their team, view task
+    # logs for their team (Person Detail — read-only: no override/unlock/
+    # compensation-link actions there), and view Time/Project/Strikes/
+    # Attendance reports for their team. Leave Management and Overtime
+    # Management, previously included, are Super-Admin-only as of the
+    # same 2026-08-28 change. is_super_admin=True is the org-wide tier
+    # that sees every department and every other admin screen (Roster,
+    # Settings, Audit Log, Support Inbox, Leave Management, Overtime
+    # Management, Projects & Tasks list-maintenance, bulk uploads,
+    # person-detail overrides/unlocks/compensation links) — see
+    # app/auth.py require_super_admin (full current boundary lives in its
+    # docstring) and app/util.py ensure_super_admin_backfill (existing
+    # admins were auto-promoted to super_admin on upgrade so nobody who
+    # could see everything before this column existed lost access
+    # silently).
     is_super_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     # A THIRD, independent axis from is_admin/is_super_admin (Ganesh,
     # 2026-08-06) — who can work tickets in the new Ticketing System (see
@@ -344,6 +354,27 @@ class Project(Base):
     edited_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
     original_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     employee_notified_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    # Case Type (Ganesh, 2026-08-28) — an admin-set flag on individual
+    # Project rows, NOT a rename of Project itself and NOT a separate
+    # dropdown: some existing Project/Employer entries represent actual
+    # legal case work, others don't (Internal, Admin, Training, etc.), and
+    # only an admin marking a specific project as one flips this. When an
+    # employee picks a project with is_case_type=True on the Today page
+    # (Add Row / Auto time capture / Plan for the Day — all three share
+    # the same Project combo), a Client field appears for them to record
+    # who the case is for (see TaskEntry.client/PlannedTask.client/
+    # ActiveTaskTimer.client below). Same "SQL NULL is falsy" reasoning as
+    # Employee.is_developer above applies here too: every check on this
+    # column is plain truthiness (`if project.is_case_type`), so the
+    # additive-only column migration (app/db.py's _add_missing_columns)
+    # adding it as NULL on all ~300 existing Project rows is already the
+    # correct answer — "not yet marked as a Case Type" is exactly what an
+    # admin hasn't done for any of them yet. Settable at creation (Lists
+    # "Add" form — available to both admin tiers, same as the rest of
+    # Project creation) and toggle-able afterward via
+    # POST /admin/lists/project/{id}/case-type/toggle, Super-Admin-only
+    # (same tier as Rename/Deactivate — see require_super_admin).
+    is_case_type: Mapped[bool] = mapped_column(Boolean, default=False)
 
     created_by = relationship("Employee", foreign_keys=[created_by_employee_id])
 
@@ -443,6 +474,67 @@ class ProjectTask(Base):
     task_type = relationship("TaskType")
 
 
+class ProjectDepartment(Base):
+    """Which departments may access a given Project (Ganesh, 2026-08-28 —
+    "give department name then only that department employees can able
+    to access that particular projects and tasks under that project").
+    Many-to-many by design, same "one row per pair, not a comma-separated
+    cell" shape ProjectTask above uses — a project can span more than one
+    department (a shared client, say), so it can have several rows here,
+    one per department.
+
+    A project with ZERO rows here is unrestricted — every department can
+    see and use it — same "zero links = unrestricted" convention
+    ProjectTask already established for tasks (see that model's
+    docstring); this is what keeps every one of the ~300 existing
+    projects working exactly as before, since none of them have any
+    department rows yet and nobody is required to add any.
+
+    This is a NEW, stricter layer than ProjectAssignment above — that one
+    stays purely advisory (sorts/stars a project in the picker, never
+    blocks). ProjectDepartment actually gates which projects even appear
+    in an employee's Today page Project dropdown (see
+    _visible_projects_and_tasks() in app/routes/employee.py) AND is
+    enforced server-side too (validation.project_allowed_for_department(),
+    called from validate_entry() and add_plan()) — the identical
+    dual-layer precedent task_allowed_for_project()/ProjectTask already
+    set, just one level up (project, not task) and keyed by department
+    instead of an explicit task+project pair.
+
+    Tasks scoped to a department-restricted project via ProjectTask
+    automatically inherit the same restriction — nothing extra needed
+    here, since an employee can never reach that project's Task dropdown
+    in the first place if the Project itself is already off-limits to
+    their department.
+
+    `department` is a plain free-text string, matching Employee.department
+    itself — this app has no canonical department table anywhere (see
+    reports.departments_list()/admin dashboard()/roster()'s own inlined
+    `{e.department or "—" for e in ...}` pattern); department names are
+    just whatever an admin already typed into an employee's profile.
+    Managed from the Lists page's per-project "Manage departments" panel
+    (Super-Admin-only, same tier as Rename/Deactivate/the task-linking
+    panel — see Project.is_case_type's docstring for that precedent) or
+    via the Projects bulk-upload sheet's optional Department column.
+
+    Deliberately does NOT change who can see/manage a project on the
+    Lists admin page itself (Ganesh, 2026-08-28, explicit answer: "Employee-
+    facing only") — a department-scoped admin still sees and can add every
+    project on Lists regardless of this table; only a regular employee's
+    Today page picker and entry validation are affected."""
+
+    __tablename__ = "project_departments"
+    __table_args__ = (UniqueConstraint("project_id", "department"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    department: Mapped[str] = mapped_column(String(120), index=True)
+    created_by: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    project = relationship("Project")
+
+
 # Feature-usage tracking (Ganesh, 2026-08-21, "as a developer I want to
 # know how many people are using what option") — which of the 3 ways a
 # TaskEntry row got created. Set at each of the three creation call sites
@@ -473,6 +565,18 @@ class TaskEntry(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
     task_type_id: Mapped[int] = mapped_column(ForeignKey("task_types.id"))
     details: Mapped[str] = mapped_column(Text, default="")
+    # Case Type / Client (Ganesh, 2026-08-28) — see Project.is_case_type's
+    # docstring for the full feature. Free text, one field (not split into
+    # company/individual) per Ganesh's own answer: either an individual's
+    # name, or "Company Name - Beneficiary Name". Blank/unused for every
+    # row logged against a non-case-type project, which is most of them —
+    # same "blank means not applicable" convention as
+    # LeaveRecord.relation (Bereavement-only). Required at entry time (not
+    # here — enforced in app/routes/employee.py's add_entry/
+    # start_task_timer/add_plan, not in app/validation.py's validate_entry,
+    # since this is a simple presence check tied to which project was
+    # picked, not a PRD §4 entry rule like overlap/gap/cap/backdate).
+    client: Mapped[str] = mapped_column(Text, default="")
     start_minute: Mapped[int] = mapped_column(Integer)  # minutes since midnight
     end_minute: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
@@ -597,6 +701,13 @@ class ActiveTaskTimer(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
     task_type_id: Mapped[int] = mapped_column(ForeignKey("task_types.id"))
     details: Mapped[str] = mapped_column(Text, default="")
+    # Case Type / Client (Ganesh, 2026-08-28) — see TaskEntry.client's
+    # docstring. Carried the same way `details` already is: set at Start
+    # (or copied from PlannedTask.client when a plan's Start/Resume opens
+    # this timer — see start_plan below), optionally topped up at Stop,
+    # and copied verbatim into TaskEntry.client the moment
+    # _finish_task_timer() closes this timer into a real row.
+    client: Mapped[str] = mapped_column(Text, default="")
     # Business-timezone clock-face minute at Start (util.now_local(), NOT
     # started_at below) — same split BreakEntry/PunchSession already use:
     # this is what becomes TaskEntry.start_minute when the timer stops, so
@@ -682,6 +793,16 @@ class PlannedTask(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
     task_type_id: Mapped[int] = mapped_column(ForeignKey("task_types.id"))
     details: Mapped[str] = mapped_column(Text, default="")
+    # Case Type / Client (Ganesh, 2026-08-28) — see TaskEntry.client's
+    # docstring. Captured once, at add_plan() time (same as Project/Task
+    # themselves — not editable afterward via edit_plan(), which stays
+    # scoped to just the plan text; delete-and-re-add is the path for a
+    # wrong Client, same precedent Project/Task already set). Copied
+    # verbatim into ActiveTaskTimer.client every time this plan's Start/
+    # Resume opens a fresh segment (see start_plan below), so it flows
+    # through to every TaskEntry that segment produces with no repeated
+    # typing.
+    client: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(20), default=PLAN_PLANNED)
     created_by_employee_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("employees.id"), nullable=True
@@ -722,6 +843,44 @@ class DaySubmission(Base):
 LEAVE_REQUESTED = "requested"
 LEAVE_APPROVED = "approved"
 LEAVE_REJECTED = "rejected"
+
+
+class UnlockRequest(Base):
+    """Employee-initiated "please unlock this locked day" request (Ganesh,
+    2026-08-27) — before this, the only way to ask for an unlock was
+    outside the app entirely (Teams/email/in person), and an admin had no
+    signal one was needed short of being told directly. Reuses the same
+    generic LEAVE_REQUESTED/LEAVE_APPROVED/LEAVE_REJECTED status strings
+    every other employee-request-then-admin-decides flow in this app
+    already does (see CompensationLink for the same reuse-not-a-new-enum
+    precedent, despite the "LEAVE_" name) rather than inventing a fourth
+    parallel status enum.
+
+    This is deliberately a queue/notification layer in front of the
+    EXISTING unlock mechanism, not a second way to unlock a day —
+    approving one doesn't happen here. `unlock_day()` (app/routes/
+    admin.py, unchanged in its own logic) auto-resolves any pending
+    request for that employee+date to LEAVE_APPROVED the moment an admin
+    actually unlocks the day, whether they arrived via this queue or just
+    unlocked directly from Person Detail without noticing a request
+    existed — one code path decides "unlocked or not", this table never
+    gets to disagree with it. A super admin can also explicitly reject a
+    request without unlocking (reject_unlock_request()) — e.g. the day's
+    fine as-is, or the correction should happen a different way."""
+
+    __tablename__ = "unlock_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True)
+    date: Mapped[dt.date] = mapped_column(Date, index=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default=LEAVE_REQUESTED)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    reviewed_by: Mapped[str] = mapped_column(String(120), default="")
+    reviewed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    review_note: Mapped[str] = mapped_column(Text, default="")
+
+    employee = relationship("Employee")
 
 
 class LeaveRecord(Base):

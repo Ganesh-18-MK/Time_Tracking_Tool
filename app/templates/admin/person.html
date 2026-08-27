@@ -60,6 +60,7 @@
           {% if r.override_status %}<div>⚑ was {{ STATUS_NAMES.get(r.status) }} — {{ r.override_reason }} ({{ r.override_by }})</div>{% endif %}
         </td>
         <td>
+          {% if user.is_super_admin %}
           <details>
             <summary class="small">override</summary>
             <form method="post" action="/admin/person/{{ emp.id }}/override" class="formrow" style="margin-top:6px">
@@ -77,6 +78,7 @@
               <div><button class="small">Apply</button></div>
             </form>
           </details>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}
@@ -123,7 +125,7 @@
            coverage result that doesn't exist yet. #}
         {% if lk.status == 'requested' %}
         <span class="badge b-pending">pending approval</span>
-        <a href="/admin/overtime" class="small">review →</a>
+        {% if user.is_super_admin %}<a href="/admin/overtime" class="small">review →</a>{% endif %}
         {% elif lk.status == 'rejected' %}
         <span class="badge b-missing">rejected</span>
         {% elif lk.fully_compensated %}
@@ -133,15 +135,16 @@
         {% endif %}
       </td>
       <td class="small">{{ lk.note }} <span class="muted">— {{ lk.linked_by }}</span></td>
-      <td><form method="post" action="/admin/complink/{{ lk.id }}/delete" class="inline">
+      <td>{% if user.is_super_admin %}<form method="post" action="/admin/complink/{{ lk.id }}/delete" class="inline">
         <input type="hidden" name="ym" value="{{ ym }}">
-        <button class="small secondary" onclick="return confirm('Remove link?')">✕</button></form></td>
+        <button class="small secondary" onclick="return confirm('Remove link?')">✕</button></form>{% endif %}</td>
     </tr>
     {% endfor %}
     </tbody>
   </table>
   {% else %}<p class="muted small">None yet.</p>{% endif %}
 
+  {% if user.is_super_admin %}
   <h3>Link a shortfall to make-up day(s)</h3>
   <form method="post" action="/admin/person/{{ emp.id }}/complink" class="formrow">
     <input type="hidden" name="ym" value="{{ ym }}">
@@ -185,6 +188,7 @@
     <div><label>Note</label><input name="note"></div>
     <div><button class="small">Link</button></div>
   </form>
+  {% endif %}
 </div>
 
 <div class="cols">
@@ -205,7 +209,7 @@
         {% endfor %}
       </tbody>
     </table>
-    <p class="small"><a href="/admin/leave">Add leave →</a></p>
+    {% if user.is_super_admin %}<p class="small"><a href="/admin/leave">Add leave →</a></p>{% endif %}
   </div>
 
   <div class="card">
@@ -241,6 +245,12 @@
         {{ 'submitted · locked' if sub.locked else 'unlocked for edits' }}</span>
       <span class="muted small">total {{ sub.total_minutes|hm }}{% if sub.unlock_count %} · unlocked {{ sub.unlock_count }}×{% endif %}</span>
       {% if sub.locked %}
+      {% set req = pending_unlocks_by_date.get(day) %}
+      {% if req %}
+      <span class="badge b-pending">⏳ unlock requested</span>
+      {% if req.note %}<span class="small muted">— "{{ req.note }}"</span>{% endif %}
+      {% endif %}
+      {% if user.is_super_admin %}
       <details class="inline" style="display:inline-block">
         <summary class="small">unlock</summary>
         <form method="post" action="/admin/person/{{ emp.id }}/unlock" class="formrow">
@@ -250,6 +260,17 @@
           <div><button class="small">Unlock</button></div>
         </form>
       </details>
+      {% if req %}
+      <details class="inline" style="display:inline-block">
+        <summary class="small muted">decline request</summary>
+        <form method="post" action="/admin/unlock-request/{{ req.id }}/reject" class="formrow">
+          <input type="hidden" name="ym" value="{{ ym }}">
+          <div style="flex:1"><label>Note (optional)</label><input name="review_note"></div>
+          <div><button class="small secondary">Decline</button></div>
+        </form>
+      </details>
+      {% endif %}
+      {% endif %}
       {% endif %}
     {% else %}<span class="badge b-pending">not submitted</span>{% endif %}
   </h3>
@@ -259,7 +280,7 @@
       <tr class="{{ 'overtime-row' if e.is_overtime else '' }}" {% if e.is_overtime %}title="Logged after that day's target was already reached"{% endif %}>
         <td class="nowrap">{{ e.start_minute|clock }}–{{ e.end_minute|clock }}</td>
         <td class="nowrap"><strong>{{ e.duration_minutes|hm }}</strong></td>
-        <td>{{ e.project.name }}</td>
+        <td>{{ e.project.name }}{% if e.client %}<div class="small muted">Client: {{ e.client }}</div>{% endif %}</td>
         <td>{{ e.task_type.name }}</td>
         <td class="small" style="white-space:pre-wrap">{{ e.details }}{% if e.imported %} <span class="muted">(legacy)</span>{% endif %}</td>
       </tr>

@@ -49,12 +49,24 @@ def require_admin(user: m.Employee = Depends(current_user)) -> m.Employee:
 
 
 def require_super_admin(admin: m.Employee = Depends(require_admin)) -> m.Employee:
-    """Gate for admin screens that stay org-wide only: Roster, Settings,
-    Audit Log, Support Inbox, Projects & Tasks, bulk uploads, and the
-    person-detail actions that change history (override/unlock/compensation
-    links). A department-scoped admin (is_admin=True, is_super_admin=False)
-    gets Forbidden() here same as a non-admin does from require_admin —
-    see Employee.is_super_admin's docstring for the tier split."""
+    """Gate for admin screens that stay org-wide only.
+
+    Narrowed to this exact boundary (Ganesh, 2026-08-28): a department-
+    scoped admin (Team Lead, is_admin=True, is_super_admin=False) was
+    previously able to reach every admin screen; they're now restricted
+    to exactly 5 capabilities — add Project/Task names (form + bulk
+    upload), assign Projects/Tasks to their team, approve suggested
+    Project/Task names from their team, view task logs for their team
+    (Person Detail, read-only), and view Time/Project/Strikes/Attendance
+    reports for their team. Everything else stays super-admin-only:
+    Roster, Settings, Audit Log, Support Inbox, Leave Management,
+    Overtime Management, Projects & Tasks list-maintenance actions
+    (Deactivate/Reactivate/Rename — but NOT the Add form or bulk upload,
+    which a department admin does keep), and the person-detail actions
+    that change history (override/unlock/reject-unlock-request/
+    compensation-link add-delete). A department-scoped admin gets
+    Forbidden() here same as a non-admin does from require_admin — see
+    Employee.is_super_admin's docstring for the tier split."""
     if not admin.is_super_admin:
         raise Forbidden()
     return admin

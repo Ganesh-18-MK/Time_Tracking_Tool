@@ -4,14 +4,18 @@
 {% block content %}
 <h1>Bulk upload — Projects &amp; Tasks</h1>
 <p class="muted small"><a href="/admin/lists">← Back to Projects &amp; Tasks</a></p>
-<p class="small muted">Projects is a single column, one name per row. Tasks is two columns —
-one row per Task + Project pair (see its template for why). Both are add-only: a value/link already
-on the list is skipped, not duplicated; nothing here renames or deactivates a value.</p>
+<p class="small muted">Projects is a name column plus an optional Department column — leave Department
+blank for a project every department can use, or list the same project on more than one row to
+restrict it to more than one department. Tasks is two columns — one row per Task + Project pair
+(see its template for why). Both are add-only: a value/link already on the list is skipped, not
+duplicated; nothing here renames or deactivates a value.</p>
 
 <div class="cols">
   <div class="card">
     <h2 style="margin-top:0">Projects / Employers</h2>
-    <p class="small muted">Column header: <strong>Project / Employer Name</strong>.</p>
+    <p class="small muted">Columns: <strong>Project / Employer Name</strong> and an optional <strong>Department</strong>
+      (leave blank for every department to use it; list the same project on more than one row to link it to
+      more than one department).</p>
     <p>
       <a class="btn secondary small" href="/admin/lists/bulk-upload/sample.xlsx?kind=project">Download blank template</a>
       <a class="btn secondary small" href="/admin/lists/bulk-upload/existing.xlsx?kind=project">Download current list</a>
@@ -43,7 +47,8 @@ on the list is skipped, not duplicated; nothing here renames or deactivates a va
 {% if result %}
 <div class="card" style="max-width:760px">
   <h2 style="margin-top:0">Result — {{ 'Projects' if result_kind == 'project' else 'Tasks' }}</h2>
-  <p>{{ result.added }} {{ 'added.' if result_kind == 'project' else 'task+project link(s) added.' }}</p>
+  <p>{{ result.added }} {{ 'project(s) added.' if result_kind == 'project' else 'task+project link(s) added.' }}
+    {% if result_kind == 'project' and result.department_links_added %}{{ result.department_links_added }} department link(s) added.{% endif %}</p>
   {% if result.skipped %}
   <table>
     <thead><tr><th>Row</th><th>Name</th><th>Reason skipped</th></tr></thead>

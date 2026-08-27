@@ -156,10 +156,22 @@
 <div class="cols">
   <div class="card">
     <h2 style="margin-top:0">Needs attention</h2>
-    {% if not pending_leave_rows and not open_support_rows and not violations %}
+    {% if not pending_leave_rows and not open_support_rows and not violations and not unlock_requests %}
     <p class="muted small" style="margin:0">Nothing pending — you're all caught up.</p>
     {% else %}
     <ul class="namelist" style="padding-left:0;list-style:none;margin-top:0">
+      {% if unlock_requests %}
+      {# Unlock requests (Ganesh, 2026-08-27) — super-admin-only preview,
+         same as Support tickets below; approving/declining happens on
+         Person Detail (the day's existing unlock form/reject action),
+         not here — this is just the notification. #}
+      <li class="needslist-group">Unlock requests ({{ unlock_requests|length }})</li>
+      {% for r in unlock_requests %}
+      <li style="margin-bottom:6px"><span class="badge b-pending">unlock</span>
+        <a href="/admin/person/{{ r.employee_id }}?ym={{ r.date.strftime('%Y-%m') }}">{{ r.employee.name if r.employee else r.employee_id }}</a>
+        wants {{ r.date|mdy }} unlocked{% if r.note %} — "{{ r.note[:50] }}{% if r.note|length > 50 %}…{% endif %}"{% endif %}</li>
+      {% endfor %}
+      {% endif %}
       {% if pending_leave_rows %}
       <li class="needslist-group">Leave requests ({{ pending_leave_rows|length }})</li>
       {% for lv in pending_leave_rows %}

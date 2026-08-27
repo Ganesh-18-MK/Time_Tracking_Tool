@@ -22,9 +22,23 @@ than a comma-separated multi-project cell. The Project Name must already
 exist (this sheet only ever adds Tasks/links, never Projects, even from
 the Tasks sheet) — a "Projects" reference sheet is included in both the
 sample template and the existing-values download specifically so an admin
-can copy-paste the exact spelling before uploading. The Projects sheet
-IS the one column-per-project format, unchanged from the Projects kind's
-own sheet (build_sample_workbook("project")).
+can copy-paste the exact spelling before uploading.
+
+Department-scoped projects (Ganesh, 2026-08-28 — see ProjectDepartment's
+docstring in app/models.py): the Projects sheet now ALSO accepts an
+optional second column, Department — same one-row-per-pair convention the
+Tasks sheet already established above, not a comma-separated cell, so the
+same project name can appear on more than one row to link it to more than
+one department. Unlike the Tasks sheet's Project Name column, Department
+is genuinely optional at the HEADER level too: a plain single-column
+Projects sheet (every one uploaded before this feature existed, and
+read_upload_names()'s own shape below) still uploads exactly as before —
+every project ends up unrestricted, same as if the column were present but
+every cell left blank. Also unlike Tasks (which only ever links an
+EXISTING project, never creates one), this sheet can both create a brand
+new project AND add a department link to it in the same pass, or add a
+department link to a project that already existed before this upload —
+whichever the row's Project Name resolves to.
 """
 from typing import Dict, List, Optional, Tuple
 
@@ -32,7 +46,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from sqlalchemy import select
 
-from app import models as m
+from app import models as m, reports
 
 MAX_ROWS = 500
 
@@ -41,6 +55,7 @@ HEADERS = {
     "task": "Task Name",
 }
 TASK_PROJECT_HEADER = "Project Name"
+PROJECT_DEPARTMENT_HEADER = "Department"
 SHEET_TITLES = {
     "project": "Projects",
     "task": "Tasks",
@@ -59,9 +74,14 @@ def _model_for(kind: str):
 
 
 def read_upload_names(wb: Workbook, kind: str) -> Tuple[List[Tuple[int, str]], Optional[str]]:
-    """Projects sheet only (kind="project") — single column, one name per
-    row. See read_task_rows() below for the Tasks sheet's two-column
-    shape."""
+    """Single-column reader — one name per row, no other columns read even
+    if present. Kept as its own tested building block (department-scoped
+    projects, Ganesh, 2026-08-28, didn't change this function at all) even
+    though the real Projects upload path now goes through
+    read_project_rows() below instead, which is a superset of this exact
+    shape plus an optional Department column. Still what kind="task"
+    would use if it ever needed a plain name-only read, though in practice
+    it always uses read_task_rows()'s two-column shape today."""
     header = HEADERS[kind]
     ws = wb.active
     header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
@@ -84,6 +104,50 @@ def read_upload_names(wb: Workbook, kind: str) -> Tuple[List[Tuple[int, str]], O
         if not name:
             continue  # blank row/cell — skip silently, not an error
         out.append((i, name))
+    return out, None
+
+
+def read_project_rows(wb: Workbook) -> Tuple[List[Tuple[int, str, str]], Optional[str]]:
+    """Projects sheet — returns [(row_number, project_name, department), ...].
+    Department-scoped projects (Ganesh, 2026-08-28) — see
+    ProjectDepartment's docstring in app/models.py. Unlike read_task_rows()
+    below, the Department column here is genuinely OPTIONAL at the header
+    level: if it's missing from the sheet entirely, every row just gets
+    department="" (unrestricted) — a plain single-column Projects sheet
+    from before this feature, including read_upload_names()'s own shape
+    above, still uploads exactly as before. A row's Department cell can
+    also simply be left blank even when the column exists — same
+    "unrestricted" meaning for that one row. Same one-row-per-pair
+    convention Project-scoped Tasks already established for its own second
+    column: the same project name can appear on more than one row, once
+    per department it should be linked to, not a comma-separated cell."""
+    header = HEADERS["project"]
+    ws = wb.active
+    header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+    if header_row is None or all(c is None or str(c).strip() == "" for c in header_row):
+        return [], "The sheet is empty — no header row found."
+    name_idx = dept_idx = None
+    for idx, cell in enumerate(header_row):
+        label = str(cell).strip().lower() if cell is not None else ""
+        if label == header.lower():
+            name_idx = idx
+        elif label == PROJECT_DEPARTMENT_HEADER.lower():
+            dept_idx = idx
+    if name_idx is None:
+        return [], f"Expected a column called '{header}' — use the sample template."
+
+    out: List[Tuple[int, str, str]] = []
+    for i, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+        if row is None or name_idx >= len(row):
+            continue
+        name_val = row[name_idx]
+        name = str(name_val).strip() if name_val is not None else ""
+        if not name:
+            continue  # blank row/cell — skip silently, not an error
+        dept = ""
+        if dept_idx is not None and dept_idx < len(row) and row[dept_idx] is not None:
+            dept = str(row[dept_idx]).strip()
+        out.append((i, name, dept))
     return out, None
 
 
@@ -125,11 +189,16 @@ def process_upload(db, wb: Workbook, kind: str) -> dict:
     committed in one transaction; anything skipped is never silently
     dropped or duplicated — always reported with a reason. Returns
     {"added": int, "skipped": [{"row": int, "name": str, "reason": str}],
-    "header_error": str | None}.
+    "header_error": str | None}, plus, for kind="project" only,
+    "department_links_added": int (Ganesh, 2026-08-28 — see
+    _process_project_upload()'s docstring).
 
-    kind="project": unchanged — a name already on the list (case-
-    sensitive exact match, same rule the single "Add" box on the Lists
-    page uses) or repeated within the file is skipped.
+    kind="project": a name already on the list (case-sensitive exact
+    match, same rule the single "Add" box on the Lists page uses) or
+    repeated within the file with no Department cell is skipped;
+    "added" still means new PROJECT rows created, unchanged from before
+    this feature — see _process_project_upload() for how a Department
+    column (optional) is handled separately.
 
     kind="task" (Ganesh, 2026-08-27): each row is a (task, project) pair,
     not just a task name — see this module's docstring. "added" counts
@@ -142,36 +211,89 @@ def process_upload(db, wb: Workbook, kind: str) -> dict:
 
 
 def _process_project_upload(db, wb: Workbook) -> dict:
-    model = m.Project
-    rows, header_error = read_upload_names(wb, "project")
+    """Department-scoped projects (Ganesh, 2026-08-28) — rewritten to use
+    read_project_rows() (Project Name + optional Department) instead of
+    read_upload_names(), so this now does two independent things per row:
+    (1) create the project if its name isn't already known (from the DB or
+    an earlier row in this same file) — "added" counts ONLY this, same
+    meaning "N project(s) added" already had before this feature; (2) if
+    the row also has a Department value, link that project to it — counted
+    separately in "department_links_added" so the two numbers can't be
+    confused with each other in the flash message. This can add a
+    department link to a project that already existed before this upload,
+    not just to brand-new ones — deliberately, so retroactively scoping
+    the ~300 existing projects by department doesn't need a different
+    tool than the one used to add new ones."""
+    rows, header_error = read_project_rows(wb)
     if header_error:
-        return {"added": 0, "skipped": [], "header_error": header_error}
+        return {"added": 0, "department_links_added": 0, "skipped": [], "header_error": header_error}
     if len(rows) > MAX_ROWS:
         return {
-            "added": 0, "skipped": [],
+            "added": 0, "department_links_added": 0, "skipped": [],
             "header_error": f"Sheet has {len(rows)} data rows — max is {MAX_ROWS} per upload. Split it into batches.",
         }
 
-    existing_names = {name for (name,) in db.execute(select(model.name)).all()}
-    seen_in_file = set()
-    to_add: List[str] = []
+    project_id_by_name: Dict[str, int] = {
+        name: pid for pid, name in db.execute(select(m.Project.id, m.Project.name)).all()
+    }
+    existing_dept_links = {
+        (pid, dept) for pid, dept in db.execute(
+            select(m.ProjectDepartment.project_id, m.ProjectDepartment.department)
+        ).all()
+    }
+
+    new_names: List[str] = []  # ordered — projects to create this pass
+    seen_new_names = set()
+    seen_dept_pairs_in_file = set()
+    to_link: List[Tuple[str, str]] = []  # (project_name, department)
     skipped = []
 
-    for row_num, name in rows:
-        if name in existing_names:
-            skipped.append({"row": row_num, "name": name, "reason": "Already on the list — skipped, nothing changed"})
-            continue
-        if name in seen_in_file:
-            skipped.append({"row": row_num, "name": name, "reason": "Duplicate row in this file — only added once"})
-            continue
-        seen_in_file.add(name)
-        to_add.append(name)
+    for row_num, name, dept in rows:
+        already_in_db = name in project_id_by_name
+        already_in_file = name in seen_new_names
+        is_new_this_row = not already_in_db and not already_in_file
+        if is_new_this_row:
+            seen_new_names.add(name)
+            new_names.append(name)
 
-    for name in to_add:
-        db.add(model(name=name))
-    if to_add:
+        if not dept:
+            if not is_new_this_row:
+                reason = (
+                    "Already on the list — skipped, nothing changed" if already_in_db
+                    else "Duplicate row in this file — only added once"
+                )
+                skipped.append({"row": row_num, "name": name, "reason": reason})
+            # else: brand-new project, no department on this row — nothing
+            # more to report, it'll be created below
+            continue
+
+        pair = (name, dept)
+        if pair in seen_dept_pairs_in_file:
+            skipped.append({"row": row_num, "name": name, "reason": f"Duplicate row in this file — already linked to '{dept}'"})
+            continue
+        if already_in_db and (project_id_by_name[name], dept) in existing_dept_links:
+            skipped.append({"row": row_num, "name": name, "reason": f"Already linked to '{dept}' — skipped, nothing changed"})
+            continue
+        seen_dept_pairs_in_file.add(pair)
+        to_link.append(pair)
+
+    for name in new_names:
+        item = m.Project(name=name)
+        db.add(item)
+        db.flush()  # need item.id for the ProjectDepartment link below
+        project_id_by_name[name] = item.id
+
+    links_added = 0
+    for name, dept in to_link:
+        db.add(m.ProjectDepartment(project_id=project_id_by_name[name], department=dept, created_by="bulk upload"))
+        links_added += 1
+
+    if new_names or links_added:
         db.commit()
-    return {"added": len(to_add), "skipped": skipped, "header_error": None}
+    return {
+        "added": len(new_names), "department_links_added": links_added,
+        "skipped": skipped, "header_error": None,
+    }
 
 
 def _process_task_upload(db, wb: Workbook) -> dict:
@@ -245,23 +367,34 @@ def _process_task_upload(db, wb: Workbook) -> dict:
 
 
 def build_sample_workbook(kind: str, db=None) -> Workbook:
-    """db (Ganesh, 2026-08-27, task kind only) — real Project names for the
-    Projects reference sheet, same reasoning as _add_projects_reference_
-    sheet()'s docstring. Optional/unused for kind="project" (no reference
-    sheet needed there) — kept optional rather than required so nothing
-    upstream that already calls build_sample_workbook("project") without a
-    session breaks."""
+    """db (Ganesh, 2026-08-27, task kind; also project kind as of 2026-08-28
+    for department-scoped projects) — real Project names (task kind) or
+    real in-use department names (project kind) for each kind's own
+    reference sheet, same reasoning as _add_projects_reference_sheet()'s
+    docstring. Optional for both — kept optional rather than required so
+    nothing upstream that already calls build_sample_workbook() without a
+    session breaks; falls back to placeholder names when db is None."""
     if kind == "task":
         return _build_task_sample_workbook(db)
     header = HEADERS[kind]
     wb = Workbook()
     ws = wb.active
     ws.title = SHEET_TITLES[kind]
-    ws.append([header])
+    ws.append([header, PROJECT_DEPARTMENT_HEADER])
     for c in ws[1]:
         c.font = Font(bold=True)
-    ws.append(["Acme Corp."])
+    # Department-scoped projects (Ganesh, 2026-08-28) — two example rows
+    # for the SAME project, showing how to link one project to more than
+    # one department (one row per department, not a comma-separated
+    # cell), plus a third project with a blank Department cell showing
+    # the "unrestricted, usable by everyone" default.
+    ws.append(["Acme Corp.", "Sales"])
+    ws.append(["Acme Corp.", "Support"])
+    ws.append(["Bluepeak Consulting Inc.", ""])
     ws.column_dimensions["A"].width = 42
+    ws.column_dimensions["B"].width = 24
+
+    _add_departments_reference_sheet(wb, db)
 
     info = wb.create_sheet("Instructions")
     info.append(["Column", "Notes"])
@@ -269,9 +402,14 @@ def build_sample_workbook(kind: str, db=None) -> Workbook:
         c.font = Font(bold=True)
     for row in [
         (header, "One project/employer name per row."),
+        (PROJECT_DEPARTMENT_HEADER, "Optional. Leave blank for a project every department can use."),
+        ("", ""),
+        ("To restrict a project to more than one department, list it on", ""),
+        ("more than one row — once per department (see the 'Acme Corp.' example).", ""),
         ("", ""),
         ("Add-only — this sheet never renames or removes a value.", ""),
-        ("A name already on the list is skipped, not duplicated.", ""),
+        ("A project name already on the list is skipped (unless this file", ""),
+        ("adds a NEW department link to it — that part still applies).", ""),
         ("To deactivate a value, use the Deactivate button on the", ""),
         ("Projects & Tasks page instead — it's not done via this sheet.", ""),
     ]:
@@ -285,6 +423,30 @@ def _existing_project_names(db) -> List[str]:
     if db is None:
         return ["Acme Corp.", "Bluepeak Consulting Inc."]  # sample-only placeholders, no DB yet
     return [n for (n,) in db.execute(select(m.Project.name).where(m.Project.active.is_(True)).order_by(m.Project.name)).all()]
+
+
+def _existing_department_names(db) -> List[str]:
+    if db is None:
+        return ["Sales", "Support"]  # sample-only placeholders, no DB yet
+    return [d for d in reports.departments_list(db) if d != "—"]
+
+
+def _add_departments_reference_sheet(wb: Workbook, db) -> None:
+    """Same idea as _add_projects_reference_sheet() below, for the
+    Projects sheet's own optional Department column (Ganesh, 2026-08-28)
+    — department has no canonical table anywhere in this app (see
+    reports.departments_list()), so this is just every department name
+    currently in use by an active employee, for spelling reference only."""
+    names = _existing_department_names(db)
+    ref = wb.create_sheet("Departments")
+    ref.append(["Departments currently in use — for reference only, not read by the upload"])
+    ref[1][0].font = Font(bold=True)
+    ref.append([PROJECT_DEPARTMENT_HEADER])
+    for c in ref[2]:
+        c.font = Font(bold=True)
+    for n in names:
+        ref.append([n])
+    ref.column_dimensions["A"].width = 46
 
 
 def _add_projects_reference_sheet(wb: Workbook, db) -> None:
@@ -348,6 +510,14 @@ def build_existing_workbook(db, kind: str) -> Workbook:
     """Every current value (active and inactive) for reference, so it's
     easy to see what's already on the list before uploading more.
 
+    kind="project" (department-scoped projects, Ganesh, 2026-08-28): shows
+    one row per existing project+department link, same shape the upload
+    itself expects — a project with no department links at all
+    (unrestricted, usable by every department — see ProjectDepartment's
+    docstring in app/models.py) gets one row with a blank Department cell
+    rather than being omitted, same "still visible even with nothing to
+    show" convention kind="task" below already established.
+
     kind="task" (Ganesh, 2026-08-27): shows one row per existing
     task+project link, same shape the upload itself expects — a task with
     no links at all (unrestricted, usable under every project — see
@@ -355,22 +525,29 @@ def build_existing_workbook(db, kind: str) -> Workbook:
     Project Name rather than being omitted, so it's visible that the task
     exists even though it has nothing to cross-check against yet."""
     if kind == "project":
-        model = m.Project
         header = HEADERS["project"]
-        names = [
-            n for (n,) in db.execute(
-                select(model.name).where(model.active.is_(True)).order_by(model.name)
-            ).all()
-        ]
         wb = Workbook()
         ws = wb.active
         ws.title = SHEET_TITLES["project"]
-        ws.append([header])
+        ws.append([header, PROJECT_DEPARTMENT_HEADER])
         for c in ws[1]:
             c.font = Font(bold=True)
-        for n in names:
-            ws.append([n])
+        project_rows = list(
+            db.execute(select(m.Project.id, m.Project.name).where(m.Project.active.is_(True)).order_by(m.Project.name)).all()
+        )
+        dept_links: Dict[int, List[str]] = {}
+        for pid, dept in db.execute(select(m.ProjectDepartment.project_id, m.ProjectDepartment.department)).all():
+            dept_links.setdefault(pid, []).append(dept)
+        for pid, pname in project_rows:
+            depts = dept_links.get(pid)
+            if not depts:
+                ws.append([pname, ""])  # unrestricted — no links yet
+            else:
+                for dept in sorted(depts):
+                    ws.append([pname, dept])
         ws.column_dimensions["A"].width = 42
+        ws.column_dimensions["B"].width = 24
+        _add_departments_reference_sheet(wb, db)
         return wb
 
     wb = Workbook()

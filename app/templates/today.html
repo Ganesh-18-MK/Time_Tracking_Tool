@@ -220,8 +220,22 @@
 </div>
 
 {% if sub and sub.locked %}
-<div class="lockbanner">✔ Day submitted {{ sub.submitted_at|mdy_dt }} UTC —
-  total {{ sub.total_minutes|hm }}. Locked: ask an admin to unlock for changes.</div>
+<div class="lockbanner">
+  <div>✔ Day submitted {{ sub.submitted_at|mdy_dt }} UTC —
+    total {{ sub.total_minutes|hm }}. Locked: ask an admin to unlock for changes.</div>
+  {% if pending_unlock_request %}
+  <div class="small" style="margin-top:6px">⏳ Unlock requested {{ pending_unlock_request.created_at|mdy_dt }} UTC — waiting on an admin.</div>
+  {% else %}
+  <details style="margin-top:6px">
+    <summary class="small" style="cursor:pointer">Request unlock</summary>
+    <form method="post" action="/unlock-request" class="formrow" style="margin-top:6px">
+      <input type="hidden" name="date" value="{{ day.isoformat() }}">
+      <div style="flex:1 1 240px"><input name="note" placeholder="Optional — why you need it unlocked" style="width:100%"></div>
+      <div><button class="small">Send request</button></div>
+    </form>
+  </details>
+  {% endif %}
+</div>
 {% elif sub and not sub.locked %}
 <div class="lockbanner" style="background:var(--warn-bg);color:var(--warn)">⚠ Day was unlocked by an admin —
   make your corrections and <strong>resubmit</strong> below.</div>
@@ -252,6 +266,10 @@
       <input type="hidden" name="task_type_id">
       <div class="combo-menu" hidden></div>
     </div>
+    <div id="client-plan" hidden style="flex:1 1 200px">
+      <label>Client</label>
+      <input type="text" name="client" placeholder="Individual name, or Company - Beneficiary" style="width:100%">
+    </div>
     <div style="flex:1 1 240px">
       <label>Plan</label>
       <textarea name="details" rows="1" style="width:100%; resize:vertical" placeholder="e.g. Need to work on the new leave management system" required></textarea>
@@ -273,6 +291,7 @@
         {% elif p.status == 'paused' %}<span class="badge b-plan-paused">paused</span>
         {% else %}<span class="badge b-plan-done">done</span>{% endif %}
       </div>
+      {% if p.client %}<div class="small muted">Client: {{ p.client }}</div>{% endif %}
       <div class="small" style="white-space:pre-wrap">{{ p.details }}{%- if p.status in ('planned', 'paused') -%}
         <details class="details-edit" style="display:inline-block">
           <summary class="small muted">✎ edit</summary>
@@ -331,6 +350,7 @@
         {% elif p.status == 'paused' %}<span class="badge b-plan-paused">paused</span>
         {% else %}<span class="badge b-plan-done">done</span>{% endif %}
       </div>
+      {% if p.client %}<div class="small muted">Client: {{ p.client }}</div>{% endif %}
       <div class="small" style="white-space:pre-wrap">{{ p.details }}</div>
     </div>
   </div>
@@ -347,7 +367,7 @@
   {% if active_timer %}
   <div class="totalbar">
     <span class="big" id="tasktimer">00:00</span>
-    <span class="muted">{{ active_timer.project.name }} · {{ active_timer.task_type.name }} — started {{ active_timer.start_minute|clock }}</span>
+    <span class="muted">{{ active_timer.project.name }} · {{ active_timer.task_type.name }}{% if active_timer.client %} · Client: {{ active_timer.client }}{% endif %} — started {{ active_timer.start_minute|clock }}</span>
     {% if active_timer.planned_task_id %}
     {# This timer belongs to a running plan (Ganesh, 2026-08-22) — Pause/
        Stop here post straight to the same /plan/{id}/pause|stop routes
@@ -407,6 +427,10 @@
       <input type="hidden" name="task_type_id">
       <div class="combo-menu" hidden></div>
     </div>
+    <div id="client-timer" hidden style="flex:1 1 200px">
+      <label>Client</label>
+      <input type="text" name="client" placeholder="Individual name, or Company - Beneficiary" style="width:100%">
+    </div>
     <div style="flex:1 1 200px"><label>Details (optional now, needed by Stop)</label><textarea name="details" rows="1" style="width:100%; resize:vertical"></textarea></div>
     <div><button>Start Timer</button></div>
   </form>
@@ -437,6 +461,10 @@
       <input type="text" class="combo-input" autocomplete="off" placeholder="Type to search…" required>
       <input type="hidden" name="task_type_id">
       <div class="combo-menu" hidden></div>
+    </div>
+    <div id="client-addrow" hidden style="flex:1 1 200px">
+      <label>Client</label>
+      <input type="text" name="client" placeholder="Individual name, or Company - Beneficiary" style="width:100%" value="{{ reopen_client or '' }}">
     </div>
     <div style="flex:1 1 220px">
       <label>Details (min 5 chars)</label>
@@ -485,7 +513,7 @@
         </td>
         <td class="nowrap">{{ e.end_minute|clock }}</td>
         <td class="nowrap"><strong>{{ e.duration_minutes|hm }}</strong></td>
-        <td>{{ e.project.name }}</td>
+        <td>{{ e.project.name }}{% if e.client %}<div class="small muted">Client: {{ e.client }}</div>{% endif %}</td>
         <td>{{ e.task_type.name }}</td>
         <td style="white-space:pre-wrap">{{ e.details }}{%- if e.id and day == today and not day_locked -%}
           <details class="details-edit">
@@ -569,9 +597,14 @@
 // validation.task_allowed_for_project(), which enforces the same rule
 // server-side). All 3 pairs on this page (Add Row, Auto time capture
 // timer, Plan for the Day) get the identical treatment.
+// Case Type / Client (Ganesh, 2026-08-28) — each pair also gets its
+// wrapper element + any sticky-on-failure re-show value, so
+// initProjectTaskCombo can reveal Client the moment a case-type project
+// is picked (see combo.js and Project.is_case_type's docstring).
 initProjectTaskCombo(
   document.getElementById('combo-project'), document.getElementById('combo-task'),
-  {{ projects|tojson }}, {{ tasks|tojson }}, {{ reopen_project_id|tojson }}, {{ reopen_task_type_id|tojson }}
+  {{ projects|tojson }}, {{ tasks|tojson }}, {{ reopen_project_id|tojson }}, {{ reopen_task_type_id|tojson }},
+  document.getElementById('client-addrow'), {{ reopen_client|tojson }}
 );
 {% if not active_timer %}
 // only present when no timer is currently running (see the Start Timer
@@ -579,7 +612,8 @@ initProjectTaskCombo(
 // instead, whenever a timer is already active)
 initProjectTaskCombo(
   document.getElementById('combo-timer-project'), document.getElementById('combo-timer-task'),
-  {{ projects|tojson }}, {{ tasks|tojson }}
+  {{ projects|tojson }}, {{ tasks|tojson }}, null, null,
+  document.getElementById('client-timer')
 );
 {% endif %}
 {% if day == today %}
@@ -588,7 +622,8 @@ initProjectTaskCombo(
 // guard as combo-timer-* above.
 initProjectTaskCombo(
   document.getElementById('combo-plan-project'), document.getElementById('combo-plan-task'),
-  {{ projects|tojson }}, {{ tasks|tojson }}
+  {{ projects|tojson }}, {{ tasks|tojson }}, null, null,
+  document.getElementById('client-plan')
 );
 {% endif %}
 
