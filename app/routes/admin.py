@@ -14,6 +14,15 @@ from sqlalchemy.orm import Session
 from app import bulk_upload, compensation, engine, holiday_bulk_upload, leave_bulk_upload, lists_bulk_upload, models as m, reports
 from app.auth import Forbidden, admin_department_scope, led_by, require_admin, require_super_admin
 from app.db import get_db
+# TK-04 (Ganesh, 2026-08-28) — _client_required_error() is the one rule
+# that decides whether a Case Type project needs its Client field filled
+# in; imported rather than duplicated so the admin-side Assign-a-task form
+# (admin_add_plan/admin_edit_plan below) can't quietly drift from the
+# employee-side rule add_plan()/start_task_timer()/add_entry() already
+# enforce. No circular import risk — app/routes/employee.py never imports
+# from this module.
+from app.routes.employee import _client_required_error
+from app.validation import task_allowed_for_project
 from app.templating import (
     HOLIDAY_MANAGEMENT_ENABLED,
     LEAVE_MANAGEMENT_V2_ENABLED,
@@ -25,6 +34,7 @@ from app.util import (
     FormError,
     ROLE_EMPLOYEE,
     audit,
+    capitalize_first,
     fmt_hm,
     next_employee_code,
     overtime_row_flags,
@@ -365,12 +375,28 @@ def person(
     surplus_used_by_date = engine.surplus_minutes_used_by_date(db, emp.id)
     comp = compensation.monthly_summary(db, emp, year, month, today)
     (py, pm), (ny, nm) = prev_next_month(year, month)
+    # TK-04 (Ganesh, 2026-08-28) — "Assigned tasks" card: the Assign form's
+    # Project/Task combo data, plus every still-Planned row for this
+    # employee (any date, not scoped to the month being viewed — an
+    # assignment could be for a future date) so the admin can edit/remove
+    # one without hunting through the Task log below.
+    plan_project_items, plan_task_items = _plan_combo_items(db)
+    assigned_plans = list(
+        db.execute(
+            select(m.PlannedTask)
+            .where(m.PlannedTask.employee_id == emp.id, m.PlannedTask.status == m.PLAN_PLANNED)
+            .order_by(m.PlannedTask.date)
+        ).scalars()
+    )
     return render(
         request,
         "admin/person.html",
         {
             "user": admin,
             "emp": emp,
+            "plan_project_items": plan_project_items,
+            "plan_task_items": plan_task_items,
+            "assigned_plans": assigned_plans,
             "statuses": statuses,
             "pending_unlocks_by_date": pending_unlocks_by_date,
             "ledger": ledger,
@@ -453,6 +479,211 @@ def unlock_day(
         )
         flash(request, f"Unlocked {date} — the employee can now edit and resubmit.", "ok")
     return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+
+
+def _plan_combo_items(db: Session):
+    """Plain {id, name, ...} dicts for the "Assign a task" combo on Person
+    Detail (TK-04, Ganesh, 2026-08-28) — same shape combo.js's
+    initProjectTaskCombo already expects everywhere else it's used (Today
+    page, Lists page). No "assigned to you" star-sorting the way
+    employee.py's own _combo_items() does — that's an employee-specific
+    convenience about picking your OWN work, not relevant to an admin
+    picking on someone else's behalf. Task items still carry project_ids
+    so the widget filters the Task list down to whatever's valid for the
+    selected Project, same as everywhere else (see ProjectTask's docstring
+    in app/models.py) — task_allowed_for_project() is still the real
+    server-side gate in admin_add_plan/admin_edit_plan below, this is only
+    the UI convenience."""
+    projects = list(
+        db.execute(
+            select(m.Project).where(m.Project.active.is_(True), m.Project.status == m.LIST_APPROVED).order_by(m.Project.name)
+        ).scalars()
+    )
+    tasks = list(
+        db.execute(
+            select(m.TaskType).where(m.TaskType.active.is_(True), m.TaskType.status == m.LIST_APPROVED).order_by(m.TaskType.name)
+        ).scalars()
+    )
+    task_project_links: Dict[int, list] = {}
+    for pid, tid in db.execute(select(m.ProjectTask.project_id, m.ProjectTask.task_type_id)).all():
+        task_project_links.setdefault(tid, []).append(pid)
+    project_items = [{"id": p.id, "name": p.name, "is_case_type": bool(p.is_case_type)} for p in projects]
+    task_items = [{"id": t.id, "name": t.name, "project_ids": task_project_links.get(t.id)} for t in tasks]
+    return project_items, task_items
+
+
+@router.post("/person/{emp_id}/plan/add")
+def admin_add_plan(
+    emp_id: int,
+    request: Request,
+    project_id: int = Form(...),
+    task_type_id: int = Form(...),
+    date: str = Form(...),
+    details: str = Form(""),
+    client: str = Form(""),
+    ym: str = Form(""),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """TK-04 — "Admin creates a project/task in an employee log." Admin/
+    team lead picks a Project, Task, date and an optional note; it's added
+    as a PLAN_PLANNED row that sits in the employee's log until they Start
+    it — same Start/Pause/Resume/Stop controls their own self-planned rows
+    already use, no employee-side route changes needed (see PlannedTask's
+    docstring). Gated the same require_admin/admin_department_scope tier
+    Person Detail itself already uses — "assign Projects/Tasks to team
+    members" is already one of the 5 capabilities a department admin
+    keeps (see the department-scoped-admin CLAUDE.md bullet), and this is
+    that same capability applied to a specific unit of work rather than a
+    standing ProjectAssignment/TaskAssignment row.
+
+    Unlike add_plan()'s own note requirement ("Say what you plan to do"),
+    the note here is genuinely optional per TK-04's acceptance criteria —
+    left blank is fine.
+
+    task_allowed_for_project() (data integrity — which tasks exist under
+    which project) IS enforced, same as add_plan(). Department scoping
+    (validation.project_allowed_for_department) is deliberately NOT
+    enforced here — same acting_admin precedent validate_entry() already
+    uses elsewhere in this app: an admin deliberately assigning work on
+    someone's behalf isn't the employee whose department that scoping
+    exists to restrict."""
+    led = admin_department_scope(admin)
+    emp = db.get(m.Employee, emp_id)
+    if emp is None or (led is not None and (emp.department or "—") != led):
+        raise Forbidden()
+    try:
+        d = parse_date_field(date)
+    except FormError as e:
+        flash(request, e.message, "err")
+        return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+
+    project = db.get(m.Project, project_id)
+    task = db.get(m.TaskType, task_type_id)
+    if project is None or not project.active or task is None or not task.active:
+        flash(request, "Choose a Project and Task.", "err")
+        return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+    if not task_allowed_for_project(db, project_id, task_type_id):
+        flash(request, f"'{task.name}' isn't set up for '{project.name}' — link them under Lists first.", "err")
+        return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+    client_err = _client_required_error(project, client)
+    if client_err:
+        flash(request, client_err, "err")
+        return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+    sub = db.execute(
+        select(m.DaySubmission).where(m.DaySubmission.employee_id == emp_id, m.DaySubmission.date == d)
+    ).scalar_one_or_none()
+    if sub is not None and sub.locked:
+        flash(request, f"{d.strftime('%m/%d/%Y')} is already submitted and locked.", "err")
+        return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+
+    plan = m.PlannedTask(
+        employee_id=emp_id, date=d, project_id=project_id, task_type_id=task_type_id,
+        details=capitalize_first(details.strip()), client=client.strip(), status=m.PLAN_PLANNED,
+        created_by_employee_id=admin.id,
+    )
+    db.add(plan)
+    db.commit()
+    audit(
+        db, admin.name, "assign_plan", "PlannedTask", str(plan.id),
+        {"employee_id": emp_id, "date": d.isoformat(), "project": project.name, "task": task.name},
+    )
+    flash(request, f"Assigned to {emp.name}'s log for {d.strftime('%m/%d/%Y')}.", "ok")
+    return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+
+
+@router.post("/plan/{plan_id}/edit")
+def admin_edit_plan(
+    plan_id: int,
+    request: Request,
+    project_id: int = Form(...),
+    task_type_id: int = Form(...),
+    date: str = Form(...),
+    details: str = Form(""),
+    client: str = Form(""),
+    ym: str = Form(""),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """TK-04 — "Admin can edit ... the entry while status is Planned."
+    Unlike the employee's own edit_plan() (plan text only), the admin can
+    change Project/Task/Date/Note/Client too — a wrong pick when assigning
+    shouldn't require delete-and-re-add. Resets assigned_notified_at back
+    to None so the employee sees the assignment banner again for the
+    updated version — same "notify again on a meaningful change" instinct
+    _pending_edit_notices()'s own edited_at/employee_notified_at pair
+    already has for suggestion renames, just simpler here since there's
+    only ever one notice per plan rather than a rename history."""
+    plan = db.get(m.PlannedTask, plan_id)
+    if plan is None:
+        raise HTTPException(404)
+    led = admin_department_scope(admin)
+    emp = db.get(m.Employee, plan.employee_id)
+    if emp is None or (led is not None and (emp.department or "—") != led):
+        raise Forbidden()
+    if plan.status != m.PLAN_PLANNED:
+        flash(request, "Only a not-yet-started plan can be edited.", "err")
+        return RedirectResponse(f"/admin/person/{plan.employee_id}?ym={ym}", status_code=303)
+    try:
+        d = parse_date_field(date)
+    except FormError as e:
+        flash(request, e.message, "err")
+        return RedirectResponse(f"/admin/person/{plan.employee_id}?ym={ym}", status_code=303)
+    project = db.get(m.Project, project_id)
+    task = db.get(m.TaskType, task_type_id)
+    if project is None or not project.active or task is None or not task.active:
+        flash(request, "Choose a Project and Task.", "err")
+        return RedirectResponse(f"/admin/person/{plan.employee_id}?ym={ym}", status_code=303)
+    if not task_allowed_for_project(db, project_id, task_type_id):
+        flash(request, f"'{task.name}' isn't set up for '{project.name}' — link them under Lists first.", "err")
+        return RedirectResponse(f"/admin/person/{plan.employee_id}?ym={ym}", status_code=303)
+    client_err = _client_required_error(project, client)
+    if client_err:
+        flash(request, client_err, "err")
+        return RedirectResponse(f"/admin/person/{plan.employee_id}?ym={ym}", status_code=303)
+
+    plan.project_id = project_id
+    plan.task_type_id = task_type_id
+    plan.date = d
+    plan.details = capitalize_first(details.strip())
+    plan.client = client.strip()
+    if plan.created_by_employee_id is not None and plan.created_by_employee_id != plan.employee_id:
+        plan.assigned_notified_at = None
+    db.commit()
+    audit(db, admin.name, "edit_assigned_plan", "PlannedTask", str(plan.id), {})
+    flash(request, "Updated.", "ok")
+    return RedirectResponse(f"/admin/person/{plan.employee_id}?ym={ym}", status_code=303)
+
+
+@router.post("/plan/{plan_id}/delete")
+def admin_delete_plan(
+    plan_id: int,
+    request: Request,
+    ym: str = Form(""),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """TK-04 — "Admin can ... remove the entry while status is Planned."
+    Works on any still-Planned row in the admin's scope, not just ones
+    they personally created — same general oversight precedent Person
+    Detail's other write actions (Override, Compensation links) already
+    have over an employee's own data."""
+    plan = db.get(m.PlannedTask, plan_id)
+    if plan is None:
+        raise HTTPException(404)
+    led = admin_department_scope(admin)
+    emp = db.get(m.Employee, plan.employee_id)
+    if emp is None or (led is not None and (emp.department or "—") != led):
+        raise Forbidden()
+    employee_id = plan.employee_id
+    if plan.status != m.PLAN_PLANNED:
+        flash(request, "Only a not-yet-started plan can be removed.", "err")
+        return RedirectResponse(f"/admin/person/{employee_id}?ym={ym}", status_code=303)
+    db.delete(plan)
+    db.commit()
+    audit(db, admin.name, "delete_assigned_plan", "PlannedTask", str(plan_id), {})
+    flash(request, "Removed.", "ok")
+    return RedirectResponse(f"/admin/person/{employee_id}?ym={ym}", status_code=303)
 
 
 @router.post("/unlock-request/{req_id}/reject")

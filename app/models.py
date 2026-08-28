@@ -780,10 +780,20 @@ class PlannedTask(Base):
       - done: explicitly stopped for good. Read-only from here.
 
     created_by_employee_id (nullable) distinguishes a self-planned row from
-    one an admin/team lead planned for someone else — not used by any
-    route yet (no lead-side "plan a task for someone" screen exists yet),
-    but included now so that screen, if built later, is additive rather
-    than a schema change on top of a schema change."""
+    one an admin/team lead planned for someone else. Was added ahead of
+    time with no route using it yet; TK-04 (Ganesh, 2026-08-28 — "Admin
+    creates a project/task in an employee log") is that screen: Person
+    Detail's new "Assigned tasks" card (`app/routes/admin.py`'s
+    `admin_add_plan()`/`admin_edit_plan()`/`admin_delete_plan()`) sets this
+    to the ADMIN's id, which is what the employee-facing "assigned by"
+    badge (today.html), the assignment-notification banner
+    (`assigned_notified_at` below), and `delete_plan()`'s "an employee
+    can't delete an assigned entry" rule all key off — `created_by_employee_id
+    != employee_id` means assigned; `== employee_id` (the existing
+    self-planned case) means it isn't. No route change was needed for the
+    employee to actually WORK an assigned plan — start_plan()/pause_plan()/
+    stop_plan() already only ever check `plan.employee_id`, never who
+    created it, so Start/Pause/Resume/Stop behave identically either way."""
 
     __tablename__ = "planned_tasks"
 
@@ -821,8 +831,25 @@ class PlannedTask(Base):
     # column exists purely to stop a day getting resubmitted after an
     # admin unlock from copying the same unfinished plan to tomorrow twice.
     carried_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    # TK-04 (Ganesh, 2026-08-28) — set once the "an admin assigned you a
+    # task" banner (today.html, via _pending_plan_assignment_notices() in
+    # app/routes/employee.py) has been shown/dismissed. Same "notify once,
+    # dismiss marks just that one" pattern Project/TaskType's
+    # employee_notified_at already established for the "an admin rewrote
+    # your suggestion" banner. NULL on every plan created before this
+    # column existed and on every ordinary self-planned row (nothing ever
+    # sets it for those, since _pending_plan_assignment_notices() only
+    # looks at rows where created_by_employee_id != employee_id in the
+    # first place) — never backfilled, same as every other NULL-is-
+    # "doesn't apply"/"not yet" column in this app.
+    assigned_notified_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
 
     employee = relationship("Employee", foreign_keys=[employee_id])
+    # TK-04 — who created this plan, when it wasn't the employee themself.
+    # A second relationship to the same Employee table needs its own
+    # foreign_keys= disambiguation, same as `employee` above already needs
+    # for employee_id vs this column both pointing at employees.id.
+    assigned_by = relationship("Employee", foreign_keys=[created_by_employee_id])
     project = relationship("Project")
     task_type = relationship("TaskType")
 

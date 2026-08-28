@@ -98,6 +98,25 @@
 {% endfor %}
 {% endif %}
 
+{% if plan_assignment_notices %}
+{# TK-04 (Ganesh, 2026-08-28) — "Employee is notified when an entry is
+   assigned to them." Same card/dismiss pattern as edit_notices above; see
+   _pending_plan_assignment_notices()/dismiss_plan_assignment_notice() in
+   app/routes/employee.py. #}
+{% for p in plan_assignment_notices %}
+<div class="card" style="border-left:3px solid var(--accent);margin-bottom:10px">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+    <div class="small">
+      <strong>{{ p.assigned_by.name if p.assigned_by else 'An admin' }}</strong> assigned you a task for {{ p.date|mdy }}: {{ p.project.name }} · {{ p.task_type.name }}{% if p.details %} — "{{ p.details }}"{% endif %}.
+    </div>
+    <form method="post" action="/plan/{{ p.id }}/assignment-notice/dismiss" class="inline">
+      <button class="small secondary">Got it</button>
+    </form>
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+
 {% if day == today and active_punch %}
 <span id="overtimeBanner" class="gapflag" style="display:{{ '' if punch_remaining < 0 else 'none' }}">
   ⏱ Target reached — now tracking overtime.
@@ -290,6 +309,10 @@
         {% elif p.status == 'running' %}<span class="badge b-plan-in-progress">in progress</span>
         {% elif p.status == 'paused' %}<span class="badge b-plan-paused">paused</span>
         {% else %}<span class="badge b-plan-done">done</span>{% endif %}
+        {% if p.created_by_employee_id and p.created_by_employee_id != user.id %}
+        {# TK-04 (Ganesh, 2026-08-28) — "a marker showing it was assigned." #}
+        <span class="badge b-pending" title="Assigned by {{ p.assigned_by.name if p.assigned_by else 'an admin' }}">assigned{% if p.assigned_by %} · {{ p.assigned_by.name }}{% endif %}</span>
+        {% endif %}
       </div>
       {% if p.client %}<div class="small muted">Client: {{ p.client }}</div>{% endif %}
       <div class="small" style="white-space:pre-wrap">{{ p.details }}{%- if p.status in ('planned', 'paused') -%}
@@ -319,9 +342,17 @@
       </form>
       {% endif %}
       {% if p.status == 'planned' %}
+      {% if p.created_by_employee_id and p.created_by_employee_id != user.id %}
+      {# TK-04 — "Employee cannot delete an assigned entry" (see
+         delete_plan()'s own check in app/routes/employee.py, which blocks
+         this server-side regardless — hidden here too so there's no
+         dead-end button that just flashes an error on click). #}
+      <span class="small muted" title="Assigned by {{ p.assigned_by.name if p.assigned_by else 'an admin' }} — ask them to remove it">can't remove</span>
+      {% else %}
       <form method="post" action="/plan/{{ p.id }}/delete" class="inline" onsubmit="return confirm('Remove this plan?')">
         <button class="small secondary">✕</button>
       </form>
+      {% endif %}
       {% endif %}
     </div>
   </div>
@@ -349,6 +380,10 @@
         {% elif p.status == 'running' %}<span class="badge b-plan-in-progress">in progress</span>
         {% elif p.status == 'paused' %}<span class="badge b-plan-paused">paused</span>
         {% else %}<span class="badge b-plan-done">done</span>{% endif %}
+        {% if p.created_by_employee_id and p.created_by_employee_id != user.id %}
+        {# TK-04 (Ganesh, 2026-08-28) — "a marker showing it was assigned." #}
+        <span class="badge b-pending" title="Assigned by {{ p.assigned_by.name if p.assigned_by else 'an admin' }}">assigned{% if p.assigned_by %} · {{ p.assigned_by.name }}{% endif %}</span>
+        {% endif %}
       </div>
       {% if p.client %}<div class="small muted">Client: {{ p.client }}</div>{% endif %}
       <div class="small" style="white-space:pre-wrap">{{ p.details }}</div>
@@ -404,10 +439,42 @@
     // timezone.
     const startEpoch = new Date("{{ active_timer.started_at.isoformat() }}Z").getTime();
     const el = document.getElementById('tasktimer');
+    // Max-row auto-split (Ganesh, 2026-08-28) — the actual split (log the
+    // completed cap-length chunk, advance the timer forward) happens
+    // server-side on next page load (see _auto_split_timer_if_over_cap in
+    // app/routes/employee.py); this just makes "next page load" happen on
+    // its own for a tab left open past the cap, instead of the employee
+    // having to notice a stuck timer and click something themselves.
+    //
+    // Reload-loop bugfix (Ganesh, 2026-08-28, same day) — a timer that
+    // crosses midnight has a `date` that no longer matches "today", which
+    // _auto_split_timer_if_over_cap deliberately leaves alone (a separate,
+    // not-yet-handled edge case — see its own docstring), so the server
+    // can never shrink it back under the cap. The original version here
+    // reloaded once per PAGE LOAD (reloadedForSplit is reset by the reload
+    // itself), so a timer the server can't fix just reloaded again the
+    // instant the new page rendered — an infinite reload loop that never
+    // let the rest of the page finish rendering (reported live: page stuck
+    // "loading", task log/Add Row missing below Auto time capture).
+    // alreadyOverCapOnLoad is computed once, before the interval starts:
+    // if the timer is ALREADY over cap the moment this page loads, a
+    // reload clearly won't help (the server just tried and couldn't), so
+    // this tab stops trying — same as before this feature existed, just
+    // showing the real (if large) elapsed number instead of looping. The
+    // reload still fires normally for the common case: a timer that was
+    // under cap when this page loaded and organically crosses it while
+    // the tab stays open.
+    const capSec = {{ max_row_minutes }} * 60;
+    const alreadyOverCapOnLoad = Math.max(0, Math.floor((Date.now() - startEpoch) / 1000)) >= capSec;
+    let reloadedForSplit = false;
     function tick() {
       const elapsedSec = Math.max(0, Math.floor((Date.now() - startEpoch) / 1000));
       const h = Math.floor(elapsedSec / 3600), mi = Math.floor((elapsedSec % 3600) / 60), s = elapsedSec % 60;
       el.textContent = (h ? h + ':' : '') + String(mi).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+      if (!alreadyOverCapOnLoad && elapsedSec >= capSec && !reloadedForSplit) {
+        reloadedForSplit = true;
+        location.reload();
+      }
     }
     tick();
     setInterval(tick, 1000);
@@ -559,6 +626,13 @@
     </form>
     {% endif %}
   </div>
+  {% if not day_locked and entries %}
+  {# Auto-count logged hours (Ganesh, 2026-08-28) — logged time already
+     counts toward Complete/Partial the moment it's saved, same as a
+     submitted day; Submit Day only closes editing (an admin unlock is
+     needed after that) — it no longer determines whether hours count. #}
+  <p class="small muted" style="margin:2px 0 0">Already counted toward today, whether or not you submit — Submit Day only locks it from further edits.</p>
+  {% endif %}
 </div>
 
 {% if not day_locked %}

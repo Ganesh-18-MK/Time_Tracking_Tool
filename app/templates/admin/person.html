@@ -236,6 +236,96 @@
 </div>
 
 <div class="card">
+  <h2>Assigned tasks{% if assigned_plans %} ({{ assigned_plans|length }}){% endif %}</h2>
+  <!-- TK-04 (Ganesh, 2026-08-28) — an admin/team lead can drop a Project+Task
+       into this employee's plan ahead of time; it shows on their Today page
+       as status Planned with an "assigned" badge and they run it with the
+       same Start/Pause/Resume/Stop controls their own plans use. Reuses
+       PlannedTask.created_by_employee_id (already on the model, unused until
+       now) as the "who assigned it" marker — differs from employee_id only
+       for an assigned row. Edit/remove here only ever touch a still-Planned
+       row (admin_edit_plan/admin_delete_plan 403 once it's running/done),
+       matching "Admin can edit or remove the entry while status is Planned."
+       Any admin in scope can edit/remove ANY planned row here, not just ones
+       they personally assigned — same as this page's other admin actions,
+       not restricted further since the ticket didn't ask for that. -->
+  {% if assigned_plans %}
+  <table>
+    <thead><tr><th>Date</th><th>Project</th><th>Task</th><th>Note</th><th>By</th><th></th></tr></thead>
+    <tbody>
+      {% for p in assigned_plans %}
+      <tr>
+        <td class="nowrap">{{ p.date|mdy }}</td>
+        <td>{{ p.project.name }}{% if p.client %}<div class="small muted">Client: {{ p.client }}</div>{% endif %}</td>
+        <td>{{ p.task_type.name }}</td>
+        <td class="small" style="white-space:pre-wrap">{{ p.details }}</td>
+        <td class="small muted">{{ p.assigned_by.name if p.assigned_by else '—' }}</td>
+        <td class="right">
+          <details class="details-edit inline">
+            <summary class="small muted">✎ edit</summary>
+            <form method="post" action="/admin/plan/{{ p.id }}/edit" class="formrow" style="margin-top:6px">
+              <input type="hidden" name="ym" value="{{ ym }}">
+              <div>
+                <label>Project</label>
+                <select name="project_id" required>
+                  {% for pi in plan_project_items %}
+                  <option value="{{ pi.id }}" {{ 'selected' if pi.id == p.project_id }}>{{ pi.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label>Task</label>
+                <select name="task_type_id" required>
+                  {% for ti in plan_task_items %}
+                  <option value="{{ ti.id }}" {{ 'selected' if ti.id == p.task_type_id }}>{{ ti.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div><label>Date</label><input type="date" name="date" value="{{ p.date.isoformat() }}" required></div>
+              <div><label>Client</label><input name="client" value="{{ p.client }}"></div>
+              <div style="flex:1 1 200px"><label>Note</label><input name="details" value="{{ p.details }}" style="width:100%"></div>
+              <div><button class="small">Save</button></div>
+            </form>
+          </details>
+          <form method="post" action="/admin/plan/{{ p.id }}/delete" class="inline" onsubmit="return confirm('Remove this assigned task?')">
+            <input type="hidden" name="ym" value="{{ ym }}">
+            <button class="small secondary">✕</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted small">Nothing currently assigned and not yet started.</p>
+  {% endif %}
+
+  <h3>Assign a new task</h3>
+  <form method="post" action="/admin/person/{{ emp.id }}/plan/add" class="formrow">
+    <input type="hidden" name="ym" value="{{ ym }}">
+    <div class="combo" id="combo-assign-project" data-placeholder="a project" style="flex:1 1 200px">
+      <label>Project/Employer</label>
+      <input type="text" class="combo-input" autocomplete="off" placeholder="Type to search…" required>
+      <input type="hidden" name="project_id">
+      <div class="combo-menu" hidden></div>
+    </div>
+    <div class="combo" id="combo-assign-task" data-placeholder="a task" style="flex:1 1 200px">
+      <label>Task</label>
+      <input type="text" class="combo-input" autocomplete="off" placeholder="Type to search…" required>
+      <input type="hidden" name="task_type_id">
+      <div class="combo-menu" hidden></div>
+    </div>
+    <div id="client-assign" hidden style="flex:1 1 180px">
+      <label>Client</label>
+      <input type="text" name="client" placeholder="Individual name, or Company - Beneficiary" style="width:100%">
+    </div>
+    <div><label>Date</label><input type="date" name="date" value="{{ today.isoformat() }}" required></div>
+    <div style="flex:1 1 220px"><label>Note (optional)</label><input name="details" style="width:100%"></div>
+    <div><button class="small">Assign</button></div>
+  </form>
+</div>
+
+<div class="card">
   <h2>Task log ({{ month_label(year, month) }})</h2>
   {% for day, items in by_day %}
   <h3>{{ day.strftime('%A') }} {{ day|mdy }}
@@ -351,4 +441,15 @@
     {% endif %}
   </div>
 </div>
+<!-- combo.js (Project/Task search picker on "Assign a new task" above,
+     TK-04, Ganesh 2026-08-28) — not loaded globally by base.html; this is
+     now a second admin page that needs it, alongside admin/lists.html. -->
+<script src="/static/combo.js?v={{ static_version }}"></script>
+<script>
+initProjectTaskCombo(
+  document.getElementById('combo-assign-project'), document.getElementById('combo-assign-task'),
+  {{ plan_project_items|tojson }}, {{ plan_task_items|tojson }}, null, null,
+  document.getElementById('client-assign'), ''
+);
+</script>
 {% endblock %}

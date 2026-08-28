@@ -4,16 +4,38 @@ Everything compliance-related is computed, never typed. The one exception is
 admin overrides, which live on DayStatus and always win.
 
 Rules implemented:
-  * Complete  — day submitted, actual >= target - tolerance
-  * Partial   — day submitted, actual < target - tolerance
-  * Missing   — past working day, no submission, no covering leave
+  * Complete  — actual (live logged minutes) >= target - tolerance
+  * Partial   — actual (live logged minutes) < target - tolerance
+  * Missing   — past working day, NOTHING logged at all, no covering leave
   * Leave     — approved leave covers the full (possibly reduced) target
   * Holiday / Weekend — non-working day; logged hours still count as surplus
   * variance = actual - effective_target (leave reduces the target)
   * strikes(month) = count(effective status in {Missing, Partial})
   * Imported legacy rows (source='imported') are frozen fact: never recomputed.
-  * Today is never marked Missing (the day isn't over); it only gets a status
-    once submitted, on leave, or imported.
+  * Today is never marked Missing (the day isn't over) UNLESS it's already
+    been locked (Lock Day submitted early) — it only gets a status once
+    locked, on leave, or imported, same as before this changed (see below).
+
+Auto-count logged hours (Ganesh, 2026-08-28) — before this, "Complete" and
+"Missing" both required an explicit Submit Day click: `actual` came only
+from DaySubmission.total_minutes, a snapshot written at submit time, so an
+employee who logged a full day's TaskEntry rows but forgot to click Submit
+still showed Missing with 0 actual minutes — a false strike for real work
+that WAS logged. `compute_day()` now takes the LIVE sum of that day's
+TaskEntry rows (`logged_minutes`) directly, independent of whether the day
+has ever been submitted/locked — the button (still the same route/UX,
+`app/routes/employee.py`'s `submit_day()`, "Lock Day" in spirit even though
+its label/route name is unchanged) now only closes editing; it no longer
+gates whether hours count toward Complete/Partial/strikes. A day only reads
+Missing if `logged_minutes` is truly 0 — nothing logged at all, same
+threshold as before for that one case. A short (non-zero) unlocked day
+still reads Partial and still strikes exactly as before — this only fixes
+the false-Missing-with-real-hours-logged case, never softens an actual
+shortfall. `day_locked` is still passed in (see `compute_day()`) purely to
+preserve the one case where lock state genuinely changes the outcome:
+submitting/locking TODAY still computes that day's status immediately
+(matches the pre-existing "submit at end of day" flow) rather than waiting
+for `d < today`, exactly as before this change.
 """
 import datetime as dt
 import json
@@ -413,7 +435,15 @@ def leave_balance_v2(
 def compute_day(
     emp: m.Employee,
     d: dt.date,
-    submitted_total: Optional[int],   # None if day not submitted
+    logged_minutes: int,   # LIVE sum of that day's TaskEntry rows — always
+                            # known, independent of Lock Day (Ganesh,
+                            # 2026-08-28, "auto-count logged hours" — see
+                            # this module's own docstring above)
+    day_locked: bool,      # True once Lock Day (submit_day()) has run for
+                            # this date — no longer used to decide `actual`,
+                            # only to let a same-day Lock Day (submitting
+                            # "today" before the day is technically over)
+                            # still compute immediately, same as before
     leave_min: int,
     working: bool,
     is_holiday: bool,
@@ -429,10 +459,10 @@ def compute_day(
     logged work, same idea as leave reducing the target in the other
     direction. Zero for every historical/imported day (BreakEntry didn't
     exist before this feature), so this never touches frozen history."""
-    actual = submitted_total or 0
+    actual = logged_minutes
     if not working:
         status = HOLIDAY if is_holiday else WEEKEND
-        if submitted_total is None and actual == 0:
+        if actual == 0:
             # nothing logged on a non-working day: still record the day for
             # calendar rendering, variance 0
             return {"status": status, "actual": 0, "target": 0, "variance": 0}
@@ -446,12 +476,13 @@ def compute_day(
 
     target = base_target + max(0, break_excess_min)
 
-    if submitted_total is None:
-        if d >= today:
-            return None  # pending — the day isn't over
-        if leave_min > 0:
-            # partial leave but never submitted: still a missing working day
-            return {"status": MISSING, "actual": 0, "target": target, "variance": -target}
+    if d >= today and not day_locked:
+        return None  # pending — the day isn't over, and nobody's locked it early
+
+    if actual == 0:
+        # Nothing logged at all — the one case that's still Missing (Ganesh,
+        # 2026-08-28: "a day would only go Missing if nothing was logged at
+        # all — never just for missing the Submit click").
         return {"status": MISSING, "actual": 0, "target": target, "variance": -target}
 
     status = COMPLETE if actual >= target - tolerance_min else PARTIAL
@@ -479,6 +510,11 @@ def recompute_employee(
         return 0
 
     holidays = holidays_set(db)
+    # Auto-count logged hours (Ganesh, 2026-08-28) — `subs` is now only
+    # consulted for its `.locked` flag (whether Lock Day has run for that
+    # date), not for `.total_minutes`; `task_totals` below is the new,
+    # LIVE per-day actual, replacing the old submitted-snapshot dependency.
+    # See compute_day()'s own docstring for why both are still needed.
     subs = {
         s.date: s
         for s in db.execute(
@@ -487,6 +523,14 @@ def recompute_employee(
                 m.DaySubmission.date.between(start, end),
             )
         ).scalars()
+    }
+    task_totals: Dict[dt.date, int] = {
+        te_date: int(total or 0)
+        for te_date, total in db.execute(
+            select(m.TaskEntry.date, func.sum(m.TaskEntry.end_minute - m.TaskEntry.start_minute))
+            .where(m.TaskEntry.employee_id == emp.id, m.TaskEntry.date.between(start, end))
+            .group_by(m.TaskEntry.date)
+        ).all()
     }
     leaves = list(
         db.execute(
@@ -532,7 +576,8 @@ def recompute_employee(
         res = compute_day(
             emp,
             d,
-            sub.total_minutes if sub else None,
+            task_totals.get(d, 0),
+            sub is not None and sub.locked,
             leave_minutes_on(leaves, emp, d),
             is_working_day(emp, d, holidays),
             d in holidays,

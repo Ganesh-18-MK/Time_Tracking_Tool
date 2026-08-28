@@ -16,6 +16,7 @@ from app.auth import current_user
 from app.db import get_db
 from app.templating import HOLIDAY_MANAGEMENT_ENABLED, LEAVE_MANAGEMENT_V2_ENABLED, flash, render
 from app.util import (
+    BUSINESS_TZ,
     FormError,
     audit,
     capitalize_first,
@@ -176,6 +177,32 @@ def _merge_entries_and_breaks(entries, breaks, gaps=None) -> list:
 
 
 def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
+    # Auto time-capture timer (Ganesh, 2026-08-01) — single active timer per
+    # employee, not per-date (see ActiveTaskTimer docstring), so this is
+    # fetched by employee only; today.html only shows the widget when
+    # `date == today`, same as how Start Break/Punch In are hardcoded to
+    # "today" regardless of which day is currently being viewed.
+    #
+    # Max-row auto-split (Ganesh, 2026-08-28) — see
+    # _auto_split_timer_if_over_cap's own docstring — runs right here,
+    # BEFORE `entries` is queried below, specifically so a chunk it just
+    # logged shows up in *this same* page load's task log/total/gap flags
+    # instead of only appearing after a second refresh. This is the read
+    # path (every GET /today, i.e. every page load/reload), so it's what
+    # heals a timer that's already run past Config.max_row_minutes even if
+    # the employee never clicks Stop — logs the completed cap-length
+    # chunk(s) and advances the same timer's start_minute forward, so the
+    # Auto time capture widget renders a freshly-reset elapsed time on this
+    # very page load. Only for `date == today` — the widget itself is only
+    # ever shown then (see today.html), and the helper is employee-scoped,
+    # not date-scoped, so running it while browsing a past day would have
+    # nothing to do with what's on screen.
+    active_timer = db.execute(
+        select(m.ActiveTaskTimer).where(m.ActiveTaskTimer.employee_id == emp.id)
+    ).scalar_one_or_none()
+    if active_timer is not None and date == today_local():
+        active_timer = _auto_split_timer_if_over_cap(db, emp, active_timer, cfg)
+
     entries = list(
         db.execute(
             select(m.TaskEntry)
@@ -252,15 +279,6 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
     # still open, `punch_remaining` going negative already communicates
     # overtime live (see today.html); this is the "day's done" summary.
     punch_overtime = overtime_minutes(completed_punch_minutes, target) if active_punch is None else 0
-
-    # Auto time-capture timer (Ganesh, 2026-08-01) — single active timer per
-    # employee, not per-date (see ActiveTaskTimer docstring), so this is
-    # fetched by employee only; today.html only shows the widget when
-    # `date == today`, same as how Start Break/Punch In are hardcoded to
-    # "today" regardless of which day is currently being viewed.
-    active_timer = db.execute(
-        select(m.ActiveTaskTimer).where(m.ActiveTaskTimer.employee_id == emp.id)
-    ).scalar_one_or_none()
 
     # completed_breaks are netted out of each gap inside gap_flags itself now
     # (Ganesh, 2026-08-11) — a break that doesn't line up to the exact minute
@@ -417,6 +435,30 @@ def _pending_edit_notices(db: Session, user: m.Employee) -> list:
     return notices
 
 
+def _pending_plan_assignment_notices(db: Session, user: m.Employee) -> list:
+    """TK-04 (Ganesh, 2026-08-28) — "Employee is notified when an entry is
+    assigned to them." Plans an admin/team lead added to this employee's
+    log (created_by_employee_id set to someone other than the employee —
+    see PlannedTask's own docstring) that haven't been shown to them yet.
+    Same one-card-per-still-unseen-item, dismiss-marks-just-that-one
+    pattern _pending_edit_notices() above already established for the "an
+    admin rewrote your suggestion" banner — reuses the identical shape
+    (a plain list of ORM rows here rather than dicts, since today.html
+    only needs a handful of fields straight off PlannedTask/its relations,
+    unlike the suggestion notices which pull from two different models).
+    Ordered oldest-assignment-first."""
+    return list(
+        db.execute(
+            select(m.PlannedTask).where(
+                m.PlannedTask.employee_id == user.id,
+                m.PlannedTask.created_by_employee_id.isnot(None),
+                m.PlannedTask.created_by_employee_id != user.id,
+                m.PlannedTask.assigned_notified_at.is_(None),
+            ).order_by(m.PlannedTask.created_at)
+        ).scalars()
+    )
+
+
 def _project_department_links(db: Session) -> dict:
     """project_id -> sorted [department, ...] for every project that has
     at least one ProjectDepartment row (Ganesh, 2026-08-28 — see that
@@ -515,6 +557,14 @@ def today_page(
     # while browsing a past day via the date dropdown.
     edit_notices = _pending_edit_notices(db, user) if day == today else []
 
+    # Plan-assignment notices (Ganesh, 2026-08-28, TK-04) — see
+    # _pending_plan_assignment_notices() above. Same "today view only"
+    # scoping as edit_notices right above, even though an assigned plan's
+    # own date could be a different day — this is a notification about a
+    # NEW assignment, surfaced on the main landing page, not tied to
+    # whichever date happens to be selected in the dropdown.
+    plan_assignment_notices = _pending_plan_assignment_notices(db, user) if day == today else []
+
     # Gap auto-prefill (Ganesh, 2026-08-21): previously an unexplained 15+
     # min gap between two already-logged rows only showed the ⚠ warning
     # label on the later row (see today.html's flags.get(e.id) below) —
@@ -586,6 +636,7 @@ def today_page(
             "show_overtime_prompt": show_overtime_prompt,
             "show_punch_out_reminder": show_punch_out_reminder,
             "edit_notices": edit_notices,
+            "plan_assignment_notices": plan_assignment_notices,
             "gap_prefill_active": gap_prefill_start is not None,
             "gap_prefill_start_min": gap_prefill_start,
             "gap_prefill_end_min": gap_prefill_end,
@@ -897,30 +948,22 @@ def end_break(
     return RedirectResponse("/today", status_code=303)
 
 
-def _finish_task_timer(db: Session, user: m.Employee, timer: m.ActiveTaskTimer, cfg: dict):
-    """Converts a running ActiveTaskTimer into a real TaskEntry, through
-    the exact same validate_entry() every manually-typed row goes through
-    (overlap / 4h-cap / details-length / locked-day checks) — an
-    auto-captured entry is never held to looser rules than a typed one.
-    Returns (True, None) on success; on failure returns (False, message)
-    and leaves the timer running/untouched so nothing is silently lost —
-    the employee can fix Details and try Stop again, or keep working.
-
-    entry_method (Ganesh, 2026-08-21, usage tracking) is set from
-    timer.planned_task_id: this one function is the single place both
-    Auto time capture's Stop AND every Plan Pause/Stop segment finish
-    through, so it's the one place that can tell them apart reliably —
-    plan-linked timers stamp ENTRY_METHOD_PLAN, ad-hoc ones stamp
-    ENTRY_METHOD_AUTO_TIMER."""
-    now = now_local()
-    end_minute = clamp_break_end(timer.start_minute, now.hour * 60 + now.minute)
-    # Case Type / Client (Ganesh, 2026-08-28) — defense-in-depth, mirrors
-    # the same multi-layer-check precedent task_allowed_for_project()
-    # already set (checked at add_plan() AND again inside validate_entry
-    # below). start_task_timer/add_plan already require Client up front
-    # for a case-type project, so this should never actually trip in
-    # practice — it's here in case some future path ever creates an
-    # ActiveTaskTimer without going through either of those.
+def _log_timer_as_entry(db: Session, user: m.Employee, timer: m.ActiveTaskTimer, end_minute: int, cfg: dict):
+    """The actual "turn this timer's project/task/details/client into a
+    validated TaskEntry row from timer.start_minute to end_minute" step,
+    factored out of _finish_task_timer below (Ganesh, 2026-08-28, max-row
+    auto-split — see _auto_split_timer_if_over_cap's docstring) so both
+    that function's final segment AND the auto-split's earlier full-cap
+    chunks go through validate_entry() identically. Never touches the
+    timer row itself or commits — callers own both, since a caller may
+    need to add several of these in a loop before doing either. Flushes
+    (not commits) after add() so a same-request second call's own overlap
+    check inside validate_entry sees this row (this session is
+    autoflush=False — see app/db.py — so without an explicit flush a
+    second chunk logged in the same request wouldn't see the first one and
+    could wrongly validate as non-overlapping, or vice versa). Returns
+    (True, None) or (False, message), same shape _finish_task_timer always
+    returned."""
     client_err = _client_required_error(db.get(m.Project, timer.project_id), timer.client)
     if client_err:
         return False, client_err
@@ -938,6 +981,157 @@ def _finish_task_timer(db: Session, user: m.Employee, timer: m.ActiveTaskTimer, 
         start_minute=timer.start_minute, end_minute=end_minute,
         entry_method=m.ENTRY_METHOD_PLAN if timer.planned_task_id else m.ENTRY_METHOD_AUTO_TIMER,
     ))
+    db.flush()
+    return True, None
+
+
+def _auto_split_timer_if_over_cap(db: Session, user: m.Employee, timer: Optional[m.ActiveTaskTimer], cfg: dict) -> Optional[m.ActiveTaskTimer]:
+    """Max single-row duration auto-split (Ganesh, 2026-08-28) — before
+    this, a timer left running past Config.max_row_minutes (the same §4
+    4h cap validate_entry enforces on every manually-typed row, see
+    validate_entry's own "times" section) just got stuck: Stop & Log
+    failed outright with "Single row longer than 4h 0m — break the work
+    down" (validate_entry's own message), and Pause/Stop on a plan-linked
+    timer failed the exact same way since both go through
+    _finish_task_timer below. The employee had no way to resolve it short
+    of editing the day by hand — reported live via screenshot, a timer
+    that had been left running 6h+.
+
+    This app has no background scheduler (see the missing-legacy-data /
+    no-pytest sandbox notes — everything here is plain request/response),
+    so "automatically" means lazily, on next touch — same convention
+    stop_task_timer/cancel_task_timer already use to keep PlannedTask.status
+    in sync as "defense-in-depth" (Ganesh, 2026-08-22 bugfix). Called from
+    two places: _day_context (every GET /today, so simply reloading the
+    page — including the client-side auto-reload today.html's timer script
+    now does once its live clock crosses this same cap — heals a stuck
+    timer with no click needed) and the top of _finish_task_timer (so Stop
+    & Log / Pause / Stop-plan / starting-a-new-timer's own auto-finish via
+    _stop_current_timer_if_any never hit the "longer than 4h" error in the
+    first place — the split runs first, so by the time _finish_task_timer
+    computes its own final segment against "now", only the within-cap
+    remainder is left).
+
+    For each full cap-length chunk the timer has been running past its own
+    start_minute, logs it as a real TaskEntry (start, start+cap) via
+    _log_timer_as_entry — same validated path, same Details/Client copied
+    as-is a normal Stop & Log already uses — then advances this SAME
+    ActiveTaskTimer's start_minute/started_at forward by one cap-length
+    instead of deleting it, so the timer keeps running uninterrupted under
+    its existing id: the live JS clock re-reads started_at fresh on next
+    page load and naturally reads back near 0:00 — that's the "timer
+    restarts from 00:00 for the same task" the employee asked for, not a
+    separate stop-then-start action. Loops (bounded by how many
+    cap-lengths could possibly fit in a day, so a misconfigured tiny cap
+    can't spin) in case a page was left open across more than one full
+    cap-length. Stops early, leaving the remainder running rather than
+    logging a row past midnight, if a chunk's boundary would reach 1440 —
+    the existing "no rows span midnight" rule already covers what happens
+    next, same as any other overnight-left-running timer today. Also stops
+    early (silently, leaving the timer exactly as it was) if a chunk fails
+    validate_entry for an unrelated reason (day got locked mid-run, project
+    deactivated) — same "don't lose time, leave it for a human to sort
+    out" instinct _finish_task_timer's own failure path already has.
+
+    Deliberately does NOT run from cancel_task_timer — Cancel means "this
+    timer was a mistake, discard the whole thing," and retroactively
+    logging cap-length chunks the employee is actively trying to throw
+    away would contradict that.
+
+    Cross-midnight rollover (Ganesh, 2026-08-28, same-day follow-up —
+    explicitly asked for over the alternative of just discarding a stuck
+    timer via Cancel) — a timer whose `date` no longer matches today
+    crossed midnight while still running (reported live: Today stuck
+    "loading" forever, because the reload-on-cap-crossing script in
+    today.html had no way to know the server couldn't fix a timer like
+    this, and kept retrying every time the reloaded page still showed it
+    over cap — see that bugfix's own CLAUDE.md entry). Before touching
+    "now," this closes out the remainder of the ORIGINAL day first — same
+    cap-sized chunks as below, just capped at day-end (1440) instead of
+    stopping there — then rolls the SAME timer forward to start fresh at
+    00:00 BUSINESS_TZ the next calendar day (`started_at` recomputed via
+    BUSINESS_TZ midnight -> UTC, not naive timedelta arithmetic, so a
+    DST boundary can't shift it) and repeats, bounded to 7 calendar days
+    so a timer stuck for a very long time doesn't loop indefinitely (a
+    timer that old is a sign something else needs a human, not something
+    to keep auto-processing). Once `timer.date == today`, falls through
+    to the ordinary same-day loop below unchanged. Same "leave it alone
+    and stop" fallback as everywhere else here if a chunk fails
+    validate_entry (e.g. that old day is now locked)."""
+    if timer is None:
+        return timer
+    cap = engine.cfg_int(cfg, "max_row_minutes")
+    if cap <= 0:
+        return timer
+    today = today_local()
+    changed = False
+
+    guard_days = 0
+    while timer.date != today and guard_days < 7:
+        while timer.start_minute < 1440:
+            boundary = min(timer.start_minute + cap, 1440)
+            ok, _error = _log_timer_as_entry(db, user, timer, boundary, cfg)
+            if not ok:
+                if changed:
+                    db.commit()
+                return timer
+            timer.start_minute = boundary
+            changed = True
+        next_day = timer.date + dt.timedelta(days=1)
+        local_midnight = dt.datetime.combine(next_day, dt.time(0, 0), tzinfo=BUSINESS_TZ)
+        timer.date = next_day
+        timer.start_minute = 0
+        timer.started_at = local_midnight.astimezone(dt.timezone.utc).replace(tzinfo=None)
+        guard_days += 1
+
+    now_minute = now_local().hour * 60 + now_local().minute
+    for _ in range((1440 // cap) + 2):
+        if now_minute - timer.start_minute <= cap:
+            break
+        boundary = timer.start_minute + cap
+        if boundary >= 1440:
+            break
+        ok, _error = _log_timer_as_entry(db, user, timer, boundary, cfg)
+        if not ok:
+            break
+        timer.start_minute = boundary
+        timer.started_at = timer.started_at + dt.timedelta(minutes=cap)
+        changed = True
+    if changed:
+        db.commit()
+    return timer
+
+
+def _finish_task_timer(db: Session, user: m.Employee, timer: m.ActiveTaskTimer, cfg: dict):
+    """Converts a running ActiveTaskTimer into a real TaskEntry, through
+    the exact same validate_entry() every manually-typed row goes through
+    (overlap / 4h-cap / details-length / locked-day checks) — an
+    auto-captured entry is never held to looser rules than a typed one.
+    Returns (True, None) on success; on failure returns (False, message)
+    and leaves the timer running/untouched so nothing is silently lost —
+    the employee can fix Details and try Stop again, or keep working.
+
+    entry_method (Ganesh, 2026-08-21, usage tracking) is set from
+    timer.planned_task_id: this one function is the single place both
+    Auto time capture's Stop AND every Plan Pause/Stop segment finish
+    through, so it's the one place that can tell them apart reliably —
+    plan-linked timers stamp ENTRY_METHOD_PLAN, ad-hoc ones stamp
+    ENTRY_METHOD_AUTO_TIMER.
+
+    Max-row auto-split (Ganesh, 2026-08-28) runs first here — see
+    _auto_split_timer_if_over_cap's docstring — so a timer that's been
+    running past Config.max_row_minutes gets its earlier full-cap chunks
+    logged off before this function computes its own final segment against
+    "now"; without this, Stop (and Pause/Stop-plan, which both funnel
+    through this same function) on a stuck long-running timer failed
+    outright with validate_entry's "longer than 4h — break the work down"
+    error instead of logging anything."""
+    timer = _auto_split_timer_if_over_cap(db, user, timer, cfg)
+    now = now_local()
+    end_minute = clamp_break_end(timer.start_minute, now.hour * 60 + now.minute)
+    ok, error = _log_timer_as_entry(db, user, timer, end_minute, cfg)
+    if not ok:
+        return False, error
     db.delete(timer)
     db.commit()
     return True, None
@@ -1230,6 +1424,17 @@ def delete_plan(
 ):
     plan = db.get(m.PlannedTask, plan_id)
     if plan is None or plan.employee_id != user.id:
+        return RedirectResponse("/today", status_code=303)
+    # TK-04 (Ganesh, 2026-08-28) — "Employee cannot delete an assigned
+    # entry." created_by_employee_id != user.id (and not None, though that
+    # can't happen for a row that passed the ownership check above) means
+    # an admin/team lead created this one, not the employee themself — see
+    # PlannedTask's own docstring. Only the admin-side
+    # admin_delete_plan() (app/routes/admin.py) can remove it while
+    # still Planned; edit_plan() (the plan-text-only edit) is intentionally
+    # NOT restricted the same way — TK-04 only calls out delete.
+    if plan.created_by_employee_id is not None and plan.created_by_employee_id != user.id:
+        flash(request, "This was assigned by an admin — ask them to remove it.", "err")
         return RedirectResponse("/today", status_code=303)
     if plan.status != m.PLAN_PLANNED:
         flash(request, "Only a not-yet-started plan can be removed.", "err")
@@ -2180,6 +2385,26 @@ def dismiss_edit_notice(
     item = db.get(model, item_id) if model else None
     if item is not None and item.created_by_employee_id == user.id:
         item.employee_notified_at = dt.datetime.utcnow()
+        db.commit()
+    return RedirectResponse("/today", status_code=303)
+
+
+@router.post("/plan/{plan_id}/assignment-notice/dismiss")
+def dismiss_plan_assignment_notice(
+    plan_id: int,
+    request: Request,
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """'Got it' on the "an admin assigned you a task" banner (Ganesh,
+    2026-08-28, TK-04) — see _pending_plan_assignment_notices() and
+    today.html. Ownership-checked (plan.employee_id must be this employee)
+    same as dismiss_edit_notice's own pattern above; silently no-ops if the
+    plan's already been dismissed, doesn't belong to them, or was self-
+    planned (nothing to dismiss)."""
+    plan = db.get(m.PlannedTask, plan_id)
+    if plan is not None and plan.employee_id == user.id:
+        plan.assigned_notified_at = dt.datetime.utcnow()
         db.commit()
     return RedirectResponse("/today", status_code=303)
 

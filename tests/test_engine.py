@@ -19,8 +19,14 @@ def emp(target=480, days="0,1,2,3,4"):
     return m.Employee(name="T", daily_target_minutes=target, work_days=days)
 
 
-def day(sub, leave=0, e=None, d=MON, working=True, holiday=False, today=TODAY, break_excess=0):
-    return compute_day(e or emp(), d, sub, leave, working, holiday, TOL, today, break_excess)
+def day(logged, leave=0, e=None, d=MON, working=True, holiday=False, today=TODAY, break_excess=0, locked=False):
+    """`logged` is always a live logged-minutes int now, never None — see
+    compute_day()'s "auto-count logged hours" docstring (Ganesh,
+    2026-08-28). `locked` defaults False (matches the common case: most of
+    this file's calls describe a day that was worked but never explicitly
+    locked, which is exactly the scenario this feature fixed) and only
+    matters for d >= today (see TestAutoCountLoggedHours below)."""
+    return compute_day(e or emp(), d, logged, locked, leave, working, holiday, TOL, today, break_excess)
 
 
 class TestStatuses:
@@ -34,16 +40,16 @@ class TestStatuses:
     def test_partial_one_minute_below_tolerance(self):
         assert day(419)["status"] == m.PARTIAL
 
-    def test_missing_when_never_submitted_past_day(self):
-        r = day(None)
+    def test_missing_when_nothing_logged_at_all_past_day(self):
+        r = day(0)
         assert r["status"] == m.MISSING
         assert r["variance"] == -480
 
-    def test_today_unsubmitted_is_pending_not_missing(self):
-        assert day(None, d=TODAY) is None
+    def test_today_nothing_logged_and_unlocked_is_pending_not_missing(self):
+        assert day(0, d=TODAY) is None
 
     def test_weekend_no_work_records_zero(self):
-        r = day(None, d=SAT, working=False)
+        r = day(0, d=SAT, working=False)
         assert r["status"] == m.WEEKEND and r["variance"] == 0
 
     def test_weekend_work_is_pure_surplus(self):
@@ -51,7 +57,7 @@ class TestStatuses:
         assert r["status"] == m.WEEKEND and r["variance"] == 180 and r["target"] == 0
 
     def test_holiday_flagged(self):
-        r = day(None, working=False, holiday=True)
+        r = day(0, working=False, holiday=True)
         assert r["status"] == m.HOLIDAY
 
     def test_part_time_target(self):
@@ -60,13 +66,65 @@ class TestStatuses:
         assert r["status"] == m.COMPLETE and r["variance"] == 0
 
 
+class TestAutoCountLoggedHours:
+    """Ganesh, 2026-08-28 — before this, `actual` only ever came from
+    DaySubmission.total_minutes (a snapshot written at Lock/Submit Day
+    time), so a past day with real TaskEntry rows but no Lock Day click
+    was computed as Missing with actual=0 — a false strike for real work.
+    compute_day() now takes the live logged total directly (`logged`, via
+    this file's own day() helper above) and a separate `locked` flag that
+    only still matters for d >= today (see below) — these are the tests
+    that lock down the actual behavior change; TestStatuses above already
+    covers past-day numeric-total cases and didn't need to change at all,
+    since a past day's math is identical whether the story behind the
+    number is "submitted" or "logged but unlocked."
+    """
+
+    def test_logged_full_day_but_never_locked_is_complete_not_missing(self):
+        # the exact bug: full hours logged, Lock Day never clicked
+        r = day(480, locked=False)
+        assert r["status"] == m.COMPLETE
+        assert r["actual"] == 480
+
+    def test_logged_short_day_unlocked_is_still_partial_and_strikes(self):
+        # short/zero days must still strike same as before — this feature
+        # only fixes the false-Missing case, never softens a real shortfall
+        r = day(300, locked=False)
+        assert r["status"] == m.PARTIAL
+
+    def test_nothing_logged_at_all_unlocked_past_day_is_missing(self):
+        r = day(0, locked=False)
+        assert r["status"] == m.MISSING
+
+    def test_locked_today_computes_immediately(self):
+        # Lock Day submitted same-day (the normal "end of day" flow) must
+        # still compute right away, exactly as the old submitted_total
+        # path did — this is the one case where `locked` genuinely changes
+        # the outcome, not just an audit detail.
+        r = day(480, d=TODAY, locked=True)
+        assert r is not None
+        assert r["status"] == m.COMPLETE
+
+    def test_unlocked_today_is_still_pending_regardless_of_amount_logged(self):
+        # logging hours today doesn't make today "done" on its own — the
+        # day still isn't over until it's locked or the date rolls past
+        r = day(480, d=TODAY, locked=False)
+        assert r is None
+
+    def test_locked_flag_irrelevant_for_a_genuine_past_day(self):
+        # once d < today, locked or not produces the identical result —
+        # locking never re-litigates a day that's already over
+        assert day(480, locked=True) == day(480, locked=False)
+        assert day(0, locked=True) == day(0, locked=False)
+
+
 class TestLeave:
     def test_full_day_leave_zero_target_no_variance(self):
-        r = day(None, leave=480)
+        r = day(0, leave=480)
         assert r["status"] == m.LEAVE and r["target"] == 0 and r["variance"] == 0
 
     def test_partial_leave_reduces_target(self):
-        # 2h approved leave -> target 360; 360 submitted = Complete, variance 0
+        # 2h approved leave -> target 360; 360 logged = Complete, variance 0
         r = day(360, leave=120)
         assert r["status"] == m.COMPLETE and r["target"] == 360 and r["variance"] == 0
 
@@ -74,8 +132,8 @@ class TestLeave:
         r = day(240, leave=120)  # target 360, tol 60 -> 240 < 300 => Partial
         assert r["status"] == m.PARTIAL and r["variance"] == -120
 
-    def test_partial_leave_unsubmitted_past_day_missing(self):
-        r = day(None, leave=120)
+    def test_partial_leave_nothing_logged_past_day_missing(self):
+        r = day(0, leave=120)
         assert r["status"] == m.MISSING and r["variance"] == -360
 
 
@@ -202,11 +260,11 @@ class TestBreakExcess:
     def test_excess_ignored_on_full_day_leave(self):
         # on approved full-day leave, no work is expected — break policy
         # doesn't apply regardless of how much break time was logged
-        r = day(None, leave=480, break_excess=45)
+        r = day(0, leave=480, break_excess=45)
         assert r["status"] == m.LEAVE and r["target"] == 0
 
     def test_excess_ignored_on_non_working_day(self):
-        r = day(None, d=SAT, working=False, break_excess=45)
+        r = day(0, d=SAT, working=False, break_excess=45)
         assert r["status"] == m.WEEKEND and r["target"] == 0
 
     def test_negative_excess_never_reduces_target(self):
@@ -312,6 +370,90 @@ class TestTodayAttendance:
         s.commit()
         out = today_attendance(s, m.CONFIG_DEFAULTS, TODAY)
         assert out["logged"] == out["on_leave"] == out["not_yet"] == out["off_today"] == []
+
+
+class TestRecomputeEmployeeAutoCountsLoggedHours:
+    """End-to-end version of TestAutoCountLoggedHours above — exercises the
+    real DB-backed recompute_employee()/its new task_totals grouped query,
+    not just the pure compute_day() function, so the actual wiring (not
+    just the math) is covered (Ganesh, 2026-08-28)."""
+
+    def test_logged_past_day_never_submitted_is_complete_not_missing(self, attendance_db):
+        s = attendance_db
+        e = _mkemp(s, 1, work_days="0,1,2,3,4,5,6")
+        s.add(m.TaskEntry(
+            employee_id=e.id, date=MON, project_id=1, task_type_id=1,
+            details="worked a full day", start_minute=540, end_minute=1020,  # 480 min
+        ))
+        s.commit()
+        # No DaySubmission row at all — this is the exact bug: full hours
+        # logged, Lock/Submit Day never clicked.
+        from app.engine import recompute_employee
+        recompute_employee(s, e, MON, MON, m.CONFIG_DEFAULTS, today=TODAY)
+        row = s.execute(
+            select(m.DayStatus).where(m.DayStatus.employee_id == e.id, m.DayStatus.date == MON)
+        ).scalar_one()
+        assert row.status == m.COMPLETE
+        assert row.actual_minutes == 480
+
+    def test_short_logged_past_day_never_submitted_is_partial_and_would_strike(self, attendance_db):
+        s = attendance_db
+        e = _mkemp(s, 1, work_days="0,1,2,3,4,5,6")
+        s.add(m.TaskEntry(
+            employee_id=e.id, date=MON, project_id=1, task_type_id=1,
+            details="left early", start_minute=540, end_minute=780,  # 240 min
+        ))
+        s.commit()
+        from app.engine import recompute_employee
+        recompute_employee(s, e, MON, MON, m.CONFIG_DEFAULTS, today=TODAY)
+        row = s.execute(
+            select(m.DayStatus).where(m.DayStatus.employee_id == e.id, m.DayStatus.date == MON)
+        ).scalar_one()
+        assert row.status == m.PARTIAL  # still strikes — this feature never softens a real shortfall
+
+    def test_truly_empty_past_day_is_still_missing(self, attendance_db):
+        s = attendance_db
+        e = _mkemp(s, 1, work_days="0,1,2,3,4,5,6")
+        s.commit()
+        from app.engine import recompute_employee
+        recompute_employee(s, e, MON, MON, m.CONFIG_DEFAULTS, today=TODAY)
+        row = s.execute(
+            select(m.DayStatus).where(m.DayStatus.employee_id == e.id, m.DayStatus.date == MON)
+        ).scalar_one()
+        assert row.status == m.MISSING
+        assert row.actual_minutes == 0
+
+    def test_locking_today_still_computes_immediately(self, attendance_db):
+        s = attendance_db
+        e = _mkemp(s, 1, work_days="0,1,2,3,4,5,6")
+        s.add(m.TaskEntry(
+            employee_id=e.id, date=TODAY, project_id=1, task_type_id=1,
+            details="full day, locked same-day", start_minute=540, end_minute=1020,
+        ))
+        s.add(m.DaySubmission(employee_id=e.id, date=TODAY, total_minutes=480, locked=True))
+        s.commit()
+        from app.engine import recompute_employee
+        recompute_employee(s, e, TODAY, TODAY, m.CONFIG_DEFAULTS, today=TODAY)
+        row = s.execute(
+            select(m.DayStatus).where(m.DayStatus.employee_id == e.id, m.DayStatus.date == TODAY)
+        ).scalar_one_or_none()
+        assert row is not None
+        assert row.status == m.COMPLETE
+
+    def test_unlocked_today_produces_no_day_status_row_yet(self, attendance_db):
+        s = attendance_db
+        e = _mkemp(s, 1, work_days="0,1,2,3,4,5,6")
+        s.add(m.TaskEntry(
+            employee_id=e.id, date=TODAY, project_id=1, task_type_id=1,
+            details="still working, not locked", start_minute=540, end_minute=1020,
+        ))
+        s.commit()
+        from app.engine import recompute_employee
+        recompute_employee(s, e, TODAY, TODAY, m.CONFIG_DEFAULTS, today=TODAY)
+        row = s.execute(
+            select(m.DayStatus).where(m.DayStatus.employee_id == e.id, m.DayStatus.date == TODAY)
+        ).scalar_one_or_none()
+        assert row is None  # pending — same as before this feature
 
 
 class TestCompanyWideHolidays:
