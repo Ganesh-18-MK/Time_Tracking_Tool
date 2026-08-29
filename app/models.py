@@ -1157,6 +1157,15 @@ class Holiday(Base):
     location: Mapped[str] = mapped_column(String(20), default=DEFAULT_LOCATION)
 
 
+# TaskDaySummary (the LLM-generated day-summary cache) was removed
+# 2026-08-29 — the Task Logs report's daily summary is now
+# reports.rule_based_day_summary(), a pure/deterministic function computed
+# fresh on every view (see app/reports.py's daily_task_log_report()), so
+# there is nothing left to cache and no error state to store. A pre-existing
+# `task_day_summaries` table on an already-deployed host is simply orphaned
+# — harmless, never read, safe to drop by hand or leave alone.
+
+
 class DayStatus(Base):
     __tablename__ = "day_statuses"
     __table_args__ = (UniqueConstraint("employee_id", "date"),)
@@ -1296,7 +1305,7 @@ CONFIG_DEFAULTS = {
     # engine.get_config(db), never hardcode thresholds"). Days/year, not
     # minutes/month — engine.py converts using each employee's own
     # daily_target_minutes (see docs/LEAVE_MANAGEMENT_PLAN.md §2's table).
-    "probation_days_default": "90",
+    "probation_days_default": "180",  # 6 months (Norine, 2026-08-29) — was 90
     "planned_days_year_0_2": "9",      # 0-2 years' experience
     "planned_days_year_2_5": "11",     # 2-5 years' experience
     "planned_days_year_5_plus": "13",  # 5+ years' experience

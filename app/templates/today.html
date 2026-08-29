@@ -9,49 +9,76 @@
    their normal .card/h2 spacing. #}
 <div class="today-page">
 
-<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px 16px">
-  <h1 style="margin-bottom:0">Task log — {{ day.strftime('%A') }}, {{ day|mdy }}{% if day == today %} (Today){% endif %}</h1>
-
-  {% if day == today %}
-  {# Punch In/Out + Break, compact (manager's redesign, 2026-08-14) — was
-     two full cards, now small controls next to the title. Every timer/
-     gating rule below is unchanged from before; only the markup shrank. #}
-  <div class="quickbar">
-    <div class="qitem">
-      {% if active_punch %}
-        <span class="qtimer" id="punchtimer" style="color:{{ 'var(--bad)' if punch_remaining < 0 else 'var(--ok)' }}">0:00:00</span>
-        <form method="post" action="/punch/out" class="inline">
-          <button class="small" title="{% if not day_locked %}Submit today's task log below first — Punch Out needs it locked.{% else %}End today's punch session.{% endif %}">Punch Out</button>
-        </form>
-      {% else %}
-        <span class="small muted" title="{% if completed_punches %}Punched {{ completed_punch_minutes|hm }} of {{ target|hm }} target so far today{% if punch_overtime %}, {{ punch_overtime|hm }} overtime{% endif %}{% else %}Today's target is {{ target|hm }}{% endif %}. A personal countdown only — it doesn't log work, add rows below for that.">
-          {% if completed_punches %}{{ completed_punch_minutes|hm }}/{{ target|hm }}{% if punch_overtime %} +{{ punch_overtime|hm }}{% endif %}{% else %}not punched in{% endif %}
-        </span>
-        <form method="post" action="/punch/in" class="inline">
-          <button class="small">Punch In</button>
-        </form>
-      {% endif %}
-    </div>
-
-    <div class="qitem">
-      {% if active_break %}
-        <span class="qtimer" id="breaktimer">00:00</span>
-        <span class="small muted">{{ active_break.break_type }}</span>
-        <form method="post" action="/break/end" class="inline">
-          <button class="small">End Break</button>
-        </form>
-      {% else %}
-        <form method="post" action="/break/start" class="inline">
-          <select name="break_type" title="{{ max_break_minutes }} min allowed/day{% if completed_breaks %} — {{ total_break_minutes|hm }} taken so far{% endif %}">
-            <option value="Personal">Personal</option>
-            <option value="Lunch/Dinner">Lunch/Dinner</option>
-          </select>
-          <button class="small">Start Break</button>
-        </form>
-      {% endif %}
-    </div>
+<div class="today-header">
+  <div>
+    <h1 style="margin-bottom:0">Today · {{ day.strftime('%A') }}, {{ day|mdy }}{% if day != today %} <span class="badge b-pending" style="vertical-align:middle">viewing a different day</span>{% endif %}</h1>
+    <p class="small muted" style="margin:2px 0 0">Plan your day, log against projects, submit when you finish.</p>
   </div>
-  {% endif %}
+
+  <div class="today-header-actions">
+    {% if day == today %}
+    {# Punch In/Out + Break, compact (manager's redesign, 2026-08-14) — was
+       two full cards, now small controls next to the title. Every timer/
+       gating rule below is unchanged from before; only the markup shrank.
+       Still lives in the header (2026-08-29 reskin just moved it into the
+       new .today-header-actions bar alongside Add row/Submit Day). #}
+    <div class="quickbar">
+      <div class="qitem">
+        {% if active_punch %}
+          <span class="qtimer" id="punchtimer" style="color:{{ 'var(--bad)' if punch_remaining < 0 else 'var(--ok)' }}">0:00:00</span>
+          <form method="post" action="/punch/out" class="inline">
+            <button class="small" title="{% if not day_locked %}Submit today's task log below first — Punch Out needs it locked.{% else %}End today's punch session.{% endif %}">Punch Out</button>
+          </form>
+        {% else %}
+          <span class="small muted" title="{% if completed_punches %}Punched {{ completed_punch_minutes|hm }} of {{ target|hm }} target so far today{% if punch_overtime %}, {{ punch_overtime|hm }} overtime{% endif %}{% else %}Today's target is {{ target|hm }}{% endif %}. A personal countdown only — it doesn't log work, add rows below for that.">
+            {% if completed_punches %}{{ completed_punch_minutes|hm }}/{{ target|hm }}{% if punch_overtime %} +{{ punch_overtime|hm }}{% endif %}{% else %}not punched in{% endif %}
+          </span>
+          <form method="post" action="/punch/in" class="inline">
+            <button class="small">Punch In</button>
+          </form>
+        {% endif %}
+      </div>
+
+      <div class="qitem">
+        {% if active_break %}
+          <span class="qtimer" id="breaktimer">00:00</span>
+          <span class="small muted">{{ active_break.break_type }}</span>
+          <form method="post" action="/break/end" class="inline">
+            <button class="small">End Break</button>
+          </form>
+        {% else %}
+          <form method="post" action="/break/start" class="inline">
+            <select name="break_type" title="{{ max_break_minutes }} min allowed/day{% if completed_breaks %} — {{ total_break_minutes|hm }} taken so far{% endif %}">
+              <option value="Personal">Personal</option>
+              <option value="Lunch/Dinner">Lunch/Dinner</option>
+            </select>
+            <button class="small">Start Break</button>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if not day_locked %}
+    {# Convenience scroll-link (2026-08-29 reskin) — #addrowcard is the
+       existing Add Row card's own id (see it further down this page);
+       a plain anchor needs no JS and doesn't touch the form itself. #}
+    <a href="#addrowcard" class="btn secondary small">Add row</a>
+    {% endif %}
+
+    {% if not day_locked and entries %}
+    {# Submit Day (moved here from the bottom of the Task log card in the
+       2026-08-29 reskin, per the mockup showing it as a header action) —
+       byte-for-byte the same form/route/confirm as before, just relocated;
+       the Task log card below still shows the same total/target info,
+       now as a progress bar instead of this button. #}
+    <form method="post" action="/submit-day" class="inline"
+          onsubmit="return confirm('Submit and lock this day? Edits after submission need an admin unlock.')">
+      <input type="hidden" name="date" value="{{ day.isoformat() }}">
+      <button>{{ 'Resubmit Day' if sub else 'Submit Day' }}</button>
+    </form>
+    {% endif %}
+  </div>
 </div>
 
 {% if show_punch_out_reminder %}
@@ -260,16 +287,27 @@
   make your corrections and <strong>resubmit</strong> below.</div>
 {% endif %}
 
+{# Two-column layout (2026-08-29 reskin, from a pasted mockup) — Plan for
+   the Day / Today's Plan / past-plans / My Month / Reminders in the
+   narrower right column, Task log / Auto time capture / Add row in the
+   wider left column (Task log moved to the top of that column 2026-08-29
+   per Ganesh's live feedback). Each side is exactly ONE grid item (this
+   wrapper div), so an explicit grid-column here safely controls
+   left/right placement regardless of which side comes first in the
+   template source below — see the .today-grid comment in app.css for why
+   `grid-auto-flow: dense` is required for this to actually land both
+   columns in the same row. #}
+<div class="today-grid">
+<div class="today-col" style="grid-column:2">
 {% if day == today and not day_locked %}
-{# Task Planning: "Plan for the Day" + "Today's Plan" (Ganesh, 2026-08-21,
-   see docs/TASK_PLANNING_TIMER_PLAN.md) — sits above Auto time capture,
-   between the page header and it. Always "today" only, same live/right-
-   now convention as Punch/Break/Auto time capture on this page — a plan
-   only ever carries today's date (see _day_context's `plans`), so this
-   interactive section is hidden while browsing a past day via the date
-   dropdown above, same as those other live widgets. A read-only view of
-   that day's plans (Ganesh, 2026-08-22) shows instead — see the
-   `past_plans` block right below. #}
+{# "Plan for the day" — the add form (Ganesh, 2026-08-21, see
+   docs/TASK_PLANNING_TIMER_PLAN.md; moved to this column 2026-08-29,
+   live feedback: "Today's Plan should be in place of task logs" — the
+   resulting checklist, "Today's Plan", moved to the other column so it
+   sits where the Task log card used to be; this form stays here since
+   it's small and doesn't need that prime real estate). Always "today"
+   only, same live/right-now convention as Punch/Break/Auto time capture
+   on this page — a plan only ever carries today's date. #}
 <div class="card">
   <h2>Plan for the day</h2>
   <form method="post" action="/plan/add" class="formrow">
@@ -295,16 +333,100 @@
     </div>
     <div><button>Add</button></div>
   </form>
-  <p class="small muted" style="margin:3px 0 0">Add what you intend to work on before you start it — it shows up below with Start/Pause/Stop. Multiple lines (e.g. a numbered list) are fine and display as typed.</p>
+  <p class="small muted" style="margin:3px 0 0">Add what you intend to work on before you start it — it shows up in Today's Plan with Start/Pause/Stop. Multiple lines (e.g. a numbered list) are fine and display as typed.</p>
+</div>
+{% endif %}
+
+{% if day == today %}
+{# "My Month" / "Reminders" (Ganesh, 2026-08-29, from a pasted mockup) —
+   fills the blank space below Plan for the Day / Today's Plan (or, on a
+   locked today, the space where that section would otherwise be).
+   "My Month" replaced an earlier "This Week" card here the same day
+   (Ganesh: "instead of this week, i want my month like in second
+   screenshot") — see _month_summary()'s own docstring in
+   app/routes/employee.py: same Logged/Effective target/Running
+   balance/Missing days/Partial days/Strikes/Compliance figures the real
+   My Month page (/my-month) already computes, not a new parallel
+   measurement. #}
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:baseline">
+    <h2 style="margin:0">My Month</h2>
+    <span class="small muted">all computed</span>
+  </div>
+  <div class="weekrow"><span class="muted">Logged</span><strong>{{ month_summary.logged|hm }}</strong></div>
+  <div class="weekrow"><span class="muted">Effective target</span><strong>{{ month_summary.effective_target|hm }}</strong></div>
+  {# Running balance / Missing days / Partial days / Strikes / Compliance
+     rows removed (Ganesh, 2026-08-29) — the mini calendar below now shows
+     each day's own variance directly, which is what this card is for on
+     Today; the full monthly strike/compliance breakdown still lives on
+     the real My Month page (/my-month). `_month_summary()` itself still
+     computes balance/missing_days/partial_days/strikes/threshold
+     unchanged (only this card's display was trimmed, not the helper) —
+     kept rather than pruned in case a future card here wants them again. #}
+  {# Mini working-days calendar (Ganesh, 2026-08-29: "bring that calendar
+     into my month section in today page, no need to display weekend
+     days... just display how many hours worked... +1hr / -2hrs") — weekend
+     (and any other non-work) weekday columns are structurally absent, not
+     just blanked, since calendar_headers/calendar_weeks only ever contain
+     this employee's actual work_day_set. Each cell shows just the day
+     number and that day's variance, colored ahead/behind — no badge, no
+     actual/target text, to stay compact in this narrower column. #}
+  <div class="mini-cal">
+    <div class="mini-cal-row mini-cal-head">
+      {% for h in month_summary.calendar_headers %}<div>{{ h }}</div>{% endfor %}
+    </div>
+    {% for week in month_summary.calendar_weeks %}
+    <div class="mini-cal-row">
+      {% for cell in week %}
+      <div class="mini-cal-cell">
+        <div class="mini-cal-day">{{ cell.day }}</div>
+        {% if cell.state == 'logged' %}
+        <div class="mini-cal-var" style="color:{{ 'var(--ok)' if cell.variance >= 0 else 'var(--bad)' }}">{{ cell.variance|hm_signed }}</div>
+        {% elif cell.state == 'leave' %}
+        <div class="mini-cal-var muted">Leave</div>
+        {% elif cell.state == 'holiday' %}
+        <div class="mini-cal-var muted">Hol</div>
+        {% else %}
+        <div class="mini-cal-var muted">—</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
 </div>
 
+{% if pending_ot_days %}
+<div class="card">
+  <h2>Reminders</h2>
+  <div class="weekrow"><span class="muted">Pending with your lead</span><strong>{{ pending_ot_days }} overtime {{ 'day' if pending_ot_days == 1 else 'days' }}</strong></div>
+</div>
+{% endif %}
+{% endif %}
+
+</div>
+<div class="today-col" style="grid-column:1">
+
+{% if day == today and not day_locked %}
+{# "Today's Plan" — the checklist itself (Ganesh, 2026-08-29, live
+   feedback: "Today's Plan should be in place of task logs and task logs
+   section should go down") — moved here, to the top of this column,
+   swapping places with the Task log card below it; the "Plan for the
+   day" add form that feeds this list stayed in the other column (see its
+   own comment there). Always "today" only, same live/right-now
+   convention as Punch/Break/Auto time capture on this page — a plan only
+   ever carries today's date (see _day_context's `plans`), so this
+   interactive section is hidden while browsing a past day via the date
+   dropdown above, same as those other live widgets. A read-only view of
+   that day's plans (Ganesh, 2026-08-22) shows instead — see the
+   `past_plans` block right below. #}
 <div class="card">
   <h2>Today's Plan{% if plans %} - {{ plans|length }} {{ 'task' if plans|length == 1 else 'Tasks' }}{% endif %}</h2>
   {% if plans %}
   {% for p in plans %}
   <div class="plan-item plan-{{ p.status }}">
     <div>
-      <div><strong>{{ p.project.name }} · {{ p.task_type.name }}</strong>
+      <div><span class="plan-check {{ p.status }}">{% if p.status == 'done' %}✓{% elif p.status == 'running' %}▸{% elif p.status == 'paused' %}❚❚{% endif %}</span><strong>{{ p.project.name }} · {{ p.task_type.name }}</strong>
         {% if p.status == 'planned' %}<span class="badge b-plan-not-started">not started</span>
         {% elif p.status == 'running' %}<span class="badge b-plan-in-progress">in progress</span>
         {% elif p.status == 'paused' %}<span class="badge b-plan-paused">paused</span>
@@ -375,7 +497,7 @@
   {% for p in past_plans %}
   <div class="plan-item plan-{{ p.status }}">
     <div>
-      <div><strong>{{ p.project.name }} · {{ p.task_type.name }}</strong>
+      <div><span class="plan-check {{ p.status }}">{% if p.status == 'done' %}✓{% elif p.status == 'running' %}▸{% elif p.status == 'paused' %}❚❚{% endif %}</span><strong>{{ p.project.name }} · {{ p.task_type.name }}</strong>
         {% if p.status == 'planned' %}<span class="badge b-plan-not-started">not started</span>
         {% elif p.status == 'running' %}<span class="badge b-plan-in-progress">in progress</span>
         {% elif p.status == 'paused' %}<span class="badge b-plan-paused">paused</span>
@@ -394,10 +516,11 @@
 {% endif %}
 
 {% if not day_locked %}
-{# Auto time capture + Add row (manager's redesign, 2026-08-14) — both
-   "ways to add a task" now sit above the logged-time table, instead of
-   below it. #}
-<div class="card">
+{# Auto time capture + Add row (manager's redesign, 2026-08-14 — reordered
+   2026-08-29 to sit between Today's Plan and Task log, per Ganesh's live
+   feedback: "Today's Plan should be in place of task logs... task logs
+   section should go down"). #}
+<div class="card compact-card" id="autocapture">
   <h2>Auto time capture</h2>
   {% if active_timer %}
   <div class="totalbar">
@@ -502,9 +625,7 @@
     <div><button>Start Timer</button></div>
   </form>
   {% endif %}
-  <p class="small muted" style="margin:3px 0 0">Starts a live timer and auto-fills Start/End from the clock when you stop —
-    same rules apply (min 5 char details, no overlaps, {{ (max_row_minutes // 60) }}h max per row). Starting a new
-    timer auto-stops and logs whatever's already running.</p>
+  <p class="small muted" style="margin:3px 0 0" title="Same rules apply as Add row: min 5 char details, no overlaps, {{ (max_row_minutes // 60) }}h max per row.">Starts a live timer, auto-fills Start/End when you stop. Starting a new one auto-stops whatever's running.</p>
 </div>
 
 <div class="card" id="addrowcard">
@@ -556,18 +677,23 @@
 </div>
 {% endif %}
 
+{# Task log moved to the bottom of this column (Ganesh, 2026-08-29, live
+   feedback: "Today's Plan should be in place of task logs and task logs
+   section should go down") — same card, same table/progress-bar markup,
+   unchanged, just reordered after Today's Plan/Auto time capture/Add row
+   above it. Deliberately outside the not-day_locked block above — the
+   log itself must still show on a locked day, only the add-row/timer
+   forms above it hide. #}
 <div class="card">
   <table>
     <thead>
-      <tr><th>Start</th><th>End</th><th>Duration</th><th>Project/Employer</th><th>Task</th><th>Details</th><th></th></tr>
+      <tr><th>Duration</th><th>Project/Employer</th><th>Task</th><th>Details</th><th></th></tr>
     </thead>
     <tbody>
       {% for e in display_entries %}
       {% if e.is_gap %}
       <tr class="gap-row">
-        <td class="nowrap">{{ e.start_minute|clock }}</td>
-        <td class="nowrap">{{ e.end_minute|clock }}</td>
-        <td class="nowrap">{{ e.duration_minutes|hm }}</td>
+        <td class="nowrap"><span class="dur-hint" title="{{ e.start_minute|clock }} – {{ e.end_minute|clock }}">{{ e.duration_minutes|hm }}</span></td>
         <td colspan="3" class="small muted">Unlogged gap — nothing on your task log covers this stretch of time.</td>
         <td class="nowrap">
           <button type="button" class="small secondary" onclick="fillGapRow({{ e.start_minute }}, {{ e.end_minute }})">Fill</button>
@@ -575,11 +701,10 @@
       </tr>
       {% else %}
       <tr class="{{ 'muted' if not e.id else '' }}{{ ' overtime-row' if e.is_overtime else '' }}" {% if e.is_overtime %}title="Logged after today's target was already reached"{% endif %}>
-        <td class="nowrap">{{ e.start_minute|clock }}
+        <td class="nowrap">
+          <strong class="dur-hint" title="{{ e.start_minute|clock }} – {{ e.end_minute|clock }}">{{ e.duration_minutes|hm }}</strong>
           {% if flags.get(e.id) %}<div class="gapflag">⚠ {{ flags[e.id]|hm }} gap before</div>{% endif %}
         </td>
-        <td class="nowrap">{{ e.end_minute|clock }}</td>
-        <td class="nowrap"><strong>{{ e.duration_minutes|hm }}</strong></td>
         <td>{{ e.project.name }}{% if e.client %}<div class="small muted">Client: {{ e.client }}</div>{% endif %}</td>
         <td>{{ e.task_type.name }}</td>
         <td style="white-space:pre-wrap">{{ e.details }}{%- if e.id and day == today and not day_locked -%}
@@ -610,7 +735,7 @@
       </tr>
       {% endif %}
       {% else %}
-      <tr><td colspan="7" class="muted">No rows yet — add your first task above.</td></tr>
+      <tr><td colspan="5" class="muted">No rows yet — add your first task above.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -618,13 +743,18 @@
   <div class="totalbar">
     <span class="big">{{ total|hm }}</span>
     <span class="muted">of {{ target|hm }} target{% if leave_min %} (reduced by {{ leave_min|hm }} approved leave){% endif %}{% if break_excess %} (extended by {{ break_excess|hm }} — over break allowance){% endif %} — computed, never typed</span>
-    {% if not day_locked and entries %}
-    <form method="post" action="/submit-day" class="inline"
-          onsubmit="return confirm('Submit and lock this day? Edits after submission need an admin unlock.')">
-      <input type="hidden" name="date" value="{{ day.isoformat() }}">
-      <button>{{ 'Resubmit Day' if sub else 'Submit Day' }}</button>
-    </form>
-    {% endif %}
+  </div>
+  {# Progress bar (2026-08-29 reskin) — same total/target integer-minute
+     values the text above already shows, just visualized too; Submit Day
+     itself moved to the page header (see .today-header-actions). #}
+  {% set _pct = ((total / target * 100) if target else 0) %}
+  {% set _pct = (100 if _pct > 100 else (0 if _pct < 0 else _pct)) %}
+  <div class="progress-wrap">
+    <div class="progress-bar"><div class="progress-fill" style="width:{{ _pct }}%"></div></div>
+    <div class="progress-labels">
+      <span>{{ total|hm }} logged</span>
+      <span>{% if total < target %}{{ (target - total)|hm }} to target{% else %}target reached{% endif %}</span>
+    </div>
   </div>
   {% if not day_locked and entries %}
   {# Auto-count logged hours (Ganesh, 2026-08-28) — logged time already
@@ -634,6 +764,15 @@
   <p class="small muted" style="margin:2px 0 0">Already counted toward today, whether or not you submit — Submit Day only locks it from further edits.</p>
   {% endif %}
 </div>
+
+</div>
+</div>
+{# End of the .today-grid two-column layout (2026-08-29 reskin) — the
+   "Suggest a new project/task" card and the combo-init JS below are
+   deliberately full-width, below both columns: a low-priority utility,
+   not something the mockup's layout had a place for, and the JS needs
+   elements from both columns to already be in the DOM regardless of
+   which one it's nested inside. #}
 
 {% if not day_locked %}
 <details class="card">

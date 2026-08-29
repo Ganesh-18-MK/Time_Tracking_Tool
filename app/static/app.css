@@ -7,6 +7,11 @@
   --ok: #1e7d3f; --ok-bg: #d9f0e0; --warn: #8a6d00; --warn-bg: #fdf0c2;
   --bad: #b3261e; --bad-bg: #fadcda; --leave: #6e4b2c; --leave-bg: #ecdfc9;
   --hol-bg: #e9e4d8; --pending-bg: #f1ede1;
+  /* My Month "Hours ledger" Overtime label (Ganesh, 2026-08-29) — a
+     display-only status layered on a Complete day with positive variance,
+     see _ledger_display_status() in app/routes/employee.py. Blue reads as
+     "info", distinct from the ok/warn/bad/leave palette above. */
+  --overtime: #1a5276; --overtime-bg: #d6eaf8;
   /* Orange (Ganesh, 2026-08-21, Today's Plan "in progress" badge) — the
      palette above had no true orange (warn is olive/yellow, accent is
      brown), so this is new; same dark-text-on-light-tint shape every
@@ -148,6 +153,29 @@ form.inline { display: inline; }
 .b-leave { background: var(--leave-bg); color: var(--leave); }
 .b-holiday, .b-weekend { background: var(--hol-bg); color: var(--muted); }
 .b-pending { background: var(--pending-bg); color: var(--muted); }
+.b-overtime { background: var(--overtime-bg); color: var(--overtime); }
+
+/* My Month "Hours ledger" week→day→entries tree (Ganesh, 2026-08-29).
+   Column widths/gap went through several rounds (percentage widths, then
+   fixed px widths, then a shrunk card, then a centered compact table) and
+   Ganesh ultimately asked to revert the spacing to how the table looked
+   before any of that — plain default table styling (`table { width:100% }`
+   / `th,td { padding:6px 8px }` from earlier in this file), no
+   `table-layout:fixed`, no per-column widths, no centering. The `.ledger-
+   tree` class was removed from this table in my_month.html to match — the
+   week→day→entries grouping, the Overtime status label, and the removed
+   Balance column (all separate asks) are unaffected by this, only the
+   column spacing reverted. `.ledger-centered` (Ganesh, 2026-08-29, seventh
+   pass: "make the data under each column organized centralized") centers
+   both header labels and cell values under every column — text-align only,
+   no width/layout changes, so this doesn't reopen the column-gap question
+   from the sixth pass. */
+.ledger-centered th, .ledger-centered td { text-align: center; }
+.ledger-centered th:first-child, .ledger-centered td:first-child { text-align: left; }
+.week-row { cursor: pointer; background: var(--pending-bg); font-weight: 600; }
+.week-row:hover { background: var(--hol-bg); }
+.week-row .caret { display: inline-block; width: 12px; }
+.week-day-row td:first-child { padding-left: 22px; }
 
 .kpis { display: flex; gap: 14px; flex-wrap: wrap; }
 .kpi { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
@@ -182,12 +210,27 @@ td.strikecol { font-weight: 700; }
 .viol { background: var(--bad); color: #fff; border-radius: 6px; padding: 1px 7px; }
 .mark { font-size: 10px; vertical-align: super; }
 
-/* calendar (My Month) */
+/* calendar (My Month) — improved 2026-08-29 (Ganesh: "can we improvise
+   this calendar view", no specific ask, so this is a judgment call): each
+   cell now tints its whole background by that day's status, not just the
+   small badge — much faster to scan a month for problem days than reading
+   every badge individually. Weekend/Holiday keep their existing muted
+   `.off` look rather than also being tinted (they're not compliance
+   signal). Today's cell gets a clear accent outline so it's easy to find
+   at a glance. Status reuses `display_status` (the same Complete/Overtime
+   split the Hours ledger already uses) so the two views of the same
+   DayStatus row never disagree. */
 .cal { width: 100%; table-layout: fixed; }
 .cal td { height: 74px; border: 1px solid var(--line); padding: 4px 6px; vertical-align: top; }
 .cal .d { font-size: 11px; color: var(--muted); }
 .cal .stat { margin-top: 3px; }
 .cal td.off { background: #f4f0e6; }
+.cal td.cal-complete { background: var(--ok-bg); }
+.cal td.cal-partial { background: var(--warn-bg); }
+.cal td.cal-missing { background: var(--bad-bg); }
+.cal td.cal-leave { background: var(--leave-bg); }
+.cal td.cal-overtime { background: var(--overtime-bg); }
+.cal td.today { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* searchable project/task combo (Today → Add row) */
 .combo { position: relative; display: flex; flex-direction: column; }
@@ -288,6 +331,18 @@ tr.overtime-row td { background: var(--warn-bg); }
 .b-plan-in-progress { background: var(--orange-bg); color: var(--orange); }
 .b-plan-paused { background: var(--warn-bg); color: var(--warn); }
 .b-plan-done { background: var(--ok-bg); color: var(--ok); }
+/* Plan checkbox (Ganesh, 2026-08-29, from a pasted mockup: "i want check
+   boxes here it should look neat") — replaces the plain-glyph status
+   marker (✓/▸/❚❚) with an actual checkbox-shaped square, same color
+   mapping the b-plan-* badges/left-border already use (planned stays a
+   plain neutral outline — unlike its "not started" badge, an empty
+   checkbox shouldn't read as an error color). */
+.plan-check { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 19px; height: 19px; border-radius: 5px; border: 2px solid var(--line);
+  margin-right: 8px; vertical-align: middle; font-size: 11px; font-weight: 700; background: #fff; }
+.plan-check.done { background: var(--ok); border-color: var(--ok); color: #fff; }
+.plan-check.running { border-color: var(--orange); color: var(--orange); }
+.plan-check.paused { border-color: var(--warn); color: var(--warn); }
 /* Today page quickbar (Ganesh's manager, 2026-08-14) — Punch In/Out and
    Break used to each get a full-width card; now they're compact controls
    next to the page title instead of "a full tab" of their own. Same
@@ -316,6 +371,73 @@ tr.overtime-row td { background: var(--warn-bg); }
 }
 .today-page .card > h2:first-child { margin: 0 0 4px; }
 .today-page .totalbar { margin: 6px 0; }
+.today-page { padding-bottom: 32px; }
+/* Auto time capture: reduced (Ganesh, 2026-08-29, "reduce the auto timer
+   capture box") — it moved down the column below Today's Plan/Task log
+   the same day and reads as less central now, so it gets a smaller
+   footprint than a regular .card: tighter padding, a smaller h2, and its
+   help paragraph was shortened in the template (the dropped detail —
+   exact rule text — still shows on hover via that paragraph's own
+   title attribute, not lost, just tucked away). */
+.today-page .compact-card { padding: 6px 12px; }
+.today-page .compact-card > h2:first-child { font-size: 15px; margin: 0 0 2px; }
+.today-page .compact-card p.small { margin: 2px 0 0 !important; }
+/* Task log: Start/End columns collapsed into a hover on Duration (Ganesh,
+   2026-08-29 — "remove start and end time... hover over the duration with
+   the start and stop") — the dotted underline is the only visual hint
+   that there's more to see on hover, since the browser's native title
+   tooltip alone gives no affordance. Reports/exports are untouched; this
+   is purely the on-screen Today table. */
+.today-page table .dur-hint { cursor: help; border-bottom: 1px dotted var(--muted); }
+
+/* Today page visual reskin (Ganesh, 2026-08-29, from a pasted mockup) —
+   two-column layout + a real progress bar, same underlying features/
+   forms/routes/JS as before (AskUserQuestion, 2026-08-29: "Visual reskin
+   only" — nothing here changes what any button does, only how the page
+   is laid out; "Leave the nav as-is" — the app's own top nav is untouched,
+   this is scoped to .today-page only). */
+.today-header { display: flex; justify-content: space-between; align-items: flex-start;
+  flex-wrap: wrap; gap: 10px 16px; margin-bottom: 12px; }
+.today-header-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+/* .today-grid (Ganesh, 2026-08-29) — two-column CSS Grid: Plan for the
+   Day/Today's Plan/This Week/Reminders in one column, Task log/Auto time
+   capture/Add row in the other (briefly collapsed to a single-column
+   stack the same day, then reverted back to two columns per Ganesh:
+   "no i want them in two coloumns only"). `grid-auto-flow: dense` is
+   required, not optional, here — see the standalone bugfix note further
+   down this file's history in CLAUDE.md: the two `.today-col` wrappers'
+   grid-column values appear in DESCENDING order in the DOM (2 then 1),
+   and CSS Grid's default "sparse" auto-placement starts a whole new row
+   whenever a later item's column number is lower than the previous one's
+   — `dense` backfills the first open cell instead, which is what actually
+   keeps both columns in row 1 side by side. */
+.today-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 18px; align-items: start;
+  grid-auto-flow: dense; }
+@media (max-width: 900px) { .today-grid { grid-template-columns: 1fr; } }
+.today-col { min-width: 0; }
+.progress-wrap { margin: 8px 0 2px; }
+.progress-bar { background: var(--pending-bg); border-radius: 999px; height: 8px; overflow: hidden; }
+.progress-bar .progress-fill { background: var(--accent); height: 100%; border-radius: 999px; }
+.progress-labels { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+.weekrow { display: flex; justify-content: space-between; padding: 5px 0; font-size: 13.5px; border-bottom: 1px solid var(--line); }
+.weekrow:last-child { border-bottom: none; }
+.weekrow strong { font-weight: 600; }
+.week-badges { display: flex; gap: 6px; }
+.week-badge { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 600; background: var(--pending-bg); color: var(--muted); }
+.week-badge.done { background: var(--accent); color: #fff; }
+/* Today page "My Month" card — mini working-days calendar (Ganesh,
+   2026-08-29). flex (not a fixed-count CSS grid) so it works regardless
+   of how many columns this employee's work_day_set produces (5 for a
+   normal Mon-Fri week, but not hardcoded). */
+.mini-cal { margin-top: 10px; }
+.mini-cal-row { display: flex; gap: 3px; margin-bottom: 3px; }
+.mini-cal-row.mini-cal-head { font-size: 10px; text-transform: uppercase; letter-spacing: .3px; color: var(--muted); text-align: center; margin-bottom: 4px; }
+.mini-cal-row.mini-cal-head > div { flex: 1; }
+.mini-cal-cell { flex: 1; min-width: 0; text-align: center; background: var(--pending-bg); border-radius: 5px; padding: 3px 1px; }
+.mini-cal-day { font-size: 10px; color: var(--muted); }
+.mini-cal-var { font-size: 11px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-cal-var.muted { font-weight: 400; }
 .totalbar { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
 .totalbar .big { font-size: 19px; font-weight: 700; }
 hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
@@ -373,3 +495,173 @@ details > summary { cursor: pointer; color: var(--accent); }
 .mdy-cal-day:hover { background: var(--accent-light); }
 .mdy-cal-day.today { font-weight: 700; color: var(--accent-dark); }
 .mdy-cal-day.sel { background: var(--accent); color: var(--accent-ink); }
+
+/* Reports redesign (Ganesh, 2026-08-29) — visual language borrowed from a
+   pasted mockup (attendance-report-mockup.html) but built from this app's
+   existing tokens (--ok/--warn/--bad/--accent/--leave etc, the same .kpi
+   tile and .badge pill classes Dashboard/reports already use), not the
+   mockup's own hardcoded hex palette. Two genuinely new pieces: the KPI
+   tile "alert" variant (report-level, distinct from Dashboard's own
+   .kpi.badk — this one needs a visible left accent bar so it reads at a
+   glance in a wider tile row, not just red text) and the day-strip mini
+   calendar. Deliberately does NOT include the mockup's 8-week trend
+   sparkline/line chart — that needs a week-over-week historical rollup
+   nothing in this app computes yet; flagged as a follow-up, not built here. */
+.kpi.alertk { border-left: 4px solid var(--bad); }
+.kpi.warnk { border-left: 4px solid var(--warn); }
+.kpi .l { text-transform: uppercase; letter-spacing: .5px; font-size: 10.5px; }
+
+/* day-strip: one small square per day in a report's date range (capped to
+   the most recent 14 by the caller — a wider range just shows the tail,
+   same "most recent" instinct as My Month's calendar). */
+.daystrip { display: flex; gap: 3px; }
+.daystrip .d { width: 20px; height: 20px; border-radius: 4px; display: flex;
+  align-items: center; justify-content: center; font-size: 9px; font-weight: 700;
+  color: #fff; flex: none; }
+.daystrip .d.s-complete { background: var(--ok); }
+.daystrip .d.s-partial { background: var(--warn); }
+.daystrip .d.s-missing { background: var(--bad); }
+.daystrip .d.s-leave { background: var(--leave); }
+.daystrip .d.s-holiday, .daystrip .d.s-weekend { background: var(--hol-bg); color: var(--muted); }
+.daystrip .d.s-none { background: var(--pending-bg); color: var(--muted); }
+
+/* attendance/overtime % bar (Attendance report summary rows) */
+.pctbar-wrap { display: flex; align-items: center; gap: 8px; }
+.pctbar { width: 70px; height: 6px; background: var(--pending-bg); border-radius: 4px; overflow: hidden; }
+.pctbar i { display: block; height: 100%; border-radius: 4px; background: var(--ok); }
+.pctbar-v { font-variant-numeric: tabular-nums; font-size: 12.5px; font-weight: 600; width: 38px; }
+
+/* status pill row legend under a redesigned report table */
+.report-legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 10px 2px 4px;
+  font-size: 12px; color: var(--muted); }
+.report-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.report-legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+/* Task Logs report (Ganesh, 2026-08-29) — one card per employee/day, the
+   day's real entries plus the auto-summary. "unplanned" reuses .warn
+   (same visual weight as a Partial day, a flag not a violation). */
+.tasklog-day-card { background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; }
+.tasklog-day-head { display: flex; justify-content: space-between; align-items: baseline;
+  gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.tasklog-summary { background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px; margin: 8px 0 12px; font-size: 13px; }
+.tasklog-summary ul { margin: 4px 0 0; padding-left: 18px; }
+.tasklog-summary li { margin-bottom: 3px; }
+.b-unplanned { background: var(--warn-bg); color: var(--warn); }
+
+/* Projects & Tasks tree (Ganesh, 2026-08-29) — Department -> Project ->
+   (explicitly-linked) Task, built from plain nested <details>/<summary> so
+   expand/collapse needs zero custom JS/state management, matching a pasted
+   mockup's visual language but with this app's own tokens. Only structural/
+   layout CSS lives here — every action inside a node (rename, case type,
+   manage departments, manage projects, deactivate) reuses the exact same
+   forms/classes (.details-edit, .ms-box, .badge) the flat page already had. */
+.tree-toolbar { display: flex; align-items: center; gap: 14px; margin-bottom: 10px; flex-wrap: wrap; }
+.tree-toolbar .lnk { background: none; border: 0; color: var(--accent-dark); font-size: 12.5px;
+  cursor: pointer; padding: 3px 4px; font-weight: 600; }
+.tree-toolbar .lnk:hover { text-decoration: underline; }
+.tree { background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.tree-dept, .tree-proj { border-top: 1px solid var(--line); }
+.tree-dept:first-child { border-top: none; }
+/* Visual polish pass (Ganesh, 2026-08-29, "I want it like [the mockup]") —
+   explicit color/weight on every piece of a row rather than relying on
+   inherited styles, specifically because the generic `details > summary
+   { color: var(--accent) }` rule (further up this file) was leaking its
+   bronze link-color onto plain department/project NAMES, which is why the
+   first pass read as unstyled/off — everything here overrides that
+   deliberately. Toggle switches and department chips below are still
+   backed by the exact same forms/routes as before (rename/case-type-
+   toggle/departments-save/toggle) — this is layout/color only, no new
+   fields, no combined-save endpoint, no Billable/merge tooling (all
+   explicitly declined via AskUserQuestion, see CLAUDE.md). */
+.tree-dept > summary, .tree-proj > summary { list-style: none; cursor: pointer;
+  display: flex; align-items: center; gap: 10px; padding: 12px 16px; color: var(--ink); }
+.tree-dept > summary::-webkit-details-marker, .tree-proj > summary::-webkit-details-marker { display: none; }
+.tree-dept > summary:hover, .tree-proj > summary:hover { background: var(--bg); }
+.tree-dept > summary { background: var(--bg); border-bottom: 1px solid var(--line); }
+.tree-dept[open] > summary { border-bottom: 1px solid var(--line); }
+.tree-dept-nm { font-weight: 700; font-size: 15px; color: var(--ink); }
+.tree-proj-nm { font-weight: 600; font-size: 13.8px; color: var(--ink); }
+.tree-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+/* Row-level hover actions ("+ Task", "Edit", "Deactivate" — Ganesh,
+   2026-08-29: "we can add task also for each project") — plain buttons
+   inside <summary>, each stopping click propagation so they don't also
+   toggle the row's own expand/collapse, revealing a sibling hidden div
+   via treeToggle() below rather than a second nested <details> (a
+   <details> can't nest inside a <summary>). Deactivate/Reactivate is a
+   real form that submits immediately, same route as the Edit panel's own
+   Active toggle — both exist, same as the mockup, since a project's row
+   and its edit panel are two different places someone might look for it. */
+.tree-row-acts { margin-left: auto; display: flex; align-items: center; gap: 14px;
+  opacity: 0; transition: opacity .1s; flex-shrink: 0; }
+.tree-proj > summary:hover .tree-row-acts { opacity: 1; }
+.tree-row-acts .lnk { background: none; border: 0; font: inherit; font-size: 12.5px;
+  font-weight: 600; color: var(--accent-dark); cursor: pointer; padding: 0; }
+.tree-row-acts .lnk:hover { text-decoration: underline; }
+.tree-row-acts .lnk.danger { color: var(--bad); }
+.tree-row-acts form.inline { display: inline; }
+.tree-proj { margin-left: 26px; border-top: 1px solid #f2f0ec; }
+.tree-proj > summary { padding: 10px 16px; }
+.tree-car { display: inline-block; width: 12px; font-size: 10px; color: var(--muted);
+  transition: transform .12s; flex-shrink: 0; }
+.tree-dept[open] > summary .tree-car, .tree-proj[open] > summary .tree-car { transform: rotate(90deg); }
+.tree-body { padding: 6px 16px 16px 42px; }
+.tree-proj .tree-body { padding-left: 16px; }
+.tree-task-row { display: flex; align-items: center; gap: 8px; padding: 5px 2px; font-size: 13.3px;
+  color: var(--ink); border-top: 1px solid #f7f5f2; flex-wrap: wrap; }
+.tree-task-row:first-child { border-top: none; }
+.tree-task-row .muted { font-size: 12px; }
+.tree-empty { color: var(--muted); font-size: 12.5px; padding: 8px 2px; }
+.tree-hidden { display: none !important; }
+
+/* Per-task Edit/Deactivate on the tree's inline task rows (Ganesh,
+   2026-08-29: "i should able to edit the tasks also") — always visible
+   (not hover-reveal like .tree-row-acts above), since a task row is only
+   ever shown once its parent project is already expanded, so there's no
+   collapsed-summary clutter to protect against here. */
+.tree-task-acts { margin-left: auto; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.tree-task-acts .lnk { background: none; border: 0; font: inherit; font-size: 12px;
+  font-weight: 600; color: var(--accent-dark); cursor: pointer; padding: 0; }
+.tree-task-acts .lnk:hover { text-decoration: underline; }
+.tree-task-acts .lnk.danger { color: var(--bad); }
+.tree-task-acts form.inline { display: inline; }
+.tree-task-rename { display: flex; gap: 6px; flex-basis: 100%; margin-top: 2px; }
+.tree-task-rename input { flex: 1; }
+
+/* Department -> Employee picker tree on Assign Work (Ganesh, 2026-08-29) —
+   an employee row is a plain link (a leaf, unlike .tree-proj which itself
+   expands), styled to sit inside the same .tree-body a project uses. */
+.tree-emp-row { display: block; padding: 6px 4px; font-size: 13.3px; color: var(--ink);
+  border-top: 1px solid #f7f5f2; text-decoration: none; border-radius: 4px; }
+.tree-emp-row:first-child { border-top: none; }
+.tree-emp-row:hover { background: var(--pending-bg); text-decoration: none; }
+.tree-emp-row.sel { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+
+/* Inline edit panel (rename/toggles/departments), tucked behind its own
+   "Edit" disclosure inside a project's body so expanding a project shows
+   its tasks first, without the edit form always taking up space. */
+.tree-edit-toggle > summary { color: var(--accent-dark); font-size: 12.5px; font-weight: 600;
+  list-style: none; cursor: pointer; padding: 4px 0; margin-bottom: 6px; }
+.tree-edit-toggle > summary::-webkit-details-marker { display: none; }
+.tree-edit-panel { background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 14px 16px; margin-bottom: 12px; }
+.tree-edit-panel .field { margin-bottom: 12px; }
+.tree-edit-panel .field:last-child { margin-bottom: 0; }
+.tree-edit-panel .field label { display: block; font-size: 10.5px; letter-spacing: .5px;
+  text-transform: uppercase; color: var(--muted); margin-bottom: 6px; font-weight: 700; }
+.tree-edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 12px; }
+.tree-edit-panel .inline-form { display: flex; gap: 6px; }
+.tree-edit-panel .inline-form input[type=text], .tree-edit-panel .inline-form input:not([type]) { flex: 1; }
+.tgl-row { display: flex; gap: 20px; flex-wrap: wrap; }
+.tgl { display: inline-flex; align-items: center; gap: 8px; border: 0; background: none;
+  cursor: pointer; font: inherit; font-size: 13px; color: var(--ink); padding: 2px 0; }
+.tgl .knob { width: 34px; height: 19px; border-radius: 12px; background: #d5d2cc; position: relative;
+  flex-shrink: 0; transition: background .15s; }
+.tgl .knob::after { content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px;
+  border-radius: 50%; background: #fff; transition: left .15s; }
+.tgl.on .knob { background: var(--ok); }
+.tgl.on .knob::after { left: 17px; }
+.deptpill input { display: none; }
+.deptpill:has(input:checked) { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.deptpill:has(input:checked)::after { content: " \00d7"; }

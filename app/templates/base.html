@@ -18,13 +18,22 @@
   {% set employee_zone = ['today', 'month', 'leave', 'overtime', 'holidays', 'support', 'profile'] %}
   <nav>
     {% if not user.is_admin %}
-      {# Plain employees only ever see their own toolkit. #}
+      {# Plain employees only ever see their own toolkit (Ganesh, 2026-08-29:
+         "Today My hours My requests Support Profile" — Leave/Overtime
+         [/Holidays/Usage Report] folded into one "My requests" dropdown,
+         same .navdrop pattern the admin nav below already uses, so this
+         didn't need any new CSS/JS). #}
       <a href="/today" class="{{ 'on' if active_nav == 'today' }}">Today</a>
-      <a href="/my-month" class="{{ 'on' if active_nav == 'month' }}">My Month</a>
-      <a href="/leave" class="{{ 'on' if active_nav == 'leave' }}">Leave</a>
-      <a href="/overtime" class="{{ 'on' if active_nav == 'overtime' }}">Overtime</a>
-      {% if HOLIDAY_MANAGEMENT_ENABLED %}<a href="/holidays" class="{{ 'on' if active_nav == 'holidays' }}">Holidays</a>{% endif %}
-      {% if user.is_developer %}<a href="/admin/reports/usage" class="{{ 'on' if active_nav == 'reports' }}">Usage Report</a>{% endif %}
+      <a href="/my-month" class="{{ 'on' if active_nav == 'month' }}">My hours</a>
+      <details class="navdrop">
+        <summary class="{{ 'on' if active_nav in ('leave', 'overtime', 'holidays', 'reports') }}">My requests ▾</summary>
+        <div class="navdrop-menu">
+          <a href="/leave">Leave Request</a>
+          <a href="/overtime">Overtime Request</a>
+          {% if HOLIDAY_MANAGEMENT_ENABLED %}<a href="/holidays">Holidays</a>{% endif %}
+          {% if user.is_developer %}<a href="/admin/reports/usage">Usage Report</a>{% endif %}
+        </div>
+      </details>
       <a href="/support" class="{{ 'on' if active_nav == 'support' }}">Support</a>
       <a href="/profile" class="{{ 'on' if active_nav == 'profile' }}">Profile</a>
     {% elif active_nav in employee_zone %}
@@ -32,10 +41,15 @@
          one link back to their admin side. #}
       <a href="/admin">← Admin Dashboard</a>
       <a href="/today" class="{{ 'on' if active_nav == 'today' }}">Today</a>
-      <a href="/my-month" class="{{ 'on' if active_nav == 'month' }}">My Month</a>
-      <a href="/leave" class="{{ 'on' if active_nav == 'leave' }}">Leave</a>
-      <a href="/overtime" class="{{ 'on' if active_nav == 'overtime' }}">Overtime</a>
-      {% if HOLIDAY_MANAGEMENT_ENABLED %}<a href="/holidays" class="{{ 'on' if active_nav == 'holidays' }}">Holidays</a>{% endif %}
+      <a href="/my-month" class="{{ 'on' if active_nav == 'month' }}">My hours</a>
+      <details class="navdrop">
+        <summary class="{{ 'on' if active_nav in ('leave', 'overtime', 'holidays') }}">My requests ▾</summary>
+        <div class="navdrop-menu">
+          <a href="/leave">Leave Request</a>
+          <a href="/overtime">Overtime Request</a>
+          {% if HOLIDAY_MANAGEMENT_ENABLED %}<a href="/holidays">Holidays</a>{% endif %}
+        </div>
+      </details>
       <a href="/support" class="{{ 'on' if active_nav == 'support' }}">Support</a>
       <a href="/profile" class="{{ 'on' if active_nav == 'profile' }}">Profile</a>
     {% else %}
@@ -48,7 +62,7 @@
         <summary class="{{ 'on' if active_nav in ('suggestions', 'assignments', 'lists') }}">Projects &amp; Task Management ▾{% if nav_badges and nav_badges.pending_suggestions %}<span class="navbadge">{{ nav_badges.pending_suggestions }}</span>{% endif %}</summary>
         <div class="navdrop-menu">
           <a href="/admin/suggestions">Suggestions{% if nav_badges and nav_badges.pending_suggestions %}<span class="navbadge">{{ nav_badges.pending_suggestions }}</span>{% endif %}</a>
-          <a href="/admin/assignments">Assignments</a>
+          <a href="/admin/assignments">Assign Work</a>
           <a href="/admin/lists">Projects &amp; Tasks</a>
         </div>
       </details>
@@ -59,6 +73,7 @@
           <a href="/admin/reports/strikes">Strike Reports</a>
           <a href="/admin/reports/time">Time by Project/Task</a>
           <a href="/admin/reports/usage">Feature Usage Report</a>
+          <a href="/admin/reports/tasklogs">Task Logs</a>
           {% if user.is_super_admin %}
           <a href="/admin/audit">Audit Logs</a>
           {% endif %}

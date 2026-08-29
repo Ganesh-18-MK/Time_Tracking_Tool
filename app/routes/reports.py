@@ -7,7 +7,7 @@ the layout convention in CLAUDE.md; all the actual aggregation lives in
 app/reports.py.
 """
 import datetime as dt
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 from openpyxl import Workbook
@@ -18,7 +18,7 @@ from app import models as m, reports
 from app.auth import admin_department_scope, require_admin, require_developer_or_admin
 from app.db import get_db
 from app.templating import render
-from app.util import fmt_date, month_label, xlsx_response
+from app.util import fmt_date, fmt_hm, fmt_time, month_label, xlsx_response
 
 router = APIRouter(prefix="/admin/reports")
 
@@ -97,6 +97,7 @@ def reports_time(
         employee_ids=emp or None, project_ids=project or None, task_type_ids=task or None,
     )
     filters_summary = reports.time_filters_summary(db, ctx["dept"], emp, project, task)
+    kpis = reports.time_kpis(result, project_result)
     ctx.pop("emp", None)
     return render(
         request, "admin/reports_time.html",
@@ -104,7 +105,7 @@ def reports_time(
             "user": admin, "result": result, "project_result": project_result,
             "emp": emp, "project": project, "task": task,
             "projects": reports.projects_list(db), "tasks": reports.task_types_list(db),
-            "filters_summary": filters_summary,
+            "filters_summary": filters_summary, "kpis": kpis,
             **ctx,
         },
         db=db,
@@ -170,7 +171,8 @@ def reports_attendance(
     result = reports.attendance_report(
         db, ctx["resolved_start"], ctx["resolved_end"], department=ctx["dept"] or None, employee_id=emp or None
     )
-    return render(request, "admin/reports_attendance.html", {"user": admin, "result": result, **ctx}, db=db)
+    kpis = reports.attendance_kpis(result)
+    return render(request, "admin/reports_attendance.html", {"user": admin, "result": result, "kpis": kpis, **ctx}, db=db)
 
 
 @router.get("/attendance.xlsx")
@@ -224,7 +226,8 @@ def reports_strikes(
     result = reports.strikes_report(
         db, ctx["resolved_start"], ctx["resolved_end"], department=ctx["dept"] or None, employee_id=emp or None
     )
-    return render(request, "admin/reports_strikes.html", {"user": admin, "result": result, **ctx}, db=db)
+    kpis = reports.strikes_kpis(result)
+    return render(request, "admin/reports_strikes.html", {"user": admin, "result": result, "kpis": kpis, **ctx}, db=db)
 
 
 @router.get("/strikes.xlsx")
@@ -319,3 +322,101 @@ def reports_usage_xlsx(
             + ["Yes" if r["punch"] else ""]
         )
     return xlsx_response(wb, f"feature_usage_{start_date}_{end_date}.xlsx")
+
+
+# ---- Task Logs Report (Ganesh, 2026-08-29) ------------------------------------
+@router.get("/tasklogs")
+def reports_tasklogs(
+    request: Request,
+    dept: str = "",
+    emp: int = 0,
+    rng: str = Query(reports.DEFAULT_RANGE, alias="range"),
+    start: str = "",
+    end: str = "",
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    ctx = _filter_ctx(db, admin, dept, emp, rng, start, end)
+    result = reports.daily_task_log_report(
+        db, ctx["resolved_start"], ctx["resolved_end"], department=ctx["dept"] or None, employee_id=emp or None
+    )
+    return render(
+        request, "admin/reports_tasklogs.html",
+        {"user": admin, "result": result, **ctx},
+        db=db,
+    )
+
+
+@router.get("/tasklogs_employee.xlsx")
+def reports_tasklogs_employee_xlsx(
+    dept: str = "",
+    emp: int = 0,
+    rng: str = Query(reports.DEFAULT_RANGE, alias="range"),
+    start: str = "",
+    end: str = "",
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Download #1 of 2 (Ganesh, 2026-08-29: "i want download report option
+    as well like project wise and employee wise") — the same filtered rows
+    reports.task_log_export_rows() returns, sorted by employee then date.
+    Shares that one query with the project-wise export below so the two
+    downloads can never disagree about which entries are in scope."""
+    dept = _scoped_dept(admin, dept)
+    start_date, end_date = reports.resolve_date_range(rng, _parse_date(start), _parse_date(end))
+    rows = reports.task_log_export_rows(db, start_date, end_date, department=dept or None, employee_id=emp or None)
+    rows.sort(key=lambda r: (r["employee"].name, r["date"], r["start_minute"]))
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "By employee"
+    _header(ws, ["Name", "Department", "Date", "Project", "Task", "Client", "Details",
+                 "Start", "End", "Duration", "Unplanned"])
+    for r in rows:
+        ws.append([
+            r["employee"].name, r["employee"].department or "—", fmt_date(r["date"]),
+            r["project"].name, r["task"].name, r["client"], r["details"],
+            fmt_time(r["start_minute"]), fmt_time(r["end_minute"]), fmt_hm(r["duration_minutes"]),
+            "Yes" if r["unplanned"] else "",
+        ])
+    return xlsx_response(wb, f"tasklogs_by_employee_{start_date}_{end_date}.xlsx")
+
+
+@router.get("/tasklogs_project.xlsx")
+def reports_tasklogs_project_xlsx(
+    dept: str = "",
+    emp: int = 0,
+    rng: str = Query(reports.DEFAULT_RANGE, alias="range"),
+    start: str = "",
+    end: str = "",
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Download #2 of 2 — same underlying rows as the employee-wise export
+    above, just sorted/grouped by project instead. Second sheet is a
+    per-project time total, mirroring the "By Project" breakdown Time by
+    Project/Task already has, so the two "by project" views in this app
+    look and feel consistent."""
+    dept = _scoped_dept(admin, dept)
+    start_date, end_date = reports.resolve_date_range(rng, _parse_date(start), _parse_date(end))
+    rows = reports.task_log_export_rows(db, start_date, end_date, department=dept or None, employee_id=emp or None)
+    rows.sort(key=lambda r: (r["project"].name, r["employee"].name, r["date"], r["start_minute"]))
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "By project"
+    _header(ws, ["Project", "Task", "Name", "Department", "Date", "Client", "Details",
+                 "Start", "End", "Duration", "Unplanned"])
+    for r in rows:
+        ws.append([
+            r["project"].name, r["task"].name, r["employee"].name, r["employee"].department or "—",
+            fmt_date(r["date"]), r["client"], r["details"],
+            fmt_time(r["start_minute"]), fmt_time(r["end_minute"]), fmt_hm(r["duration_minutes"]),
+            "Yes" if r["unplanned"] else "",
+        ])
+    totals: Dict[str, int] = {}
+    for r in rows:
+        totals[r["project"].name] = totals.get(r["project"].name, 0) + r["duration_minutes"]
+    ws2 = wb.create_sheet("Project totals")
+    _header(ws2, ["Project", "Total"])
+    for name, minutes in sorted(totals.items(), key=lambda kv: -kv[1]):
+        ws2.append([name, fmt_hm(minutes)])
+    return xlsx_response(wb, f"tasklogs_by_project_{start_date}_{end_date}.xlsx")

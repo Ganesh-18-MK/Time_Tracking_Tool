@@ -365,6 +365,175 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
     }
 
 
+def _week_summary(db: Session, emp: m.Employee, cfg, today: dt.date) -> dict:
+    """"This Week" card (Ganesh, 2026-08-29, from a pasted mockup) — fills
+    the blank space below Plan for the Day / Today's Plan on the live
+    "today" view. Monday of the current week through today (never a
+    future day), computed LIVE from real TaskEntry/LeaveRecord/Holiday
+    data rather than DayStatus — an unlocked "today" (and any
+    not-yet-submitted earlier day this week) has no guaranteed DayStatus
+    row, since recompute_employee() only runs on Submit Day / My Month
+    view / admin actions, not on every /today load (see the 2026-08-28
+    "auto-count logged hours" note above) — reading DayStatus here could
+    show a stale or missing figure instead of what's actually logged.
+
+    `days` is one badge per WORKING day strictly before today this week
+    (Monday..yesterday, skipping weekends/holidays), marked done if that
+    day has any logged minutes at all — mirrors the mockup's "Mon-Thu"
+    row when today is a Friday. Today's own (still in-progress) day isn't
+    included here since the Time log/progress bar above it already shows
+    today's live total.
+
+    Overtime this week sums each day's own positive variance (logged
+    minus target) — a shortfall day never offsets a surplus day, same
+    "positive variance only, per day" definition
+    reports.task_log_overtime_report() already established for Overtime
+    Management's "Who worked overtime" table."""
+    week_start = today - dt.timedelta(days=today.weekday())  # Monday
+    holidays = engine.holidays_set(db)
+    leaves = list(
+        db.execute(
+            select(m.LeaveRecord).where(
+                m.LeaveRecord.employee_id == emp.id,
+                m.LeaveRecord.start_date <= today,
+                m.LeaveRecord.end_date >= week_start,
+            )
+        ).scalars()
+    )
+    logged_by_date = dict(
+        db.execute(
+            select(m.TaskEntry.date, func.sum(m.TaskEntry.end_minute - m.TaskEntry.start_minute))
+            .where(
+                m.TaskEntry.employee_id == emp.id,
+                m.TaskEntry.date >= week_start,
+                m.TaskEntry.date <= today,
+            )
+            .group_by(m.TaskEntry.date)
+        ).all()
+    )
+    total_logged = total_target = total_overtime = 0
+    day_badges = []
+    d = week_start
+    while d <= today:
+        logged = logged_by_date.get(d, 0) or 0
+        working = engine.is_working_day(emp, d, holidays)
+        target = max(0, emp.daily_target_minutes - engine.leave_minutes_on(leaves, emp, d)) if working else 0
+        total_logged += logged
+        total_target += target
+        total_overtime += max(0, logged - target)
+        if d < today and working:
+            day_badges.append({"abbr": d.strftime("%a")[0], "done": logged > 0})
+        d += dt.timedelta(days=1)
+    return {
+        "week_start": week_start,
+        "logged": total_logged,
+        "target": total_target,
+        "overtime": total_overtime,
+        "days": day_badges,
+    }
+
+
+def _month_summary(db: Session, emp: m.Employee, cfg, today: dt.date) -> dict:
+    """"My Month" card (Ganesh, 2026-08-29, from a pasted mockup) — replaces
+    the earlier "This Week" card in the same Today-page slot with the
+    same month-level compliance snapshot My Month's own page already
+    shows (Logged/Effective target/Running balance/Missing days/Partial
+    days/Strikes/Compliance), not a new parallel figure.
+
+    Unlike _week_summary() above (a pure live read that deliberately
+    avoids DayStatus, since a week's not-yet-submitted days have no
+    guaranteed fresh row), this one calls engine.recompute_employee()
+    first — the exact same call my_month() itself makes before reading
+    DayStatus — because these ARE the DayStatus/ledger/strike numbers My
+    Month shows, not a different measurement; recomputing here is what
+    keeps them accurate for "today" even though recompute_employee()
+    doesn't otherwise run on every /today load (see the 2026-08-28
+    "auto-count logged hours" note above). Bounded to the current
+    calendar month through today (never future days), same
+    min(last, today) convention my_month() uses.
+
+    missing_days/partial_days both exclude strike_exempt rows, same
+    filter engine.strikes_in() itself applies — so missing_days +
+    partial_days always equals strikes, exactly like the mockup's
+    "Strikes 3 (missing + partial)" implies."""
+    year, month = today.year, today.month
+    first, last = engine.month_range(year, month)
+    effective_end = min(last, today)
+    engine.recompute_employee(db, emp, first, effective_end, cfg)
+    rows = list(
+        db.execute(
+            select(m.DayStatus).where(
+                m.DayStatus.employee_id == emp.id, m.DayStatus.date.between(first, last)
+            )
+        ).scalars()
+    )
+    comp_erases = cfg.get("comp_erases_strike") == "1"
+    logged = sum(r.actual_minutes for r in rows if r.actual_minutes is not None)
+    effective_target = sum(r.target_minutes for r in rows if r.target_minutes is not None)
+    ledger = engine.running_ledger(db, emp, first, effective_end)
+    balance = ledger[-1]["balance"] if ledger else 0
+    missing_days = sum(1 for r in rows if r.effective_status(comp_erases) == m.MISSING and not r.strike_exempt)
+    partial_days = sum(1 for r in rows if r.effective_status(comp_erases) == m.PARTIAL and not r.strike_exempt)
+    strikes = engine.strikes_in(rows, comp_erases)
+    threshold = engine.cfg_int(cfg, "strike_threshold")
+
+    # Mini working-days calendar (Ganesh, 2026-08-29: "bring that calendar
+    # into my month section in today page, no need to display weekend
+    # days... just display how many hours worked... +1hr / -2hrs") — a
+    # compact variant of My Month's own full calendar, embedded in this
+    # card instead. "Working days" reuses engine.is_working_day()'s own
+    # definition (this employee's work_day_set minus the shared holiday
+    # calendar) rather than a hardcoded Mon-Fri check, so an employee with
+    # a non-Mon-Fri schedule (work_days is per-employee, see
+    # Employee.work_day_set) still gets the right columns. The column set
+    # itself (which weekdays appear) is fixed per employee and rendered
+    # for every week — a holiday that lands on a normal work weekday still
+    # gets its OWN cell (state "holiday", no number) rather than being
+    # dropped, specifically so every week stays the same width and later
+    # cells in that row never shift into the wrong weekday column.
+    _WEEKDAY_ABBR = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    work_weekdays = sorted(emp.work_day_set)
+    holidays = engine.holidays_set(db)
+    rows_by_date = {r.date: r for r in rows}
+    calendar_weeks, week = [], []
+    d = first
+    while d <= last:
+        if d.weekday() in work_weekdays:
+            if d > effective_end:
+                cell = {"day": d.day, "state": "future"}
+            elif d in holidays:
+                cell = {"day": d.day, "state": "holiday"}
+            else:
+                r = rows_by_date.get(d)
+                if r is not None and r.status == m.LEAVE:
+                    cell = {"day": d.day, "state": "leave"}
+                elif r is not None and r.variance_minutes is not None:
+                    cell = {"day": d.day, "state": "logged", "variance": r.variance_minutes}
+                else:
+                    cell = {"day": d.day, "state": "future"}
+            week.append(cell)
+        if d.weekday() == 6:
+            if week:
+                calendar_weeks.append(week)
+            week = []
+        d += dt.timedelta(days=1)
+    if week:
+        calendar_weeks.append(week)
+    calendar_headers = [_WEEKDAY_ABBR[wd] for wd in work_weekdays]
+
+    return {
+        "logged": logged,
+        "effective_target": effective_target,
+        "balance": balance,
+        "missing_days": missing_days,
+        "partial_days": partial_days,
+        "strikes": strikes,
+        "threshold": threshold,
+        "calendar_headers": calendar_headers,
+        "calendar_weeks": calendar_weeks,
+    }
+
+
 def _visible_projects_and_tasks(db: Session, user: m.Employee):
     """What a given employee is allowed to pick from Today's Project/Task
     dropdowns: every approved, active one — nothing else. A suggestion
@@ -630,8 +799,44 @@ def today_page(
     # the next reload since the condition re-evaluates fresh every time.
     show_punch_out_reminder = day == today and ctx["sub"] is not None and ctx["sub"].locked and ctx["active_punch"] is not None
 
+    # "This Week" / "Reminders" cards (Ganesh, 2026-08-29, from a pasted
+    # mockup — see _week_summary()'s own docstring) fill the blank space
+    # below Plan for the Day / Today's Plan on the live "today" view only,
+    # same "right now" convention as every other live widget on this page
+    # — a past day's own read-only past_plans card already occupies that
+    # spot instead. planned_remaining_days is None (hidden in the
+    # template) when Leave V2 is off, since Planned Time is a V2-only
+    # concept (see LEAVE_MANAGEMENT_V2_ENABLED). pending_ot_days counts
+    # every day spanned by this employee's still-`requested` overtime
+    # pre-approvals — 0 hides the Reminders card entirely rather than
+    # showing an empty "nothing pending" line.
+    week_summary = None
+    month_summary = None
+    planned_remaining_days = None
+    pending_ot_days = 0
+    if day == today:
+        week_summary = _week_summary(db, user, cfg, today)
+        month_summary = _month_summary(db, user, cfg, today)
+        if LEAVE_MANAGEMENT_V2_ENABLED:
+            planned_bal = engine.leave_balance_v2(db, user, today, cfg)[m.LEAVE_PLANNED]
+            if planned_bal["remaining"] is not None and user.daily_target_minutes:
+                planned_remaining_days = planned_bal["remaining"] // user.daily_target_minutes
+        pending_ot_rows = list(
+            db.execute(
+                select(m.OvertimeApproval.start_date, m.OvertimeApproval.end_date).where(
+                    m.OvertimeApproval.employee_id == user.id,
+                    m.OvertimeApproval.status == m.OT_REQUESTED,
+                )
+            ).all()
+        )
+        pending_ot_days = sum((end - start).days + 1 for start, end in pending_ot_rows)
+
     ctx.update(
         {
+            "week_summary": week_summary,
+            "month_summary": month_summary,
+            "planned_remaining_days": planned_remaining_days,
+            "pending_ot_days": pending_ot_days,
             "over_allocation_minutes": over_allocation_minutes,
             "show_overtime_prompt": show_overtime_prompt,
             "show_punch_out_reminder": show_punch_out_reminder,
@@ -1728,6 +1933,71 @@ def request_unlock(
     return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
 
 
+def _ledger_display_status(r: m.DayStatus, comp_erases: bool) -> str:
+    """Display-only label for My Month's "Hours ledger" table (Ganesh,
+    2026-08-29) — layers "Overtime" on top of a genuinely Complete day when
+    that day's variance_minutes is positive (logged more than target).
+    Missing/Partial/Leave/Holiday/Weekend are returned exactly as
+    effective_status() already gives them — this never changes
+    DayStatus.status/effective_status(), strikes, or anything compliance-
+    facing; it's purely which word this one table shows next to a Complete
+    day. A Leave day keeps reading "Leave" even if variance happens to be
+    positive (e.g. a reduced/zeroed target from a partial-day leave) —
+    Leave takes precedence since that's the more meaningful fact about the
+    day."""
+    eff = r.effective_status(comp_erases)
+    if eff == m.COMPLETE and r.variance_minutes is not None and r.variance_minutes > 0:
+        return "overtime"
+    return eff
+
+
+def _weekly_ledger(ledger: List[dict], comp_erases: bool) -> List[dict]:
+    """Groups the chronological (ascending) per-day rows from
+    engine.running_ledger() into Monday-Sunday weeks for My Month's
+    collapsible Hours ledger table (Ganesh, 2026-08-29: "make it week
+    wise... click on that week then that particular week days will
+    expand"). Purely a display grouping over already-computed rows: a
+    week's Logged/Target/Variance are plain sums of its days, but a week's
+    "Balance" is the LAST day's already-cumulative running balance within
+    that week, not a sum — summing running balances would double-count
+    every prior day's balance into every later week. Returns weeks and,
+    within each week, days in DESCENDING (most-recent-first) order, so the
+    template can render top-to-bottom with no further reversal — matching
+    the old `ledger|reverse` convention this replaces."""
+    weeks: List[dict] = []
+    current = None
+    for item in ledger:
+        r = item["row"]
+        week_start = r.date - dt.timedelta(days=r.date.weekday())
+        week_end = week_start + dt.timedelta(days=6)
+        if current is None or current["start"] != week_start:
+            current = {
+                "start": week_start,
+                "end": week_end,
+                "logged": 0,
+                "target": 0,
+                "variance": 0,
+                "balance": item["balance"],
+                "days": [],
+            }
+            weeks.append(current)
+        current["logged"] += r.actual_minutes or 0
+        current["target"] += r.target_minutes or 0
+        current["variance"] += r.variance_minutes or 0
+        current["balance"] = item["balance"]
+        current["days"].append(
+            {
+                "row": r,
+                "balance": item["balance"],
+                "display_status": _ledger_display_status(r, comp_erases),
+            }
+        )
+    for week in weeks:
+        week["days"].reverse()
+    weeks.reverse()
+    return weeks
+
+
 @router.get("/my-month")
 def my_month(
     request: Request,
@@ -1755,11 +2025,21 @@ def my_month(
     strikes = engine.strikes_in(rows.values(), comp_erases)
     threshold = engine.cfg_int(cfg, "strike_threshold")
 
-    # calendar weeks (Mon-first)
+    # calendar weeks (Mon-first) — display_status reuses the same
+    # Overtime-layered label the Hours ledger uses (_ledger_display_status),
+    # so "Overtime" means the same thing in both places on this page
+    # (Ganesh, 2026-08-29, "improvise this calendar view" — no preference
+    # given, so this stays consistent with the ledger rather than
+    # reinventing a second reading of the same DayStatus row).
     weeks, week = [], [None] * 7
     d = first
     while d <= last:
-        week[d.weekday()] = {"date": d, "row": rows.get(d)}
+        r = rows.get(d)
+        week[d.weekday()] = {
+            "date": d,
+            "row": r,
+            "display_status": _ledger_display_status(r, comp_erases) if r else None,
+        }
         if d.weekday() == 6:
             weeks.append(week)
             week = [None] * 7
@@ -1787,6 +2067,7 @@ def my_month(
 
     ledger = engine.running_ledger(db, user, first, min(last, today_local()))
     balance = ledger[-1]["balance"] if ledger else 0
+    weekly_ledger = _weekly_ledger(ledger, comp_erases)
     comp = compensation.monthly_summary(db, user, year, month)
     (py, pm), (ny, nm) = prev_next_month(year, month)
 
@@ -1836,6 +2117,7 @@ def my_month(
             "comp_erases": comp_erases,
             "leave_totals": leave_totals,
             "ledger": ledger,
+            "weekly_ledger": weekly_ledger,
             "balance": balance,
             "entries_by_date": entries_by_date,
             "comp": comp,

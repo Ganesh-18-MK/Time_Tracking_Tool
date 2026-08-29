@@ -39,11 +39,11 @@
         {% for cell in week %}
         {% if cell %}
           {% set r = cell.row %}
-          <td class="{{ 'off' if r and r.status in ('weekend','holiday') }}">
-            <div class="d">{{ cell.date.day }}</div>
+          {% set ds = cell.display_status %}
+          <td class="{{ 'off' if r and r.status in ('weekend','holiday') }} {{ 'cal-' + ds if ds and ds not in ('weekend', 'holiday') }} {{ 'today' if cell.date == today }}">
+            <div class="d">{{ cell.date.day }}{% if cell.date == today %} <span class="small">· today</span>{% endif %}</div>
             {% if r %}
-              {% set eff = r.effective_status(comp_erases) %}
-              <div class="stat"><span class="badge b-{{ eff }}">{{ STATUS_NAMES.get(eff, eff) }}</span>
+              <div class="stat"><span class="badge b-{{ ds }}">{{ STATUS_NAMES.get(ds, ds) }}</span>
                 {% if r.override_status %}<span class="mark" title="Admin override: {{ r.override_reason }}">⚑</span>{% endif %}
                 {% if r.compensated %}<span class="mark" title="Compensated shortfall">↺</span>{% endif %}
               </div>
@@ -64,47 +64,34 @@
       {% endfor %}
     </tbody>
   </table>
-  <p class="small muted">⚑ = admin override (reason on hover) · ↺ = compensated shortfall · hours show actual / target.</p>
+  <p class="small muted">⚑ = admin override (reason on hover) · ↺ = compensated shortfall · hours show actual / target · today's cell is outlined.</p>
 </div>
-
-{% if comp.days %}
-<div class="card">
-  <h2 style="margin-top:0">Compensation (from Punch In/Out)</h2>
-  <p class="small muted" style="margin:-4px 0 10px">Days you punched in/out short of target add to what you owe;
-  days you punched past target automatically pay it back down — no admin action needed.
-  This is separate from the ledger below, which is based on your logged task rows, not the punch clock.</p>
-  <table>
-    <thead><tr><th>Date</th><th>Target</th><th>Punched</th><th>Shortfall</th><th>Overtime</th></tr></thead>
-    <tbody>
-      {% for d in comp.days|reverse %}
-      <tr>
-        <td>{{ d.date.strftime('%a') }} {{ d.date|mdy }}</td>
-        <td>{{ d.target|hm }}</td>
-        <td>{{ d.punched|hm }}</td>
-        <td>{{ d.shortfall|hm if d.shortfall else '—' }}</td>
-        <td>{{ d.overtime|hm if d.overtime else '—' }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-{% endif %}
 
 <div class="card">
   <h2>Hours ledger (variance &amp; running balance)</h2>
-  <table>
-    <thead><tr><th>Date</th><th>Status</th><th>Actual</th><th>Target</th><th>Variance</th><th>Balance</th><th>Entries</th></tr></thead>
+  <p class="small muted" style="margin:-4px 0 10px">Click a week to see its days, then click a day's Entries to see the logged rows.</p>
+  <table class="ledger-centered">
+    <thead><tr><th>Week / Date</th><th>Status</th><th>Actual</th><th>Target</th><th>Variance</th><th>Entries</th></tr></thead>
     <tbody>
-      {% for item in ledger|reverse %}
-      {% set r = item.row %}
+      {% for week in weekly_ledger %}
+      {% set wi = loop.index %}
+      <tr class="week-row" data-week="{{ wi }}">
+        <td><span class="caret">▸</span> {{ week.start|mdy }} – {{ week.end|mdy }}</td>
+        <td class="small muted">{{ week.days|length }} day{{ '' if week.days|length == 1 else 's' }}</td>
+        <td>{{ week.logged|hm }}</td>
+        <td>{{ week.target|hm }}</td>
+        <td>{{ week.variance|hm_signed }}</td>
+        <td></td>
+      </tr>
+      {% for day in week.days %}
+      {% set r = day.row %}
       {% set day_entries = entries_by_date.get(r.date, []) %}
-      <tr>
+      <tr class="week-day-row" data-week="{{ wi }}" style="display:none">
         <td>{{ r.date.strftime('%a') }} {{ r.date|mdy }}</td>
-        <td><span class="badge b-{{ r.effective_status(comp_erases) }}">{{ STATUS_NAMES.get(r.effective_status(comp_erases)) }}</span></td>
+        <td><span class="badge b-{{ day.display_status }}">{{ STATUS_NAMES.get(day.display_status, day.display_status) }}</span></td>
         <td>{{ r.actual_minutes|hm }}</td>
         <td>{{ r.target_minutes|hm }}</td>
         <td>{{ r.variance_minutes|hm_signed if r.variance_minutes is not none else '—' }}</td>
-        <td><strong>{{ item.balance|hm_signed }}</strong></td>
         <td>
           {% if day_entries %}
           <details>
@@ -116,8 +103,8 @@
         </td>
       </tr>
       {% if day_entries %}
-      <tr class="entries-detail-row" style="display:none">
-        <td colspan="7">
+      <tr class="entries-detail-row" data-week="{{ wi }}" style="display:none">
+        <td colspan="6">
           <table class="small" style="margin:4px 0">
             <thead>
               <tr><th>Start</th><th>End</th><th>Duration</th><th>Project/Employer</th><th>Task</th><th>Details</th></tr>
@@ -139,18 +126,52 @@
       </tr>
       {% endif %}
       {% endfor %}
+      {% endfor %}
     </tbody>
   </table>
   <p class="small muted">Read-only — past entries can't be edited here. Today's rows can still be edited/deleted from the Today page.</p>
 </div>
 <script>
+  document.querySelectorAll('.week-row').forEach(function (wr) {
+    wr.addEventListener('click', function () {
+      var wk = wr.dataset.week;
+      var open = wr.classList.toggle('open');
+      var caret = wr.querySelector('.caret');
+      if (caret) caret.textContent = open ? '▾' : '▸';
+      document.querySelectorAll('tr[data-week="' + wk + '"]').forEach(function (row) {
+        if (row === wr) return;
+        if (row.classList.contains('entries-detail-row')) {
+          var prev = row.previousElementSibling;
+          var det = prev ? prev.querySelector('details') : null;
+          row.style.display = (open && det && det.open) ? '' : 'none';
+        } else {
+          row.style.display = open ? '' : 'none';
+        }
+      });
+    });
+  });
   document.querySelectorAll('details').forEach(function (d) {
-    var row = d.closest('tr').nextElementSibling;
+    var tr = d.closest('tr');
+    var row = tr ? tr.nextElementSibling : null;
     if (row && row.classList.contains('entries-detail-row')) {
       d.addEventListener('toggle', function () {
         row.style.display = d.open ? '' : 'none';
       });
     }
+  });
+  // Clicking anywhere on a day row (not just the "View (N)" summary text
+  // itself) toggles that day's entries too (Ganesh, 2026-08-29).
+  document.querySelectorAll('.week-day-row').forEach(function (row) {
+    var det = row.querySelector('details');
+    if (!det) return;
+    var entriesRow = row.nextElementSibling;
+    if (!entriesRow || !entriesRow.classList.contains('entries-detail-row')) entriesRow = null;
+    row.style.cursor = 'pointer';
+    row.addEventListener('click', function (ev) {
+      if (ev.target.closest('summary')) return; // native toggle already handles this
+      det.open = !det.open;
+      if (entriesRow) entriesRow.style.display = det.open ? '' : 'none';
+    });
   });
 </script>
 {% endblock %}

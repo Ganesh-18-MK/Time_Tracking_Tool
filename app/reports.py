@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app import engine, models as m
 from app.models import COMPLETE, HOLIDAY, LEAVE, MISSING, PARTIAL, STRIKE_STATUSES, WEEKEND
-from app.util import overtime_minutes, today_local
+from app.util import fmt_hm, fmt_time, overtime_minutes, today_local
 
 STATUS_ORDER = [COMPLETE, PARTIAL, MISSING, LEAVE, HOLIDAY, WEEKEND]
 STATUS_LABELS = {
@@ -362,6 +362,28 @@ def time_filters_summary(
     }
 
 
+def time_kpis(result: dict, project_result: dict) -> List[dict]:
+    """Report-level KPI tiles for the redesigned Time by Project/Task report
+    (Ganesh, 2026-08-29) — pure post-processing over the two already-
+    computed report dicts, no extra DB access. Unlike Attendance/Strikes
+    this report has no day-by-day shape (it's month buckets), so it gets
+    tiles only, no day-strip — the existing By Project / by-employee tables
+    below stay as they are."""
+    rows = result["rows"]
+    if not rows:
+        return []
+    active = sum(1 for r in rows if r["total"] > 0)
+    top_project = project_result["projects"][0] if project_result["projects"] else None
+    return [
+        {"label": "Total logged", "value": result["grand_total"], "hm": True, "variant": ""},
+        {"label": "Employees with time", "value": active, "sub": f"of {len(rows)} in this filter", "variant": ""},
+        {"label": "Projects touched", "value": len(project_result["projects"]), "variant": ""},
+        {"label": "Top project", "value": top_project["project"].name if top_project else "—",
+         "sub": (top_project["total"] // 60 and f"{top_project['total'] // 60}h {top_project['total'] % 60}m") if top_project else "",
+         "variant": ""},
+    ]
+
+
 def attendance_report(db: Session, start: dt.date, end: dt.date,
                        department: Optional[str] = None, employee_id: Optional[int] = None) -> dict:
     """{"mode": "daily", "employee": Employee, "rows": [{"date","status","overtime"}]}
@@ -413,7 +435,14 @@ def attendance_report(db: Session, start: dt.date, end: dt.date,
         counts = _empty_counts()
         emp_overtime = emp_approved_overtime = 0
         emp_ranges = approved_ranges.get(e.id, [])
-        for r in by_emp.get(e.id, []):
+        # daily: same {date, status} shape as daily-detail mode's own rows,
+        # kept here too (Ganesh, 2026-08-29) so the summary table's
+        # day-strip mini calendar doesn't need a second query — this
+        # report already loads every DayStatus row in range per employee
+        # via by_emp above, this just doesn't throw the per-day detail away.
+        daily = []
+        emp_rows = sorted(by_emp.get(e.id, []), key=lambda r: r.date)
+        for r in emp_rows:
             eff = r.effective_status(comp_erases)
             if eff in counts:
                 counts[eff] += 1
@@ -421,14 +450,77 @@ def attendance_report(db: Session, start: dt.date, end: dt.date,
             emp_overtime += day_overtime
             if _date_is_approved(emp_ranges, r.date):
                 emp_approved_overtime += day_overtime
+            daily.append({"date": r.date, "status": eff})
         expected = counts[COMPLETE] + counts[PARTIAL] + counts[MISSING]
         pct = round(100 * counts[COMPLETE] / expected, 1) if expected else None
         summary.append({
             "employee": e, "department": e.department or "—", "counts": counts,
             "attendance_pct": pct, "overtime_minutes": emp_overtime,
-            "approved_overtime_minutes": emp_approved_overtime,
+            "approved_overtime_minutes": emp_approved_overtime, "daily": daily,
         })
+    # Rows needing action sort to the top (Ganesh, 2026-08-29, matching the
+    # mockup) — anyone with at least one Missing day in range first, then
+    # alphabetical within each group; a stable sort so the alphabetical
+    # order from employees_list() above is preserved as the tiebreaker.
+    summary.sort(key=lambda r: (0 if r["counts"][MISSING] > 0 else 1, r["employee"].name))
     return {"mode": "summary", "rows": summary}
+
+
+def attendance_kpis(result: dict) -> List[dict]:
+    """Report-level KPI tiles for the redesigned Attendance report (Ganesh,
+    2026-08-29, matching a pasted mockup) — pure post-processing over
+    attendance_report()'s own already-computed result, no extra DB access.
+    Summary mode gets team-wide tiles; daily mode (one employee selected)
+    gets that person's own. Returns [] for an empty result rather than
+    tiles full of zeroes-that-look-like-real-zeroes."""
+    if result["mode"] == "daily":
+        rows = result["rows"]
+        if not rows:
+            return []
+        counts = _empty_counts()
+        overtime = 0
+        for r in rows:
+            if r["status"] in counts:
+                counts[r["status"]] += 1
+            overtime += r["overtime"] or 0
+        expected = counts[COMPLETE] + counts[PARTIAL] + counts[MISSING]
+        pct = round(100 * counts[COMPLETE] / expected, 1) if expected else None
+        return [
+            {"label": "Attendance", "value": f"{pct}%" if pct is not None else "—", "variant": ""},
+            {"label": "Days missing", "value": counts[MISSING],
+             "variant": "alertk" if counts[MISSING] else ""},
+            {"label": "Days partial", "value": counts[PARTIAL],
+             "variant": "warnk" if counts[PARTIAL] else ""},
+            {"label": "Overtime logged", "value": overtime, "hm": True, "variant": ""},
+        ]
+
+    rows = result["rows"]
+    if not rows:
+        return []
+    total_counts = _empty_counts()
+    total_overtime = 0
+    employees_missing = 0
+    with_department = 0
+    for r in rows:
+        for s, n in r["counts"].items():
+            total_counts[s] += n
+        total_overtime += r["overtime_minutes"]
+        if r["counts"][MISSING] > 0:
+            employees_missing += 1
+        if r["department"] != "—":
+            with_department += 1
+    expected = total_counts[COMPLETE] + total_counts[PARTIAL] + total_counts[MISSING]
+    team_pct = round(100 * total_counts[COMPLETE] / expected, 1) if expected else None
+    return [
+        {"label": "Team attendance", "value": f"{team_pct}%" if team_pct is not None else "—", "variant": ""},
+        {"label": "Days not logged", "value": total_counts[MISSING],
+         "sub": f"across {employees_missing} employee{'s' if employees_missing != 1 else ''}" if total_counts[MISSING] else "",
+         "variant": "alertk" if total_counts[MISSING] else ""},
+        {"label": "Overtime logged", "value": total_overtime, "hm": True, "variant": ""},
+        {"label": "Department set", "value": f"{with_department} / {len(rows)}",
+         "sub": f"{len(rows) - with_department} profile{'s' if len(rows) - with_department != 1 else ''} incomplete" if with_department < len(rows) else "",
+         "variant": "warnk" if with_department < len(rows) else ""},
+    ]
 
 
 def task_log_overtime_report(db: Session, start: dt.date, end: dt.date, employee_ids: List[int]) -> List[dict]:
@@ -504,10 +596,42 @@ def strikes_report(db: Session, start: dt.date, end: dt.date,
 
     summary = []
     for e in emps:
-        strikes = engine.strikes_in(by_emp.get(e.id, []), comp_erases)
-        summary.append({"employee": e, "department": e.department or "—", "strikes": strikes})
+        emp_rows = sorted(by_emp.get(e.id, []), key=lambda r: r.date)
+        strikes = engine.strikes_in(emp_rows, comp_erases)
+        # daily: same day-strip shape as the redesigned Attendance report
+        # (Ganesh, 2026-08-29) — a strike day gets its real status color
+        # (missing/partial), everything else collapses to "none" so the
+        # strip reads as "here's where the strikes are", not a second copy
+        # of the Attendance report's own strip.
+        daily = [
+            {"date": r.date,
+             "status": r.effective_status(comp_erases) if (r.effective_status(comp_erases) in STRIKE_STATUSES and not r.strike_exempt) else "none"}
+            for r in emp_rows
+        ]
+        summary.append({"employee": e, "department": e.department or "—", "strikes": strikes, "daily": daily})
     summary.sort(key=lambda r: -r["strikes"])
     return {"mode": "summary", "rows": summary}
+
+
+def strikes_kpis(result: dict) -> List[dict]:
+    """Report-level KPI tiles for the redesigned Strikes report (Ganesh,
+    2026-08-29) — same pure-post-processing shape as attendance_kpis()."""
+    if result["mode"] == "daily":
+        return [{"label": "Strikes in range", "value": result["total"],
+                  "variant": "alertk" if result["total"] else ""}]
+    rows = result["rows"]
+    if not rows:
+        return []
+    total_strikes = sum(r["strikes"] for r in rows)
+    with_strikes = sum(1 for r in rows if r["strikes"] > 0)
+    worst = max(rows, key=lambda r: r["strikes"]) if total_strikes else None
+    return [
+        {"label": "Total strikes", "value": total_strikes, "variant": "alertk" if total_strikes else ""},
+        {"label": "Employees with strikes", "value": with_strikes,
+         "sub": f"of {len(rows)} tracked", "variant": "warnk" if with_strikes else ""},
+        {"label": "Worst this range", "value": f"{worst['employee'].name} ({worst['strikes']})" if worst else "—",
+         "variant": ""},
+    ]
 
 
 # ---- Developer Usage Report (Ganesh, 2026-08-21) -----------------------------
@@ -583,3 +707,186 @@ def feature_usage_report(db: Session, start: dt.date, end: dt.date) -> dict:
         "punch": punch,
         "employees": employee_rows,
     }
+
+
+# ---- Task Logs Report (Ganesh, 2026-08-29) -----------------------------------
+# Employee-wise raw task log, redesigned per a pasted mockup: each day's real
+# TaskEntry rows (the messy free-typed "1.did X 2.did Y" details admins were
+# struggling to read) plus an "unplanned" flag on any entry that doesn't
+# match something the employee actually planned that day, plus an optional
+# LLM-generated 4-5 bullet summary. Same "All Employees -> summary, one
+# person -> day-by-day detail" drill-down convention as Attendance/Strikes
+# above, and deliberately so: it's also what keeps this report's LLM cost
+# bounded — summaries are only ever generated for the one employee/day an
+# admin has actually opened, one day at a time via an explicit "Generate"
+# click (see /admin/reports/tasklogs/summarize in app/routes/reports.py),
+# never eagerly for a whole date range on page load. A synchronous request
+# calling an LLM 30 times in a loop for "last month" would be slow and
+# expensive for no reason nobody asked for yet.
+def _planned_pairs_by_date(db: Session, employee_id: int, start: dt.date, end: dt.date) -> Dict[dt.date, set]:
+    """date -> set of (project_id, task_type_id) this employee had ANY
+    PlannedTask for that day, any status (planned/running/paused/done) —
+    "did they plan this project+task at all today", not "is it still
+    sitting unstarted". Carried-forward copies (PlannedTask.carried_at,
+    see app/models.py) land on their own new date already, so they're
+    naturally counted on the day they actually apply to."""
+    out: Dict[dt.date, set] = {}
+    for row in db.execute(
+        select(m.PlannedTask.date, m.PlannedTask.project_id, m.PlannedTask.task_type_id).where(
+            m.PlannedTask.employee_id == employee_id,
+            m.PlannedTask.date.between(start, end),
+        )
+    ).all():
+        d, pid, tid = row
+        out.setdefault(d, set()).add((pid, tid))
+    return out
+
+
+def rule_based_day_summary(rows: list) -> List[str]:
+    """Deterministic, no-API-call replacement for the original LLM-backed
+    summary (Ganesh, 2026-08-29: "without LLM cant we generate summary" —
+    answered yes, then asked to replace it outright rather than keep both).
+    One bullet per project worked that day, naming the project, its total
+    time, and the distinct tasks logged under it — this satisfies the
+    original ask ("4-5 bullets highlighting project names") without any
+    network call, API key, cost, or failure mode, at the cost of reading
+    as a flat list rather than natural prose. Capped at 5 project bullets
+    (a 6th+ collapses into one "+N more projects" line) — same top-N-plus-
+    other instinct the "By Project" pie chart already uses, so a day spread
+    across many small projects doesn't produce an unreadably long list.
+    Returns [] for a day with no entries (nothing to summarize) rather than
+    None — there's no "generation failed" state anymore, so callers/
+    templates never need to distinguish "empty" from "errored"."""
+    if not rows:
+        return []
+    order: List[int] = []
+    by_project: Dict[int, dict] = {}
+    for r in sorted(rows, key=lambda r: r.start_minute):
+        pid = r.project_id
+        if pid not in by_project:
+            order.append(pid)
+            by_project[pid] = {"name": r.project.name if r.project else "—", "minutes": 0, "tasks": []}
+        entry = by_project[pid]
+        entry["minutes"] += r.duration_minutes
+        task_name = r.task_type.name if r.task_type else "—"
+        if task_name not in entry["tasks"]:
+            entry["tasks"].append(task_name)
+    bullets = []
+    TOP_N = 5
+    shown = order[:TOP_N]
+    for pid in shown:
+        p = by_project[pid]
+        bullets.append(f"{p['name']} ({fmt_hm(p['minutes'])}): {', '.join(p['tasks'])}")
+    remaining = order[TOP_N:]
+    if remaining:
+        extra_minutes = sum(by_project[pid]["minutes"] for pid in remaining)
+        bullets.append(f"+{len(remaining)} more project(s) ({fmt_hm(extra_minutes)})")
+    return bullets
+
+
+def daily_task_log_report(db: Session, start: dt.date, end: dt.date,
+                           department: Optional[str] = None, employee_id: Optional[int] = None) -> dict:
+    """{"mode": "daily", "employee": Employee, "days": [{"date", "entries":
+    [{"entry": TaskEntry, "unplanned": bool}, ...], "unplanned_count",
+    "total_minutes", "summary": {bullets, error, stale, hash}}, ...]}
+    when one employee is selected (most recent day first — unlike
+    Attendance/Strikes' oldest-first daily mode, admins open this one to
+    read today's or yesterday's actual work, not audit a whole range in
+    order), else {"mode": "summary", "rows": [{"employee", "department",
+    "entries", "unplanned_count", "days_logged"}, ...]} sorted by
+    unplanned_count descending (busiest-to-flag first) — no LLM calls at
+    all in summary mode, see this section's own module-level comment."""
+    emps = _scope_employees(db, department, employee_id)
+    emp_ids = [e.id for e in emps]
+    if not emp_ids:
+        return {"mode": "daily" if employee_id else "summary", "employee": None, "days": [], "rows": []}
+
+    entries = list(
+        db.execute(
+            select(m.TaskEntry).where(
+                m.TaskEntry.employee_id.in_(emp_ids),
+                m.TaskEntry.date.between(start, end),
+            )
+        ).scalars()
+    )
+    by_emp_date: Dict[tuple, list] = {}
+    for r in entries:
+        by_emp_date.setdefault((r.employee_id, r.date), []).append(r)
+    planned_by_emp: Dict[int, Dict[dt.date, set]] = {
+        e.id: _planned_pairs_by_date(db, e.id, start, end) for e in emps
+    }
+
+    if employee_id and len(emps) == 1:
+        emp = emps[0]
+        dates = sorted({d for (eid, d) in by_emp_date if eid == emp.id}, reverse=True)
+        planned = planned_by_emp[emp.id]
+        days = []
+        for d in dates:
+            rows = sorted(by_emp_date[(emp.id, d)], key=lambda r: r.start_minute)
+            planned_pairs = planned.get(d, set())
+            day_entries = [
+                {"entry": r, "unplanned": (r.project_id, r.task_type_id) not in planned_pairs}
+                for r in rows
+            ]
+            days.append({
+                "date": d,
+                "entries": day_entries,
+                "unplanned_count": sum(1 for e in day_entries if e["unplanned"]),
+                "total_minutes": sum(r.duration_minutes for r in rows),
+                "summary": {"bullets": rule_based_day_summary(rows)},
+            })
+        return {"mode": "daily", "employee": emp, "days": days}
+
+    summary = []
+    for e in emps:
+        e_dates = {d for (eid, d) in by_emp_date if eid == e.id}
+        total_entries = 0
+        unplanned = 0
+        for d in e_dates:
+            rows = by_emp_date[(e.id, d)]
+            planned_pairs = planned_by_emp[e.id].get(d, set())
+            total_entries += len(rows)
+            unplanned += sum(1 for r in rows if (r.project_id, r.task_type_id) not in planned_pairs)
+        summary.append({
+            "employee": e, "department": e.department or "—",
+            "entries": total_entries, "unplanned_count": unplanned, "days_logged": len(e_dates),
+        })
+    summary.sort(key=lambda r: -r["unplanned_count"])
+    return {"mode": "summary", "rows": summary}
+
+
+def task_log_export_rows(db: Session, start: dt.date, end: dt.date,
+                          department: Optional[str] = None, employee_id: Optional[int] = None) -> List[dict]:
+    """Flat, ungrouped rows behind both Task Logs downloads (Ganesh,
+    2026-08-29: "i want download report option as well like project wise
+    and employee wise") — one dict per TaskEntry in the filtered
+    department/employee/date-range scope, with the same "unplanned" rule
+    daily_task_log_report() uses (no matching PlannedTask that exact date).
+    The two .xlsx export routes in app/routes/reports.py just sort/group
+    this same list two different ways (by employee, by project) rather than
+    running two independent queries that could quietly drift apart."""
+    emps = _scope_employees(db, department, employee_id)
+    emp_ids = [e.id for e in emps]
+    if not emp_ids:
+        return []
+    entries = list(
+        db.execute(
+            select(m.TaskEntry)
+            .where(m.TaskEntry.employee_id.in_(emp_ids), m.TaskEntry.date.between(start, end))
+            .order_by(m.TaskEntry.date, m.TaskEntry.start_minute)
+        ).scalars()
+    )
+    planned_by_emp: Dict[int, Dict[dt.date, set]] = {
+        e.id: _planned_pairs_by_date(db, e.id, start, end) for e in emps
+    }
+    rows = []
+    for r in entries:
+        planned_pairs = planned_by_emp.get(r.employee_id, {}).get(r.date, set())
+        rows.append({
+            "employee": r.employee, "date": r.date, "project": r.project, "task": r.task_type,
+            "details": r.details, "client": r.client,
+            "start_minute": r.start_minute, "end_minute": r.end_minute,
+            "duration_minutes": r.duration_minutes,
+            "unplanned": (r.project_id, r.task_type_id) not in planned_pairs,
+        })
+    return rows

@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% set active_nav = 'reports' %}
+{% block title %}Task Logs · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Task Logs</h1>
+<p class="muted small"><a href="/admin/reports">← All reports</a></p>
+<p class="small muted" style="margin-top:-6px">Raw task log entries, employee by employee. Pick one person for their
+  day-by-day log with an auto-generated summary and an "unplanned" flag on anything they logged that wasn't in that
+  day's Plan; leave it on "All Employees" for a summary of who has the most unplanned work to review.</p>
+
+<div class="card">
+  <form method="get" action="/admin/reports/tasklogs" class="formrow" id="filters">
+    <div>
+      <label>Department</label>
+      <select name="dept" onchange="document.getElementById('emp-select').value='0'; this.form.submit()">
+        {% if user.is_super_admin %}<option value="" {{ 'selected' if not dept }}>All Departments</option>{% endif %}
+        {% for d in departments %}
+        <option value="{{ d }}" {{ 'selected' if dept == d }}>{{ d }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Employee</label>
+      <select name="emp" id="emp-select" onchange="this.form.submit()">
+        <option value="0" {{ 'selected' if emp == 0 }}>All Employees</option>
+        {% for e in employees %}
+        <option value="{{ e.id }}" {{ 'selected' if emp == e.id }}>{{ e.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Date range</label>
+      <select name="range" id="range-select" onchange="mkToggleCustomRange()">
+        {% for key, plabel, days in range_presets %}
+        <option value="{{ key }}" {{ 'selected' if range == key }}>{{ plabel }}</option>
+        {% endfor %}
+        <option value="custom" {{ 'selected' if range == 'custom' }}>Custom range…</option>
+      </select>
+    </div>
+    <div id="custom-dates" style="{{ '' if range == 'custom' else 'display:none' }}">
+      <label>From</label><input type="date" name="start" value="{{ start }}">
+      <label>To</label><input type="date" name="end" value="{{ end }}">
+    </div>
+    <div><button type="submit">Apply</button></div>
+  </form>
+  <p class="small muted" style="margin-top:8px">Showing {{ resolved_start|mdy }} to {{ resolved_end|mdy }}.
+    <a href="/admin/reports/tasklogs_employee.xlsx?dept={{ dept }}&emp={{ emp }}&range={{ range }}&start={{ start }}&end={{ end }}">Download by employee (Excel)</a>
+    · <a href="/admin/reports/tasklogs_project.xlsx?dept={{ dept }}&emp={{ emp }}&range={{ range }}&start={{ start }}&end={{ end }}">Download by project (Excel)</a></p>
+</div>
+
+{% if result.mode == 'daily' %}
+{% if not result.employee %}
+<div class="card"><p class="muted">Employee not found.</p></div>
+{% else %}
+<h2 style="margin:14px 0 4px">{{ result.employee.name }}</h2>
+{% if not result.days %}
+<div class="card"><p class="muted">No task entries logged in this range.</p></div>
+{% endif %}
+{% for day in result.days %}
+<div class="tasklog-day-card">
+  <div class="tasklog-day-head">
+    <div><strong>{{ day.date.strftime('%A') }} {{ day.date|mdy }}</strong>
+      <span class="muted small">{{ day.total_minutes|hm }} logged · {{ day.entries|length }} entr{{ 'y' if day.entries|length == 1 else 'ies' }}</span>
+    </div>
+    {% if day.unplanned_count %}
+    <span class="badge b-unplanned">{{ day.unplanned_count }} unplanned</span>
+    {% endif %}
+  </div>
+
+  <div class="tasklog-summary">
+    {% if day.summary.bullets %}
+    <div class="small muted">Summary</div>
+    <ul>
+      {% for b in day.summary.bullets %}<li>{{ b }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+
+  <table>
+    <thead><tr><th>Start</th><th>End</th><th>Duration</th><th>Project/Employer</th><th>Task</th><th>Details</th><th></th></tr></thead>
+    <tbody>
+      {% for item in day.entries %}
+      {% set r = item.entry %}
+      <tr>
+        <td class="nowrap">{{ r.start_minute|clock }}</td>
+        <td class="nowrap">{{ r.end_minute|clock }}</td>
+        <td class="nowrap"><strong>{{ r.duration_minutes|hm }}</strong></td>
+        <td>{{ r.project.name }}{% if r.client %}<div class="small muted">Client: {{ r.client }}</div>{% endif %}</td>
+        <td>{{ r.task_type.name }}</td>
+        <td class="small" style="white-space:pre-wrap">{{ r.details }}{% if r.imported %} <span class="muted">(legacy)</span>{% endif %}</td>
+        <td>{% if item.unplanned %}<span class="badge b-unplanned" title="Doesn't match anything planned for this day">unplanned</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endfor %}
+{% endif %}
+{% else %}
+<div class="card">
+  <div class="searchbar">
+    <input type="search" data-filter-table="tasklog-summary-table" placeholder="Search employees…">
+  </div>
+  <table id="tasklog-summary-table">
+    <thead><tr><th>Name</th><th>Department</th><th>Days logged</th><th>Entries</th><th>Unplanned</th><th></th></tr></thead>
+    <tbody>
+      {% for r in result.rows %}
+      <tr {% if r.unplanned_count %}style="background:var(--warn-bg)"{% endif %}>
+        <td>{{ r.employee.name }}</td>
+        <td>{{ r.department }}</td>
+        <td>{{ r.days_logged }}</td>
+        <td>{{ r.entries }}</td>
+        <td>{% if r.unplanned_count %}<span class="badge b-unplanned">{{ r.unplanned_count }}</span>{% else %}—{% endif %}</td>
+        <td><a href="/admin/reports/tasklogs?dept={{ dept }}&emp={{ r.employee.id }}&range={{ range }}&start={{ start }}&end={{ end }}">Open →</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">No tracked employees match this filter.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="report-legend">
+    <span class="muted">Rows with unplanned entries are highlighted, sorted worst-first. Pick one employee above for their day-by-day log and daily summaries.</span>
+  </div>
+</div>
+{% endif %}
+
+<script>
+  function mkToggleCustomRange() {
+    var isCustom = document.getElementById('range-select').value === 'custom';
+    document.getElementById('custom-dates').style.display = isCustom ? '' : 'none';
+    if (!isCustom) document.getElementById('filters').submit();
+  }
+</script>
+{% endblock %}

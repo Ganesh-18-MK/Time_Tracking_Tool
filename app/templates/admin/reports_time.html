@@ -69,6 +69,18 @@
   </p>
 </div>
 
+{% if kpis %}
+<div class="kpis" style="margin:14px 0">
+  {% for k in kpis %}
+  <div class="kpi {{ k.variant }}">
+    <div class="n">{{ k.value|hm if k.hm else k.value }}</div>
+    <div class="l">{{ k.label }}</div>
+    {% if k.sub %}<div class="muted small" style="margin-top:2px">{{ k.sub }}</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
 {# By Project (Ganesh, 2026-08-24; moved above the per-employee table
    2026-08-25 per Ganesh) — same filters as the table below, but grouped
    the other way: per project, how much time in total, and how that
@@ -79,7 +91,7 @@
 <div class="card">
   <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
     <h2 style="margin:0">By Project</h2>
-    <button type="button" class="small secondary" id="pie-toggle-btn" onclick="toggleProjectPie()">Pie chart</button>
+    <button type="button" class="small" id="pie-toggle-btn" onclick="toggleProjectPie()">Pie chart</button>
   </div>
   <p class="small muted" style="margin:4px 0 10px">Each project's total, broken down by task worked on within it.</p>
 

@@ -1,29 +1,163 @@
 {% extends "base.html" %}
 {% set active_nav = 'assignments' %}
-{% block title %}Assignments · MK Timekeeping{% endblock %}
+{% block title %}Assign Work · MK Timekeeping{% endblock %}
 {% block content %}
-<h1>Project &amp; task assignments</h1>
-<p class="small muted">Advisory only — assigning projects/tasks to someone highlights those first on their Today
-  entry form, but they can still log time against any active project or task. Nobody is ever blocked from logging
-  time just because assignments haven't been set up yet.</p>
+<h1>Assign Work</h1>
+<p class="small muted">Two independent things live on this page (Ganesh, 2026-08-29 — moved the second one here
+  from Person Detail so both are in one place): "Assigned projects/tasks" below is advisory only — it highlights
+  those first on someone's Today entry form, but never blocks logging time against anything else. "Assign a new
+  task" actually drops a Project + Task into that employee's Plan for the Day for a specific date — they'll see
+  it on their Today page and can Start/Pause/Resume/Stop it like any other plan.</p>
 
-<div class="card">
-  <form method="get" action="/admin/assignments" class="formrow">
-    <div>
-      <label>Employee</label>
-      <select name="employee_id" onchange="this.form.submit()">
-        <option value="">— choose —</option>
-        {% for e in emps %}
-        <option value="{{ e.id }}" {{ 'selected' if selected and selected.id == e.id }}>{{ e.name }}{% if e.department %} ({{ e.department }}){% endif %}</option>
-        {% endfor %}
-      </select>
-    </div>
-  </form>
+<div class="tree-toolbar">
+  <div class="search" style="flex:1;min-width:220px">
+    <input type="search" id="emp-tree-q" placeholder="Search departments or employees…" style="width:100%" oninput="empTreeFilter()">
+  </div>
+  <span class="muted small">{{ emp_dept_groups|length }} department(s) · {{ emps|length }} employee(s)</span>
 </div>
+<!-- Department -> Employee picker (Ganesh, 2026-08-29: "instead it should
+     show departments once admin clicked on department it should show
+     employee ... even we can have search option directly search for
+     employees and departments as well") — reuses the exact same .tree/
+     .tree-dept/.tree-car/.tree-body classes the Projects & Tasks tree
+     already built, one level deep since an employee is a leaf (clicking
+     one just navigates to ?employee_id=..., which is what "expands" the
+     cards below). Auto-opens whichever department the selected employee
+     is in and highlights their row. -->
+<div class="tree" id="emp-tree">
+  {% for g in emp_dept_groups %}
+  <details class="tree-dept" data-name="{{ g.name }}" {% if selected and (selected.department or '—') == g.name %}open{% endif %}>
+    <summary>
+      <span class="tree-car">▶</span>
+      <span class="tree-dept-nm">{{ g.name }}</span>
+      <span class="tree-meta">{{ g.employees|length }} employee(s)</span>
+    </summary>
+    <div class="tree-body">
+      {% for e in g.employees %}
+      <a class="tree-emp-row {{ 'sel' if selected and selected.id == e.id }}" href="/admin/assignments?employee_id={{ e.id }}" data-name="{{ e.name }}">{{ e.name }}</a>
+      {% endfor %}
+    </div>
+  </details>
+  {% endfor %}
+</div>
+<script>
+// Department -> Employee search filter (Ganesh, 2026-08-29) — same
+// hand-rolled convention as treeFilter() on the Projects & Tasks page.
+// Matching on the department name keeps every employee row in that
+// department visible (so typing a department name browses its whole
+// team), matching an employee name narrows to just that row.
+function empTreeFilter() {
+  var q = document.getElementById('emp-tree-q').value.trim().toLowerCase();
+  document.querySelectorAll('#emp-tree .tree-dept').forEach(function (dept) {
+    var deptName = (dept.dataset.name || '').toLowerCase();
+    var anyVisible = false;
+    dept.querySelectorAll(':scope > .tree-body > .tree-emp-row').forEach(function (row) {
+      var empName = (row.dataset.name || '').toLowerCase();
+      var match = !q || deptName.indexOf(q) !== -1 || empName.indexOf(q) !== -1;
+      row.classList.toggle('tree-hidden', !match);
+      if (match) anyVisible = true;
+    });
+    dept.classList.toggle('tree-hidden', !!q && !anyVisible);
+    if (q && anyVisible) dept.open = true;
+  });
+}
+</script>
 
 {% if selected %}
 <div class="card">
-  <h2>{{ selected.name }}</h2>
+  <h2>Assigned tasks for {{ selected.name }}{% if assigned_plans %} ({{ assigned_plans|length }}){% endif %}</h2>
+  <!-- TK-04 (Ganesh, 2026-08-28), moved here from Person Detail 2026-08-29 —
+       reuses the exact same /admin/person/{emp_id}/plan/add|edit|delete
+       routes Person Detail's own "Assigned tasks" card posts to; return_to
+       tells those routes to send the admin back here instead, keeping this
+       same employee selected (see _plan_redirect() in app/routes/admin.py).
+       Still shows on Person Detail too — this is an additional entry
+       point, not a replacement, since looking at one employee's full
+       history there is still useful context. -->
+  {% if assigned_plans %}
+  <table>
+    <thead><tr><th>Date</th><th>Project</th><th>Task</th><th>Note</th><th>By</th><th></th></tr></thead>
+    <tbody>
+      {% for p in assigned_plans %}
+      <tr>
+        <td class="nowrap">{{ p.date|mdy }}</td>
+        <td>{{ p.project.name }}{% if p.client %}<div class="small muted">Client: {{ p.client }}</div>{% endif %}</td>
+        <td>{{ p.task_type.name }}</td>
+        <td class="small" style="white-space:pre-wrap">{{ p.details }}</td>
+        <td class="small muted">{{ p.assigned_by.name if p.assigned_by else '—' }}</td>
+        <td class="right">
+          <details class="details-edit inline">
+            <summary class="small muted">✎ edit</summary>
+            <form method="post" action="/admin/plan/{{ p.id }}/edit" class="formrow" style="margin-top:6px">
+              <input type="hidden" name="ym" value="">
+              <input type="hidden" name="return_to" value="assignments">
+              <div>
+                <label>Project</label>
+                <select name="project_id" required>
+                  {% for pi in plan_project_items %}
+                  <option value="{{ pi.id }}" {{ 'selected' if pi.id == p.project_id }}>{{ pi.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label>Task</label>
+                <select name="task_type_id" required>
+                  {% for ti in plan_task_items %}
+                  <option value="{{ ti.id }}" {{ 'selected' if ti.id == p.task_type_id }}>{{ ti.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div><label>Date</label><input type="date" name="date" value="{{ p.date.isoformat() }}" required></div>
+              <div><label>Client</label><input name="client" value="{{ p.client }}"></div>
+              <div style="flex:1 1 200px"><label>Note</label><input name="details" value="{{ p.details }}" style="width:100%"></div>
+              <div><button class="small">Save</button></div>
+            </form>
+          </details>
+          <form method="post" action="/admin/plan/{{ p.id }}/delete" class="inline" onsubmit="return confirm('Remove this assigned task?')">
+            <input type="hidden" name="ym" value="">
+            <input type="hidden" name="return_to" value="assignments">
+            <button class="small secondary">✕</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted small">Nothing currently assigned and not yet started.</p>
+  {% endif %}
+
+  <h3>Assign a new task</h3>
+  <form method="post" action="/admin/person/{{ selected.id }}/plan/add" class="formrow">
+    <input type="hidden" name="ym" value="">
+    <input type="hidden" name="return_to" value="assignments">
+    <div class="combo" id="combo-assign-project" data-placeholder="a project" style="flex:1 1 200px">
+      <label>Project/Employer</label>
+      <input type="text" class="combo-input" autocomplete="off" placeholder="Type to search…" required>
+      <input type="hidden" name="project_id">
+      <div class="combo-menu" hidden></div>
+    </div>
+    <div class="combo" id="combo-assign-task" data-placeholder="a task" style="flex:1 1 200px">
+      <label>Task</label>
+      <input type="text" class="combo-input" autocomplete="off" placeholder="Type to search…" required>
+      <input type="hidden" name="task_type_id">
+      <div class="combo-menu" hidden></div>
+    </div>
+    <div id="client-assign" hidden style="flex:1 1 180px">
+      <label>Client</label>
+      <input type="text" name="client" placeholder="Individual name, or Company - Beneficiary" style="width:100%">
+    </div>
+    <div><label>Date</label><input type="date" name="date" value="{{ today.isoformat() }}" required></div>
+    <div style="flex:1 1 220px"><label>Note (optional)</label><input name="details" style="width:100%"></div>
+    <div><button class="small">Assign</button></div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>{{ selected.name }} — assigned projects/tasks</h2>
+  <p class="small muted" style="margin-top:0">Advisory only — assigning projects/tasks to someone highlights those
+    first on their Today entry form, but they can still log time against any active project or task. Nobody is ever
+    blocked from logging time just because assignments haven't been set up yet.</p>
   <form method="post" action="/admin/assignments/{{ selected.id }}">
     <label class="f">Projects/Employers</label>
     <div>
@@ -46,5 +180,17 @@
     <div style="margin-top:14px"><button>Save assignments</button></div>
   </form>
 </div>
+
+<!-- combo.js (Project/Task search picker on "Assign a new task" above,
+     same widget Person Detail/Lists already load) — not loaded globally by
+     base.html. -->
+<script src="/static/combo.js?v={{ static_version }}"></script>
+<script>
+initProjectTaskCombo(
+  document.getElementById('combo-assign-project'), document.getElementById('combo-assign-task'),
+  {{ plan_project_items|tojson }}, {{ plan_task_items|tojson }}, null, null,
+  document.getElementById('client-assign'), ''
+);
+</script>
 {% endif %}
 {% endblock %}

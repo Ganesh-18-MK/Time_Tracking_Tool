@@ -65,6 +65,14 @@ HOLIDAY_MANAGEMENT_ENABLED = os.environ.get("HOLIDAY_MANAGEMENT_ENABLED", "1") =
 # leave_approve() for the guards this flag controls.
 LEAVE_MANAGEMENT_V2_ENABLED = os.environ.get("LEAVE_MANAGEMENT_V2_ENABLED", "1") == "1"
 
+# Task Logs report's daily summary was originally an LLM call gated by a
+# TASK_SUMMARY_ENABLED flag (app/llm.py, Anthropic Messages API) — replaced
+# 2026-08-29 with reports.rule_based_day_summary(), a pure/deterministic
+# function with no network call, no API key, and no failure mode, so there
+# is nothing left to flag on/off. app/llm.py is gone; a pre-2026-08-29
+# TaskDaySummary row (if any host still has one) is simply never read
+# anymore — see that model's docstring in app/models.py.
+
 templates = Jinja2Templates(
     directory=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 )

@@ -686,4 +686,9 @@ STATUS_NAMES = {
     m.LEAVE: "Leave",
     m.HOLIDAY: "Holiday",
     m.WEEKEND: "Weekend",
+    # Not a real DayStatus.status/effective_status() value — a display-only
+    # label the My Month "Hours ledger" table layers on top of a Complete
+    # day when that day's variance_minutes is positive (worked over target).
+    # See _ledger_display_status() in app/routes/employee.py, 2026-08-29.
+    "overtime": "Overtime",
 }

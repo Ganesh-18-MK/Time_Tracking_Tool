@@ -45,6 +45,18 @@
   </p>
 </div>
 
+{% if kpis %}
+<div class="kpis" style="margin:14px 0">
+  {% for k in kpis %}
+  <div class="kpi {{ k.variant }}">
+    <div class="n">{{ k.value|hm if k.hm else k.value }}</div>
+    <div class="l">{{ k.label }}</div>
+    {% if k.sub %}<div class="muted small" style="margin-top:2px">{{ k.sub }}</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
 {% if result.mode == 'daily' %}
 <div class="card">
   <h2 style="margin-top:0">{{ result.employee.name }} — daily attendance</h2>
@@ -54,7 +66,7 @@
       {% for r in result.rows %}
       <tr>
         <td>{{ r.date|mdy }}</td>
-        <td>{{ STATUS_NAMES.get(r.status, r.status) }}</td>
+        <td><span class="badge b-{{ r.status }}">{{ STATUS_NAMES.get(r.status, r.status) }}</span></td>
         <td>{{ r.overtime|hm if r.overtime else '—' }}</td>
         <td>{{ r.approved_overtime|hm if r.approved_overtime else '—' }}</td>
       </tr>
@@ -71,29 +83,55 @@
   </div>
   <table id="att-summary-table">
     <thead>
-      <tr><th>Name</th><th>Department</th><th>Complete</th><th>Partial</th><th>Missing</th>
-        <th>Leave</th><th>Holiday</th><th>Weekend</th><th>Attendance %</th><th>Overtime</th><th>Approved</th></tr>
+      <tr><th>Name</th><th>Department</th><th>Last days</th><th>Attendance</th>
+        <th>Complete</th><th>Partial</th><th>Missing</th>
+        <th>Leave</th><th>Holiday</th><th>Weekend</th><th>Overtime</th><th>Approved</th></tr>
     </thead>
     <tbody>
       {% for r in result.rows %}
-      <tr>
+      {% set need_action = r.counts.missing > 0 %}
+      <tr {% if need_action %}class="flag" style="background:var(--bad-bg)"{% endif %}>
         <td><a href="/admin/person/{{ r.employee.id }}">{{ r.employee.name }}</a></td>
-        <td>{{ r.department }}</td>
+        <td>{{ r.department if r.department != '—' else '' }}{% if r.department == '—' %}<span class="muted">— not set</span>{% endif %}</td>
+        <td>
+          <div class="daystrip">
+            {% for d in r.daily[-14:] %}
+            <div class="d s-{{ d.status }}" title="{{ d.date|mdy }} · {{ STATUS_NAMES.get(d.status, d.status) }}">{{ d.date.strftime('%a')[0] }}</div>
+            {% else %}
+            <span class="muted small">no data</span>
+            {% endfor %}
+          </div>
+        </td>
+        <td>
+          {% if r.attendance_pct is not none %}
+          <div class="pctbar-wrap">
+            <div class="pctbar"><i style="width:{{ r.attendance_pct }}%;background:{{ 'var(--bad)' if r.attendance_pct < 60 else ('var(--warn)' if r.attendance_pct < 90 else 'var(--ok)') }}"></i></div>
+            <span class="pctbar-v">{{ r.attendance_pct }}%</span>
+          </div>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
         <td>{{ r.counts.complete }}</td>
         <td>{{ r.counts.partial }}</td>
         <td>{{ r.counts.missing }}</td>
         <td>{{ r.counts.leave }}</td>
         <td>{{ r.counts.holiday }}</td>
         <td>{{ r.counts.weekend }}</td>
-        <td>{{ r.attendance_pct ~ '%' if r.attendance_pct is not none else '—' }}</td>
         <td>{{ r.overtime_minutes|hm if r.overtime_minutes else '—' }}</td>
         <td>{{ r.approved_overtime_minutes|hm if r.approved_overtime_minutes else '—' }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="11" class="muted">No tracked employees match this filter.</td></tr>
+      <tr><td colspan="12" class="muted">No tracked employees match this filter.</td></tr>
       {% endfor %}
     </tbody>
   </table>
+  <div class="report-legend">
+    <span><i style="background:var(--ok)"></i> Complete</span>
+    <span><i style="background:var(--warn)"></i> Partial</span>
+    <span><i style="background:var(--bad)"></i> Missing</span>
+    <span><i style="background:var(--leave)"></i> Leave</span>
+    <span><i style="background:var(--hol-bg)"></i> Holiday / Weekend</span>
+    <span class="muted">Rows with a Missing day are highlighted.</span>
+  </div>
 </div>
 {% endif %}
 

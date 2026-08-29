@@ -512,6 +512,19 @@ def _plan_combo_items(db: Session):
     return project_items, task_items
 
 
+def _plan_redirect(emp_id: int, ym: str, return_to: str) -> str:
+    """Where admin_add_plan/admin_edit_plan/admin_delete_plan send the admin
+    back to. Defaults to Person Detail (the original TK-04 flow, 2026-08-28)
+    — Assign Work's own "Assign a new task" form (Ganesh, 2026-08-29: "i want
+    this assign tasks feature to be in Assignments") sets return_to=assignments
+    so assigning from there doesn't bounce the admin to Person Detail, and
+    keeps the same employee selected so the result shows immediately. Same
+    precedent as _complink_redirect() above for Overtime Management."""
+    if return_to == "assignments":
+        return f"/admin/assignments?employee_id={emp_id}"
+    return f"/admin/person/{emp_id}?ym={ym}"
+
+
 @router.post("/person/{emp_id}/plan/add")
 def admin_add_plan(
     emp_id: int,
@@ -522,6 +535,7 @@ def admin_add_plan(
     details: str = Form(""),
     client: str = Form(""),
     ym: str = Form(""),
+    return_to: str = Form(""),
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -552,30 +566,31 @@ def admin_add_plan(
     emp = db.get(m.Employee, emp_id)
     if emp is None or (led is not None and (emp.department or "—") != led):
         raise Forbidden()
+    dest = _plan_redirect(emp_id, ym, return_to)
     try:
         d = parse_date_field(date)
     except FormError as e:
         flash(request, e.message, "err")
-        return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+        return RedirectResponse(dest, status_code=303)
 
     project = db.get(m.Project, project_id)
     task = db.get(m.TaskType, task_type_id)
     if project is None or not project.active or task is None or not task.active:
         flash(request, "Choose a Project and Task.", "err")
-        return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+        return RedirectResponse(dest, status_code=303)
     if not task_allowed_for_project(db, project_id, task_type_id):
         flash(request, f"'{task.name}' isn't set up for '{project.name}' — link them under Lists first.", "err")
-        return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+        return RedirectResponse(dest, status_code=303)
     client_err = _client_required_error(project, client)
     if client_err:
         flash(request, client_err, "err")
-        return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+        return RedirectResponse(dest, status_code=303)
     sub = db.execute(
         select(m.DaySubmission).where(m.DaySubmission.employee_id == emp_id, m.DaySubmission.date == d)
     ).scalar_one_or_none()
     if sub is not None and sub.locked:
         flash(request, f"{d.strftime('%m/%d/%Y')} is already submitted and locked.", "err")
-        return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+        return RedirectResponse(dest, status_code=303)
 
     plan = m.PlannedTask(
         employee_id=emp_id, date=d, project_id=project_id, task_type_id=task_type_id,
@@ -589,7 +604,7 @@ def admin_add_plan(
         {"employee_id": emp_id, "date": d.isoformat(), "project": project.name, "task": task.name},
     )
     flash(request, f"Assigned to {emp.name}'s log for {d.strftime('%m/%d/%Y')}.", "ok")
-    return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+    return RedirectResponse(dest, status_code=303)
 
 
 @router.post("/plan/{plan_id}/edit")
@@ -602,6 +617,7 @@ def admin_edit_plan(
     details: str = Form(""),
     client: str = Form(""),
     ym: str = Form(""),
+    return_to: str = Form(""),
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -621,26 +637,27 @@ def admin_edit_plan(
     emp = db.get(m.Employee, plan.employee_id)
     if emp is None or (led is not None and (emp.department or "—") != led):
         raise Forbidden()
+    dest = _plan_redirect(plan.employee_id, ym, return_to)
     if plan.status != m.PLAN_PLANNED:
         flash(request, "Only a not-yet-started plan can be edited.", "err")
-        return RedirectResponse(f"/admin/person/{plan.employee_id}?ym={ym}", status_code=303)
+        return RedirectResponse(dest, status_code=303)
     try:
         d = parse_date_field(date)
     except FormError as e:
         flash(request, e.message, "err")
-        return RedirectResponse(f"/admin/person/{plan.employee_id}?ym={ym}", status_code=303)
+        return RedirectResponse(dest, status_code=303)
     project = db.get(m.Project, project_id)
     task = db.get(m.TaskType, task_type_id)
     if project is None or not project.active or task is None or not task.active:
         flash(request, "Choose a Project and Task.", "err")
-        return RedirectResponse(f"/admin/person/{plan.employee_id}?ym={ym}", status_code=303)
+        return RedirectResponse(dest, status_code=303)
     if not task_allowed_for_project(db, project_id, task_type_id):
         flash(request, f"'{task.name}' isn't set up for '{project.name}' — link them under Lists first.", "err")
-        return RedirectResponse(f"/admin/person/{plan.employee_id}?ym={ym}", status_code=303)
+        return RedirectResponse(dest, status_code=303)
     client_err = _client_required_error(project, client)
     if client_err:
         flash(request, client_err, "err")
-        return RedirectResponse(f"/admin/person/{plan.employee_id}?ym={ym}", status_code=303)
+        return RedirectResponse(dest, status_code=303)
 
     plan.project_id = project_id
     plan.task_type_id = task_type_id
@@ -652,7 +669,7 @@ def admin_edit_plan(
     db.commit()
     audit(db, admin.name, "edit_assigned_plan", "PlannedTask", str(plan.id), {})
     flash(request, "Updated.", "ok")
-    return RedirectResponse(f"/admin/person/{plan.employee_id}?ym={ym}", status_code=303)
+    return RedirectResponse(dest, status_code=303)
 
 
 @router.post("/plan/{plan_id}/delete")
@@ -660,6 +677,7 @@ def admin_delete_plan(
     plan_id: int,
     request: Request,
     ym: str = Form(""),
+    return_to: str = Form(""),
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -676,14 +694,15 @@ def admin_delete_plan(
     if emp is None or (led is not None and (emp.department or "—") != led):
         raise Forbidden()
     employee_id = plan.employee_id
+    dest = _plan_redirect(employee_id, ym, return_to)
     if plan.status != m.PLAN_PLANNED:
         flash(request, "Only a not-yet-started plan can be removed.", "err")
-        return RedirectResponse(f"/admin/person/{employee_id}?ym={ym}", status_code=303)
+        return RedirectResponse(dest, status_code=303)
     db.delete(plan)
     db.commit()
     audit(db, admin.name, "delete_assigned_plan", "PlannedTask", str(plan_id), {})
     flash(request, "Removed.", "ok")
-    return RedirectResponse(f"/admin/person/{employee_id}?ym={ym}", status_code=303)
+    return RedirectResponse(dest, status_code=303)
 
 
 @router.post("/unlock-request/{req_id}/reject")
@@ -1398,11 +1417,63 @@ def lists_page(
     for pid, dept in db.execute(select(m.ProjectDepartment.project_id, m.ProjectDepartment.department)).all():
         project_department_names.setdefault(pid, []).append(dept)
     all_departments = [d for d in reports.departments_list(db) if d != "—"]
+
+    # Department -> Project -> Task tree (Ganesh, 2026-08-29, matching a
+    # pasted mockup — "just the tree UI", confirmed via AskUserQuestion:
+    # no new fields/entities, built entirely from what's already above.
+    # A project with zero ProjectDepartment links is unrestricted (see that
+    # model's docstring) — shown once under "shared_projects" rather than
+    # copied into every real department group below, both because that's
+    # what "unrestricted" actually means and because with ~300 real
+    # Project/Employer rows and (so far) 0 department links in the live
+    # data, copying every unscoped project into every department group
+    # would make each group identical and the tree pointless. A project
+    # linked to MORE THAN ONE department (allowed — see ProjectDepartment's
+    # docstring) is shown once, under its alphabetically-first linked
+    # department, to avoid rendering (and duplicate-DOM-id-ing) the same
+    # project's edit panel more than once; its "Manage departments" panel
+    # still lists every department it's actually linked to, unaffected by
+    # which one it happens to be filed under here.
+    shared_projects = [p for p in projects if not project_department_names.get(p.id)]
+    dept_groups = []
+    for d in all_departments:
+        dept_projects = [
+            p for p in projects
+            if project_department_names.get(p.id) and d == sorted(project_department_names[p.id])[0]
+        ]
+        dept_groups.append({"name": d, "projects": dept_projects})
+
+    # project_task_ids: project_id -> [task_type_id, ...] EXPLICITLY linked
+    # to it (the inverse of task_project_ids above) — what a project's tree
+    # node shows inline. A task with NO links at all (unrestricted, usable
+    # under every project — the large majority right now, see ProjectTask's
+    # docstring) is deliberately NOT duplicated under all ~300 projects;
+    # it only ever shows once, in the "All Tasks" list below the tree,
+    # which is also still the one place to narrow/rename/deactivate any
+    # task regardless of whether it happens to be narrowed to a project.
+    project_task_ids: Dict[int, list] = {p.id: [] for p in projects}
+    for tid, pids in task_project_ids.items():
+        for pid in pids:
+            project_task_ids.setdefault(pid, []).append(tid)
+    tasks_by_id = {t.id: t for t in tasks}
+    unrestricted_task_count = sum(1 for t in tasks if not task_project_ids.get(t.id))
+    # Plain "name, name, name" per project (not a Jinja custom filter) —
+    # feeds the tree's client-side search box (data-tasks="...") so typing
+    # a task name expands and shows the right project without JS needing
+    # to know how tasks_by_id is shaped.
+    project_task_names: Dict[int, str] = {
+        pid: ", ".join(tasks_by_id[tid].name for tid in tids if tid in tasks_by_id)
+        for pid, tids in project_task_ids.items()
+    }
+
     return render(
         request, "admin/lists.html",
         {
             "user": admin, "projects": projects, "tasks": tasks, "task_project_ids": task_project_ids,
             "project_department_names": project_department_names, "all_departments": all_departments,
+            "shared_projects": shared_projects, "dept_groups": dept_groups,
+            "project_task_ids": project_task_ids, "tasks_by_id": tasks_by_id,
+            "unrestricted_task_count": unrestricted_task_count, "project_task_names": project_task_names,
             # plain {id, name} dicts for the Add-task Project combo picker's
             # script tag — tojson (app/templating.py) refuses raw ORM rows.
             "active_projects_json": [{"id": p.id, "name": p.name} for p in projects if p.active],
@@ -1980,6 +2051,20 @@ def assignments_page(
 
     selected = next((e for e in emps if e.id == employee_id), None) if employee_id is not None else None
 
+    # Department -> Employee picker tree (Ganesh, 2026-08-29: "instead it
+    # should show departments once admin clicked on department it should
+    # show employee") — same collapsible-tree convention the Projects &
+    # Tasks page already established (.tree/.tree-dept CSS, reused as-is),
+    # just one level deep here since an employee is a leaf, not something
+    # that itself expands further. `emps` is already scope-filtered above,
+    # so a department-scoped admin only ever sees their own one group.
+    emp_dept_groups: Dict[str, list] = {}
+    for e in emps:
+        emp_dept_groups.setdefault(e.department or "—", []).append(e)
+    emp_dept_groups = [
+        {"name": d, "employees": emp_dept_groups[d]} for d in sorted(emp_dept_groups.keys())
+    ]
+
     projects = list(
         db.execute(
             select(m.Project)
@@ -1996,6 +2081,7 @@ def assignments_page(
     )
 
     assigned_project_ids, assigned_task_ids = set(), set()
+    plan_project_items, plan_task_items, assigned_plans = [], [], []
     if selected is not None:
         assigned_project_ids = {
             row[0] for row in db.execute(
@@ -2007,12 +2093,30 @@ def assignments_page(
                 select(m.TaskAssignment.task_type_id).where(m.TaskAssignment.employee_id == selected.id)
             ).all()
         }
+        # "Assign a new task" card (Ganesh, 2026-08-29: "i want this assign
+        # tasks feature to be in Assignments") — same TK-04 PlannedTask
+        # assignment Person Detail already has (app/models.py's PlannedTask
+        # docstring), just reachable from here too now. Same
+        # _plan_combo_items()/query shape person() uses above, scoped to
+        # whichever employee is selected in this page's own picker rather
+        # than a URL path segment.
+        plan_project_items, plan_task_items = _plan_combo_items(db)
+        assigned_plans = list(
+            db.execute(
+                select(m.PlannedTask)
+                .where(m.PlannedTask.employee_id == selected.id, m.PlannedTask.status == m.PLAN_PLANNED)
+                .order_by(m.PlannedTask.date)
+            ).scalars()
+        )
 
     return render(
         request, "admin/assignments.html",
         {
-            "user": admin, "emps": emps, "selected": selected, "projects": projects, "tasks": tasks,
+            "user": admin, "emps": emps, "emp_dept_groups": emp_dept_groups, "selected": selected,
+            "projects": projects, "tasks": tasks,
             "assigned_project_ids": assigned_project_ids, "assigned_task_ids": assigned_task_ids,
+            "plan_project_items": plan_project_items, "plan_task_items": plan_task_items,
+            "assigned_plans": assigned_plans, "today": today_local(),
         },
         db=db,
     )

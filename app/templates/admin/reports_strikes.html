@@ -45,6 +45,18 @@
   </p>
 </div>
 
+{% if kpis %}
+<div class="kpis" style="margin:14px 0">
+  {% for k in kpis %}
+  <div class="kpi {{ k.variant }}">
+    <div class="n">{{ k.value }}</div>
+    <div class="l">{{ k.label }}</div>
+    {% if k.sub %}<div class="muted small" style="margin-top:2px">{{ k.sub }}</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
 {% if result.mode == 'daily' %}
 <div class="card">
   <h2 style="margin-top:0">{{ result.employee.name }} — strike days ({{ result.total }})</h2>
@@ -52,7 +64,7 @@
     <thead><tr><th>Date</th><th>Status</th></tr></thead>
     <tbody>
       {% for r in result.rows %}
-      <tr><td>{{ r.date|mdy }}</td><td>{{ STATUS_NAMES.get(r.status, r.status) }}</td></tr>
+      <tr><td>{{ r.date|mdy }}</td><td><span class="badge b-{{ r.status }}">{{ STATUS_NAMES.get(r.status, r.status) }}</span></td></tr>
       {% else %}
       <tr><td colspan="2" class="muted">No strikes in range.</td></tr>
       {% endfor %}
@@ -65,19 +77,34 @@
     <input type="search" data-filter-table="strikes-summary-table" placeholder="Search employees…">
   </div>
   <table id="strikes-summary-table">
-    <thead><tr><th>Name</th><th>Department</th><th>Strikes</th></tr></thead>
+    <thead><tr><th>Name</th><th>Department</th><th>Strike days</th><th>Strikes</th></tr></thead>
     <tbody>
       {% for r in result.rows %}
-      <tr>
+      <tr {% if r.strikes > 0 %}style="background:var(--bad-bg)"{% endif %}>
         <td><a href="/admin/person/{{ r.employee.id }}">{{ r.employee.name }}</a></td>
         <td>{{ r.department }}</td>
-        <td>{{ r.strikes }}</td>
+        <td>
+          <div class="daystrip">
+            {% for d in r.daily[-14:] %}
+            <div class="d s-{{ d.status }}" title="{{ d.date|mdy }}{% if d.status != 'none' %} · {{ STATUS_NAMES.get(d.status, d.status) }} (strike){% endif %}">{{ '!' if d.status != 'none' else '' }}</div>
+            {% else %}
+            <span class="muted small">no data</span>
+            {% endfor %}
+          </div>
+        </td>
+        <td><strong>{{ r.strikes }}</strong></td>
       </tr>
       {% else %}
-      <tr><td colspan="3" class="muted">No tracked employees match this filter.</td></tr>
+      <tr><td colspan="4" class="muted">No tracked employees match this filter.</td></tr>
       {% endfor %}
     </tbody>
   </table>
+  <div class="report-legend">
+    <span><i style="background:var(--bad)"></i> Missing (strike)</span>
+    <span><i style="background:var(--warn)"></i> Partial (strike)</span>
+    <span><i style="background:var(--pending-bg)"></i> No strike that day</span>
+    <span class="muted">Rows with strikes are highlighted, sorted worst-first.</span>
+  </div>
 </div>
 {% endif %}
 
