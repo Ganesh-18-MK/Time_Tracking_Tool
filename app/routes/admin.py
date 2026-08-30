@@ -1457,6 +1457,41 @@ def lists_page(
             project_task_ids.setdefault(pid, []).append(tid)
     tasks_by_id = {t.id: t for t in tasks}
     unrestricted_task_count = sum(1 for t in tasks if not task_project_ids.get(t.id))
+
+    # "All departments" Category -> Task grouping with an hours rollup
+    # (Ganesh, 2026-08-30, from a pasted mockup: "these are common for all
+    # departments") — scoped ONLY to the truly unrestricted/shared tasks
+    # (task_project_ids empty, the same set unrestricted_task_count above
+    # already counts), per AskUserQuestion 2026-08-30 ("Only 'All
+    # departments'"): a project-scoped task already has a home under its
+    # own project node elsewhere in the tree, so it isn't repeated here.
+    # task_hours is all-time total hours (AskUserQuestion: "All-time
+    # total") logged against EVERY task (not just shared ones) so the
+    # same dict can be reused if a per-project task hours display is ever
+    # wanted later; kept as whole hours (integer floor of total minutes,
+    # never a float — see CLAUDE.md's integer-minutes hard rule) purely
+    # for this display, not a new compliance figure.
+    task_minutes: Dict[int, int] = {}
+    for tid, total in db.execute(
+        select(m.TaskEntry.task_type_id, func.sum(m.TaskEntry.end_minute - m.TaskEntry.start_minute))
+        .group_by(m.TaskEntry.task_type_id)
+    ).all():
+        if tid is not None:
+            task_minutes[tid] = total or 0
+    task_hours: Dict[int, int] = {tid: mins // 60 for tid, mins in task_minutes.items()}
+    shared_tasks = [t for t in tasks if not task_project_ids.get(t.id)]
+    _cat_map: Dict[str, list] = {}
+    for t in shared_tasks:
+        _cat_map.setdefault(t.category or "General", []).append(t)
+    shared_task_categories = []
+    for cat_name in sorted(_cat_map.keys()):
+        cat_tasks = sorted(_cat_map[cat_name], key=lambda t: (not t.active, t.name))
+        cat_minutes = sum(task_minutes.get(t.id, 0) for t in cat_tasks)
+        shared_task_categories.append({
+            "name": cat_name, "tasks": cat_tasks,
+            "task_count": len(cat_tasks), "hours": cat_minutes // 60,
+        })
+
     # Plain "name, name, name" per project (not a Jinja custom filter) —
     # feeds the tree's client-side search box (data-tasks="...") so typing
     # a task name expands and shows the right project without JS needing
@@ -1474,9 +1509,7 @@ def lists_page(
             "shared_projects": shared_projects, "dept_groups": dept_groups,
             "project_task_ids": project_task_ids, "tasks_by_id": tasks_by_id,
             "unrestricted_task_count": unrestricted_task_count, "project_task_names": project_task_names,
-            # plain {id, name} dicts for the Add-task Project combo picker's
-            # script tag — tojson (app/templating.py) refuses raw ORM rows.
-            "active_projects_json": [{"id": p.id, "name": p.name} for p in projects if p.active],
+            "shared_task_categories": shared_task_categories, "task_hours": task_hours,
         },
         db=db,
     )
@@ -1810,6 +1843,38 @@ def lists_rename(
     db.commit()
     audit(db, admin.name, f"rename_{kind}", kind, item.name, {"from": old_name, "to": new_name})
     flash(request, f"Renamed '{old_name}' to '{new_name}'.", "ok")
+    return RedirectResponse("/admin/lists", status_code=303)
+
+
+@router.post("/lists/task/{task_id}/category")
+def lists_task_category(
+    task_id: int,
+    request: Request,
+    category: str = Form(""),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Set a task's Category (Ganesh, 2026-08-30 — see TaskType.category's
+    own docstring in app/models.py for the full "All departments" Category
+    -> Task grouping feature this feeds). A dedicated route rather than
+    folded into lists_rename() above, because that route early-returns
+    when the name is unchanged (nothing else to do in the rename-only
+    case) — a category-only edit with no name change would silently no-op
+    if it shared that route. Freeform text (AskUserQuestion, 2026-08-30):
+    blank/whitespace-only resets to "General" rather than leaving the
+    column empty, so a task never has to specially display "no category" —
+    matches every task's own creation-time default."""
+    task = db.get(m.TaskType, task_id)
+    if task is None:
+        return RedirectResponse("/admin/lists", status_code=303)
+    new_category = category.strip() or "General"
+    old_category = task.category
+    if old_category == new_category:
+        return RedirectResponse("/admin/lists", status_code=303)
+    task.category = new_category
+    db.commit()
+    audit(db, admin.name, "task_category_save", "TaskType", task.name, {"from": old_category, "to": new_category})
+    flash(request, f"'{task.name}' is now categorized under '{new_category}'.", "ok")
     return RedirectResponse("/admin/lists", status_code=303)
 
 
@@ -2639,10 +2704,57 @@ def overtime_page(
     overtime_rows = reports.task_log_overtime_report(db, first, min(last, today), [e.id for e in emps])
     (py, pm), (ny, nm) = prev_next_month(year, month)
 
+    # Employee picker for the "Missed Hours and Compensation" quick-link
+    # flow below narrowed to only employees actually linkable this month
+    # (Ganesh, 2026-08-30: "employee field it should show list of only who
+    # are missed the hours and have compensated hours") — previously
+    # offered every employee in `emps` regardless of whether they had
+    # anything to link, which meant picking most of them just showed "No
+    # shortfall days" or "No surplus days" dead ends. Reuses
+    # engine.recompute_all() the exact same way Dashboard already does
+    # ("live months stay fresh on load (cheap at this scale)") so this
+    # doesn't need a per-employee recompute loop, then engine.
+    # statuses_for_month() for one batched org-wide DayStatus query instead
+    # of one query per employee. The per-employee allocation queries
+    # (shortfall_allocated_minutes_by_date/surplus_minutes_used_by_date)
+    # still cost one DB round-trip each, so they're only run for employees
+    # that already cleared the free in-memory shortfall-AND-surplus check
+    # below, not all ~45. `link_target` itself is still looked up against
+    # the full unfiltered `emps` (not this narrowed list) so a
+    # previously-selected employee whose situation changed mid-page-view
+    # doesn't break the picker — see the note above link_target below.
+    if first <= today:
+        engine.recompute_all(db, first, min(last, today))
+    comp_erases = cfg.get("comp_erases_strike") == "1"
+    by_emp_month_statuses = engine.statuses_for_month(db, year, month)
+    link_eligible_emps = []
+    for e in emps:
+        e_statuses = list(by_emp_month_statuses.get(e.id, {}).values())
+        if not e_statuses:
+            continue
+        e_shortfalls, e_surpluses = _shortfalls_surpluses(e_statuses, comp_erases)
+        if not e_shortfalls or not e_surpluses:
+            continue
+        e_shortfall_alloc = engine.shortfall_allocated_minutes_by_date(db, e.id)
+        e_surplus_used = engine.surplus_minutes_used_by_date(db, e.id)
+        has_unlinked_shortfall = any(
+            -(r.variance_minutes or 0) > e_shortfall_alloc.get(r.date, 0) for r in e_shortfalls
+        )
+        has_available_surplus = any(
+            (s.variance_minutes or 0) - e_surplus_used.get(s.date, 0) > 0 for s in e_surpluses
+        )
+        if has_unlinked_shortfall and has_available_surplus:
+            link_eligible_emps.append(e)
+
     # Employee picker for the Compensation links quick-link flow above
-    # (Ganesh, 2026-08-21) — only offers employees already in `emps` (this
-    # admin's own led_by() scope, or everyone for a Super Admin), same as
-    # the rest of this page. Shortfall/surplus candidates are this same
+    # (Ganesh, 2026-08-21) — link_target itself is still looked up against
+    # the full `emps` (this admin's own led_by() scope, or everyone for a
+    # Super Admin), not link_eligible_emps above, purely so a link already
+    # in progress for someone doesn't silently break if their eligibility
+    # changes between page loads (e.g. their last shortfall just got fully
+    # linked) — the dropdown that OFFERS a choice is narrowed, but a
+    # link_target coming in via the URL's own employee_id is never
+    # rejected outright. Shortfall/surplus candidates are this same
     # employee's for whichever month is currently being viewed (`ym`),
     # computed the identical way person() computes them — see
     # _shortfalls_surpluses() above.
@@ -2700,7 +2812,8 @@ def overtime_page(
     return render(
         request, "admin/overtime.html",
         {
-            "user": admin, "emps": emps, "pending": pending, "approved": approved,
+            "user": admin, "emps": emps, "link_eligible_emps": link_eligible_emps,
+            "pending": pending, "approved": approved,
             "comp_links": comp_links, "overtime_rows": overtime_rows, "pending_matches": pending_matches,
             "link_target": link_target, "link_shortfalls": link_shortfalls, "link_surpluses": link_surpluses,
             "link_shortfall_allocated_by_date": link_shortfall_allocated_by_date,

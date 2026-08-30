@@ -63,7 +63,7 @@
     {# Convenience scroll-link (2026-08-29 reskin) — #addrowcard is the
        existing Add Row card's own id (see it further down this page);
        a plain anchor needs no JS and doesn't touch the form itself. #}
-    <a href="#addrowcard" class="btn secondary small">Add row</a>
+    <a href="#addrowcard" class="btn secondary small">Add Task</a>
     {% endif %}
 
     {% if not day_locked and entries %}
@@ -250,19 +250,31 @@
 {% endif %}
 
 <div class="card">
-  <form method="get" action="/today" class="formrow">
-    <div>
-      <label>Working date</label>
-      <select name="date" onchange="this.form.submit()">
-        {% for d in allowed_dates|reverse %}
-        <option value="{{ d.isoformat() }}" {{ 'selected' if d == day }}>
-          {{ d.strftime('%a') }} {{ d|mdy }}{% if d == today %} — Today{% endif %}
-        </option>
-        {% endfor %}
-      </select>
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:14px">
+    <form method="get" action="/today" class="formrow" style="margin:0">
+      <div>
+        <label>Working date</label>
+        <select name="date" onchange="this.form.submit()">
+          {% for d in allowed_dates|reverse %}
+          <option value="{{ d.isoformat() }}" {{ 'selected' if d == day }}>
+            {{ d.strftime('%a') }} {{ d|mdy }}{% if d == today %} — Today{% endif %}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="muted small">You can log today plus a limited back-dating window (admin-configurable).</div>
+    </form>
+    {# Mon-Sun week-position circles (Ganesh, 2026-08-30: "week days in
+       circle... today should be other color highlighting and completed
+       day should be greyed out") — always reflects the real today
+       (_week_day_circles(today)), not the day being browsed above, so
+       navigating to a past/future day via the picker never moves these. #}
+    <div class="week-circles">
+      {% for c in week_circles %}
+      <span class="week-circle {{ c.state }}" title="{{ c.date|mdy }}">{{ c.label }}</span>
+      {% endfor %}
     </div>
-    <div class="muted small">You can log today plus a limited back-dating window (admin-configurable).</div>
-  </form>
+  </div>
 </div>
 
 {% if sub and sub.locked %}
@@ -309,7 +321,7 @@
    only, same live/right-now convention as Punch/Break/Auto time capture
    on this page — a plan only ever carries today's date. #}
 <div class="card">
-  <h2>Plan for the day</h2>
+  <div class="card-head"><h2>Plan for the day</h2></div>
   <form method="post" action="/plan/add" class="formrow">
     <div class="combo" id="combo-plan-project" data-placeholder="a project">
       <label>Project/Employer</label>
@@ -349,7 +361,7 @@
    My Month page (/my-month) already computes, not a new parallel
    measurement. #}
 <div class="card">
-  <div style="display:flex;justify-content:space-between;align-items:baseline">
+  <div class="card-head" style="display:flex;justify-content:space-between;align-items:baseline">
     <h2 style="margin:0">My Month</h2>
     <span class="small muted">all computed</span>
   </div>
@@ -398,7 +410,7 @@
 
 {% if pending_ot_days %}
 <div class="card">
-  <h2>Reminders</h2>
+  <div class="card-head"><h2>Reminders</h2></div>
   <div class="weekrow"><span class="muted">Pending with your lead</span><strong>{{ pending_ot_days }} overtime {{ 'day' if pending_ot_days == 1 else 'days' }}</strong></div>
 </div>
 {% endif %}
@@ -421,7 +433,7 @@
    that day's plans (Ganesh, 2026-08-22) shows instead — see the
    `past_plans` block right below. #}
 <div class="card">
-  <h2>Today's Plan{% if plans %} - {{ plans|length }} {{ 'task' if plans|length == 1 else 'Tasks' }}{% endif %}</h2>
+  <div class="card-head"><h2>Today's Plan{% if plans %} - {{ plans|length }} {{ 'task' if plans|length == 1 else 'Tasks' }}{% endif %}</h2></div>
   {% if plans %}
   {% for p in plans %}
   <div class="plan-item plan-{{ p.status }}">
@@ -493,7 +505,7 @@
    just context for what was planned/left running/done that day, not
    something this page can act on (see `past_plans` in _day_context). #}
 <div class="card">
-  <h2>Plan — {{ day.strftime('%A') }}, {{ day|mdy }} ({{ past_plans|length }} {{ 'task' if past_plans|length == 1 else 'tasks' }})</h2>
+  <div class="card-head"><h2>Plan — {{ day.strftime('%A') }}, {{ day|mdy }} ({{ past_plans|length }} {{ 'task' if past_plans|length == 1 else 'tasks' }})</h2></div>
   {% for p in past_plans %}
   <div class="plan-item plan-{{ p.status }}">
     <div>
@@ -521,7 +533,7 @@
    feedback: "Today's Plan should be in place of task logs... task logs
    section should go down"). #}
 <div class="card compact-card" id="autocapture">
-  <h2>Auto time capture</h2>
+  <div class="card-head"><h2>Auto time capture</h2></div>
   {% if active_timer %}
   <div class="totalbar">
     <span class="big" id="tasktimer">00:00</span>
@@ -625,11 +637,11 @@
     <div><button>Start Timer</button></div>
   </form>
   {% endif %}
-  <p class="small muted" style="margin:3px 0 0" title="Same rules apply as Add row: min 5 char details, no overlaps, {{ (max_row_minutes // 60) }}h max per row.">Starts a live timer, auto-fills Start/End when you stop. Starting a new one auto-stops whatever's running.</p>
+  <p class="small muted" style="margin:3px 0 0" title="Same rules apply as Add Task: min 5 char details, no overlaps, {{ (max_row_minutes // 60) }}h max per row.">Starts a live timer, auto-fills Start/End when you stop. Starting a new one auto-stops whatever's running.</p>
 </div>
 
 <div class="card" id="addrowcard">
-  <h2>Add row</h2>
+  <div class="card-head"><h2>Add Task</h2></div>
   {% if gap_prefill_active %}
   <div class="gapflag" style="margin-bottom:8px">
     ⚠ Gap found between {{ gap_prefill_start_min|clock }} and {{ gap_prefill_end_min|clock }} — filled in below. Add what you were doing then before logging anything else.
@@ -685,6 +697,7 @@
    log itself must still show on a locked day, only the add-row/timer
    forms above it hide. #}
 <div class="card">
+  <div class="card-head"><h2>Today Tasks</h2></div>
   <table>
     <thead>
       <tr><th>Duration</th><th>Project/Employer</th><th>Task</th><th>Details</th><th></th></tr>

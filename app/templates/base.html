@@ -23,10 +23,10 @@
          [/Holidays/Usage Report] folded into one "My requests" dropdown,
          same .navdrop pattern the admin nav below already uses, so this
          didn't need any new CSS/JS). #}
-      <a href="/today" class="{{ 'on' if active_nav == 'today' }}">Today</a>
-      <a href="/my-month" class="{{ 'on' if active_nav == 'month' }}">My hours</a>
+      <a href="/today" class="{{ 'on' if active_nav == 'today' }}">My Day</a>
+      <a href="/my-month" class="{{ 'on' if active_nav == 'month' }}">My Hours</a>
       <details class="navdrop">
-        <summary class="{{ 'on' if active_nav in ('leave', 'overtime', 'holidays', 'reports') }}">My requests ▾</summary>
+        <summary class="{{ 'on' if active_nav in ('leave', 'overtime', 'holidays', 'reports') }}">My Requests ▾</summary>
         <div class="navdrop-menu">
           <a href="/leave">Leave Request</a>
           <a href="/overtime">Overtime Request</a>
@@ -37,13 +37,14 @@
       <a href="/support" class="{{ 'on' if active_nav == 'support' }}">Support</a>
       <a href="/profile" class="{{ 'on' if active_nav == 'profile' }}">Profile</a>
     {% elif active_nav in employee_zone %}
-      {# An admin who clicked "Employee login" — same employee toolkit, plus
-         one link back to their admin side. #}
+      {# An admin who clicked "My Work" (renamed from "Employee login"
+         2026-08-30) — same employee toolkit, plus one link back to their
+         admin side. #}
       <a href="/admin">← Admin Dashboard</a>
-      <a href="/today" class="{{ 'on' if active_nav == 'today' }}">Today</a>
-      <a href="/my-month" class="{{ 'on' if active_nav == 'month' }}">My hours</a>
+      <a href="/today" class="{{ 'on' if active_nav == 'today' }}">My Day</a>
+      <a href="/my-month" class="{{ 'on' if active_nav == 'month' }}">My Hours</a>
       <details class="navdrop">
-        <summary class="{{ 'on' if active_nav in ('leave', 'overtime', 'holidays') }}">My requests ▾</summary>
+        <summary class="{{ 'on' if active_nav in ('leave', 'overtime', 'holidays') }}">My Requests ▾</summary>
         <div class="navdrop-menu">
           <a href="/leave">Leave Request</a>
           <a href="/overtime">Overtime Request</a>
@@ -53,21 +54,42 @@
       <a href="/support" class="{{ 'on' if active_nav == 'support' }}">Support</a>
       <a href="/profile" class="{{ 'on' if active_nav == 'profile' }}">Profile</a>
     {% else %}
-      {# Admin zone: back to the flat top bar, same as the original design —
-         just relabeled/regrouped to match the names agreed on for the
-         (reverted) sidebar attempt. Same .navdrop pattern already used for
-         Reports before, just three dropdowns now instead of one. #}
+      {# Admin zone (Ganesh, 2026-08-30: "My Work , Dashboard, Team Requests,
+         Projects & Tasks , Employees, Analytics & Reports , Settings &
+         Configuration, Support") — this is a relabel/reorder only, NOT a
+         permissions change: every item keeps exactly the gating it already
+         had (Team Requests/Employees/Settings & Configuration/Support are
+         still super-admin-only, same routes as before the 2026-08-28
+         Team-Lead-narrowing decision this file already documents elsewhere)
+         — only the physical order and labels moved to
+         match the requested list, which interleaves two super-admin-only
+         groups around the two all-admin items (Projects & Tasks, Analytics &
+         Reports), so the single contiguous is_super_admin block from before
+         is now three separate guards instead of one. #}
+      <a href="/today">My Work</a>
       <a href="/admin" class="{{ 'on' if active_nav == 'dash' }}">Dashboard</a>
+      {% if user.is_super_admin %}
       <details class="navdrop">
-        <summary class="{{ 'on' if active_nav in ('suggestions', 'assignments', 'lists') }}">Projects &amp; Task Management ▾{% if nav_badges and nav_badges.pending_suggestions %}<span class="navbadge">{{ nav_badges.pending_suggestions }}</span>{% endif %}</summary>
+        <summary class="{{ 'on' if active_nav in ('admin_leave', 'admin_overtime') }}">Team Requests ▾{% if nav_badges and (nav_badges.pending_leave or nav_badges.pending_overtime) %}<span class="navbadge">{{ (nav_badges.pending_leave or 0) + (nav_badges.pending_overtime or 0) }}</span>{% endif %}</summary>
+        <div class="navdrop-menu">
+          <a href="/admin/leave">Leave Management{% if nav_badges and nav_badges.pending_leave %}<span class="navbadge">{{ nav_badges.pending_leave }}</span>{% endif %}</a>
+          <a href="/admin/overtime">Overtime Management{% if nav_badges and nav_badges.pending_overtime %}<span class="navbadge">{{ nav_badges.pending_overtime }}</span>{% endif %}</a>
+        </div>
+      </details>
+      {% endif %}
+      <details class="navdrop">
+        <summary class="{{ 'on' if active_nav in ('suggestions', 'assignments', 'lists') }}">Projects &amp; Tasks ▾{% if nav_badges and nav_badges.pending_suggestions %}<span class="navbadge">{{ nav_badges.pending_suggestions }}</span>{% endif %}</summary>
         <div class="navdrop-menu">
           <a href="/admin/suggestions">Suggestions{% if nav_badges and nav_badges.pending_suggestions %}<span class="navbadge">{{ nav_badges.pending_suggestions }}</span>{% endif %}</a>
           <a href="/admin/assignments">Assign Work</a>
           <a href="/admin/lists">Projects &amp; Tasks</a>
         </div>
       </details>
+      {% if user.is_super_admin %}
+      <a href="/admin/roster" class="{{ 'on' if active_nav == 'roster' }}">Employees</a>
+      {% endif %}
       <details class="navdrop">
-        <summary class="{{ 'on' if active_nav in ('reports', 'audit') }}">Analytics and Reports ▾</summary>
+        <summary class="{{ 'on' if active_nav in ('reports', 'audit') }}">Analytics &amp; Reports ▾</summary>
         <div class="navdrop-menu">
           <a href="/admin/reports/attendance">Attendance Reports</a>
           <a href="/admin/reports/strikes">Strike Reports</a>
@@ -80,19 +102,15 @@
         </div>
       </details>
       {% if user.is_super_admin %}
-      <a href="/admin/leave" class="{{ 'on' if active_nav == 'admin_leave' }}">Leave Management{% if nav_badges and nav_badges.pending_leave %}<span class="navbadge">{{ nav_badges.pending_leave }}</span>{% endif %}</a>
-      <a href="/admin/overtime" class="{{ 'on' if active_nav == 'admin_overtime' }}">Overtime Management{% if nav_badges and nav_badges.pending_overtime %}<span class="navbadge">{{ nav_badges.pending_overtime }}</span>{% endif %}</a>
-      <a href="/admin/roster" class="{{ 'on' if active_nav == 'roster' }}">Employee Management</a>
       <details class="navdrop">
-        <summary class="{{ 'on' if active_nav in ('config', 'admin_holidays') }}">Settings &amp; Configurations ▾</summary>
+        <summary class="{{ 'on' if active_nav in ('config', 'admin_holidays') }}">Settings &amp; Configuration ▾</summary>
         <div class="navdrop-menu">
           <a href="/admin/config">Settings</a>
           {% if HOLIDAY_MANAGEMENT_ENABLED %}<a href="/admin/holidays">Holiday Management</a>{% endif %}
         </div>
       </details>
-      <a href="/admin/support" class="{{ 'on' if active_nav == 'admin_support' }}">Contact Support{% if nav_badges and nav_badges.open_support %}<span class="navbadge">{{ nav_badges.open_support }}</span>{% endif %}</a>
+      <a href="/admin/support" class="{{ 'on' if active_nav == 'admin_support' }}">Support{% if nav_badges and nav_badges.open_support %}<span class="navbadge">{{ nav_badges.open_support }}</span>{% endif %}</a>
       {% endif %}
-      <a href="/today">Employee login</a>
     {% endif %}
   </nav>
   <div class="userchip">

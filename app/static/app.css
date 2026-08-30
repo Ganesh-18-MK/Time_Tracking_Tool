@@ -109,6 +109,25 @@ h3 { font-size: 14px; margin: 16px 0 6px; }
 .ms-opt { display: block; padding: 3px 2px; font-size: 13px; white-space: nowrap; }
 .ms-opt input { margin-right: 5px; }
 
+/* Closed-by-default multi-select dropdown (Ganesh, 2026-08-30 — Overtime
+   Management's Surplus day(s) field: "like shortfall day field only but
+   once we click it should open dropdown and we can select multiple...by
+   mouse click"). The toggle button is styled to match a plain <select>
+   (same border/radius/padding as the `input, select, textarea` rule
+   above) so it reads as one more form field, not a custom widget; the
+   panel reuses .ms-box/.ms-opt's existing look, just floated via
+   position:absolute so opening it doesn't push the rest of the form down. */
+.msdrop { position: relative; width: 100%; }
+.msdrop-toggle { width: 100%; display: flex; align-items: center; justify-content: space-between;
+  background: #fff; color: var(--ink); border: 1px solid #d3cbb8; border-radius: 7px;
+  padding: 6px 8px; font: inherit; text-align: left; cursor: pointer; }
+.msdrop-toggle:focus { outline: 2px solid var(--accent-light); border-color: var(--accent); }
+.msdrop-caret { color: var(--muted); font-size: 11px; margin-left: 8px; flex-shrink: 0; }
+.msdrop-menu { position: absolute; top: 100%; left: 0; right: 0; z-index: 20; margin-top: 3px;
+  max-height: 220px; box-shadow: 0 4px 14px rgba(0,0,0,.1); }
+.msdrop-opt { cursor: pointer; }
+.msdrop-opt.disabled { color: var(--muted); text-decoration: line-through; cursor: default; }
+
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); }
@@ -209,28 +228,6 @@ table.grid td.wkend { background: #f2ede2; color: #b3ab98; }
 td.strikecol { font-weight: 700; }
 .viol { background: var(--bad); color: #fff; border-radius: 6px; padding: 1px 7px; }
 .mark { font-size: 10px; vertical-align: super; }
-
-/* calendar (My Month) — improved 2026-08-29 (Ganesh: "can we improvise
-   this calendar view", no specific ask, so this is a judgment call): each
-   cell now tints its whole background by that day's status, not just the
-   small badge — much faster to scan a month for problem days than reading
-   every badge individually. Weekend/Holiday keep their existing muted
-   `.off` look rather than also being tinted (they're not compliance
-   signal). Today's cell gets a clear accent outline so it's easy to find
-   at a glance. Status reuses `display_status` (the same Complete/Overtime
-   split the Hours ledger already uses) so the two views of the same
-   DayStatus row never disagree. */
-.cal { width: 100%; table-layout: fixed; }
-.cal td { height: 74px; border: 1px solid var(--line); padding: 4px 6px; vertical-align: top; }
-.cal .d { font-size: 11px; color: var(--muted); }
-.cal .stat { margin-top: 3px; }
-.cal td.off { background: #f4f0e6; }
-.cal td.cal-complete { background: var(--ok-bg); }
-.cal td.cal-partial { background: var(--warn-bg); }
-.cal td.cal-missing { background: var(--bad-bg); }
-.cal td.cal-leave { background: var(--leave-bg); }
-.cal td.cal-overtime { background: var(--overtime-bg); }
-.cal td.today { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* searchable project/task combo (Today → Add row) */
 .combo { position: relative; display: flex; flex-direction: column; }
@@ -369,9 +366,32 @@ tr.overtime-row td { background: var(--warn-bg); }
   padding: 8px 14px; margin-bottom: 14px;
   box-shadow: 0 2px 4px rgba(7, 41, 38, .09), 0 6px 16px rgba(7, 41, 38, .12);
 }
-.today-page .card > h2:first-child { margin: 0 0 4px; }
 .today-page .totalbar { margin: 6px 0; }
 .today-page { padding-bottom: 32px; }
+/* Card header as its own separated box (Ganesh, 2026-08-29: "i want
+   seperate box for header it should not be inside the ssection") — a
+   dedicated .card-head wrapper (added around each card's <h2> in
+   today.html) bleeds via negative margin out to the card's own edges and
+   gets its own background/border, so the title reads as a distinct header
+   bar sitting above the card's body content instead of just being the
+   first line of text inside the same padded box. Only cards that already
+   had a real `<h2>` title got this wrapper (Plan for the day, My Month,
+   Reminders, Today's Plan, the read-only past-day Plan card, Auto time
+   capture, Add row) — Task log has no header at all and wasn't touched. */
+.today-page .card-head {
+  margin: -8px -14px 10px -14px;
+  padding: 8px 14px;
+  background: var(--pending-bg);
+  border-bottom: 1px solid var(--line);
+  border-radius: 11px 11px 0 0;
+}
+.today-page .card-head h2 { margin: 0; }
+.today-page .compact-card .card-head {
+  margin: -6px -12px 6px -12px;
+  padding: 5px 12px;
+  border-radius: 9px 9px 0 0;
+}
+.today-page .compact-card .card-head h2 { font-size: 15px; }
 /* Auto time capture: reduced (Ganesh, 2026-08-29, "reduce the auto timer
    capture box") — it moved down the column below Today's Plan/Task log
    the same day and reads as less central now, so it gets a smaller
@@ -380,7 +400,6 @@ tr.overtime-row td { background: var(--warn-bg); }
    exact rule text — still shows on hover via that paragraph's own
    title attribute, not lost, just tucked away). */
 .today-page .compact-card { padding: 6px 12px; }
-.today-page .compact-card > h2:first-child { font-size: 15px; margin: 0 0 2px; }
 .today-page .compact-card p.small { margin: 2px 0 0 !important; }
 /* Task log: Start/End columns collapsed into a hover on Duration (Ganesh,
    2026-08-29 — "remove start and end time... hover over the duration with
@@ -426,6 +445,17 @@ tr.overtime-row td { background: var(--warn-bg); }
 .week-badge { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
   font-size: 11px; font-weight: 600; background: var(--pending-bg); color: var(--muted); }
 .week-badge.done { background: var(--accent); color: #fff; }
+/* Working-date card — Mon-Sun week-position circles (Ganesh, 2026-08-30:
+   "week days in circle... today should be other color highlighting and
+   completed day should be greyed out"). Three states only, by date
+   position relative to the real today — not tied to whether hours were
+   logged that day (see _week_day_circles()'s own docstring). */
+.week-circles { display: flex; gap: 6px; flex-wrap: wrap; }
+.week-circle { width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700; text-transform: uppercase; }
+.week-circle.past { background: var(--pending-bg); color: var(--muted); }
+.week-circle.today { background: var(--accent); color: var(--accent-ink); }
+.week-circle.upcoming { background: var(--ok-bg); color: var(--ok); }
 /* Today page "My Month" card — mini working-days calendar (Ganesh,
    2026-08-29). flex (not a fixed-count CSS grid) so it works regardless
    of how many columns this employee's work_day_set produces (5 for a
@@ -562,7 +592,7 @@ details > summary { cursor: pointer; color: var(--accent); }
   cursor: pointer; padding: 3px 4px; font-weight: 600; }
 .tree-toolbar .lnk:hover { text-decoration: underline; }
 .tree { background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
-.tree-dept, .tree-proj { border-top: 1px solid var(--line); }
+.tree-dept, .tree-proj, .tree-cat { border-top: 1px solid var(--line); }
 .tree-dept:first-child { border-top: none; }
 /* Visual polish pass (Ganesh, 2026-08-29, "I want it like [the mockup]") —
    explicit color/weight on every piece of a row rather than relying on
@@ -575,15 +605,21 @@ details > summary { cursor: pointer; color: var(--accent); }
    toggle/departments-save/toggle) — this is layout/color only, no new
    fields, no combined-save endpoint, no Billable/merge tooling (all
    explicitly declined via AskUserQuestion, see CLAUDE.md). */
-.tree-dept > summary, .tree-proj > summary { list-style: none; cursor: pointer;
+.tree-dept > summary, .tree-proj > summary, .tree-cat > summary { list-style: none; cursor: pointer;
   display: flex; align-items: center; gap: 10px; padding: 12px 16px; color: var(--ink); }
-.tree-dept > summary::-webkit-details-marker, .tree-proj > summary::-webkit-details-marker { display: none; }
-.tree-dept > summary:hover, .tree-proj > summary:hover { background: var(--bg); }
+.tree-dept > summary::-webkit-details-marker, .tree-proj > summary::-webkit-details-marker, .tree-cat > summary::-webkit-details-marker { display: none; }
+.tree-dept > summary:hover, .tree-proj > summary:hover, .tree-cat > summary:hover { background: var(--bg); }
 .tree-dept > summary { background: var(--bg); border-bottom: 1px solid var(--line); }
 .tree-dept[open] > summary { border-bottom: 1px solid var(--line); }
 .tree-dept-nm { font-weight: 700; font-size: 15px; color: var(--ink); }
-.tree-proj-nm { font-weight: 600; font-size: 13.8px; color: var(--ink); }
+.tree-proj-nm, .tree-cat-nm { font-weight: 600; font-size: 13.8px; color: var(--ink); }
 .tree-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+/* Category -> Task hours rollup, "All departments" only (Ganesh, 2026-08-30,
+   from a pasted mockup: "these are common for all departments") — pushed to
+   the far right of the row via margin-left:auto, same trick .tree-row-acts
+   already uses, and reused as-is inside .tree-task-row (also display:flex)
+   for the per-task hrs figure. */
+.tree-hrs { margin-left: auto; color: var(--muted); font-size: 12.5px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
 /* Row-level hover actions ("+ Task", "Edit", "Deactivate" — Ganesh,
    2026-08-29: "we can add task also for each project") — plain buttons
    inside <summary>, each stopping click propagation so they don't also
@@ -601,13 +637,14 @@ details > summary { cursor: pointer; color: var(--accent); }
 .tree-row-acts .lnk:hover { text-decoration: underline; }
 .tree-row-acts .lnk.danger { color: var(--bad); }
 .tree-row-acts form.inline { display: inline; }
-.tree-proj { margin-left: 26px; border-top: 1px solid #f2f0ec; }
-.tree-proj > summary { padding: 10px 16px; }
+.tree-proj, .tree-cat { margin-left: 26px; border-top: 1px solid #f2f0ec; }
+.tree-proj > summary, .tree-cat > summary { padding: 10px 16px; }
 .tree-car { display: inline-block; width: 12px; font-size: 10px; color: var(--muted);
   transition: transform .12s; flex-shrink: 0; }
-.tree-dept[open] > summary .tree-car, .tree-proj[open] > summary .tree-car { transform: rotate(90deg); }
+.tree-dept[open] > summary .tree-car, .tree-proj[open] > summary .tree-car, .tree-cat[open] > summary .tree-car { transform: rotate(90deg); }
 .tree-body { padding: 6px 16px 16px 42px; }
-.tree-proj .tree-body { padding-left: 16px; }
+.tree-proj .tree-body, .tree-cat .tree-body { padding-left: 16px; }
+.tree-cat-list { border-bottom: 1px solid #f2f0ec; padding-bottom: 4px; margin-bottom: 4px; }
 .tree-task-row { display: flex; align-items: center; gap: 8px; padding: 5px 2px; font-size: 13.3px;
   color: var(--ink); border-top: 1px solid #f7f5f2; flex-wrap: wrap; }
 .tree-task-row:first-child { border-top: none; }

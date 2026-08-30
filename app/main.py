@@ -27,6 +27,7 @@ from app.util import (
     ensure_list_status_backfill,
     ensure_location_backfill,
     ensure_super_admin_backfill,
+    ensure_task_category_backfill,
 )
 
 # Most hosts (Azure App Service included) just capture stdout — a basic
@@ -162,6 +163,7 @@ def _startup() -> None:
         ensure_list_status_backfill(db)
         ensure_location_backfill(db)
         ensure_leave_v2_backfill(db)
+        ensure_task_category_backfill(db)
         ensure_bootstrap_admins(db)
     finally:
         db.close()

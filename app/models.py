@@ -395,6 +395,22 @@ class TaskType(Base):
     edited_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
     original_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     employee_notified_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    # Freeform grouping label for the Projects & Tasks tree's "All
+    # departments" section (Ganesh, 2026-08-30, from a pasted mockup: "these
+    # are common for all departments") — groups ONLY the truly unrestricted/
+    # shared tasks (zero ProjectTask links) into named buckets like
+    # "General"/"Meetings"/"Printing" with an hours rollup per bucket and
+    # per task; a project-scoped task already has a home under its own
+    # project node, so it isn't shown there and its category is cosmetic.
+    # Admin-set freeform text (AskUserQuestion, 2026-08-30: "New freeform
+    # field, admin-set" over a fixed preset list) via the "All Tasks"
+    # table's own rename form (lists_rename, app/routes/admin.py) — typing
+    # a new name creates a new category, no separate management screen.
+    # Defaults to "General" for every new task; see
+    # ensure_task_category_backfill (app/util.py) for why every
+    # pre-existing row also needs an explicit backfill rather than relying
+    # on this default (SQLite ADD COLUMN never backfills existing rows).
+    category: Mapped[str] = mapped_column(String(60), default="General")
 
     created_by = relationship("Employee", foreign_keys=[created_by_employee_id])
 

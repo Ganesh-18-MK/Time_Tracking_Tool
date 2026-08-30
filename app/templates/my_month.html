@@ -31,43 +31,6 @@
 </div>
 
 <div class="card">
-  <table class="cal">
-    <thead><tr>{% for w in ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}<th>{{ w }}</th>{% endfor %}</tr></thead>
-    <tbody>
-      {% for week in weeks %}
-      <tr>
-        {% for cell in week %}
-        {% if cell %}
-          {% set r = cell.row %}
-          {% set ds = cell.display_status %}
-          <td class="{{ 'off' if r and r.status in ('weekend','holiday') }} {{ 'cal-' + ds if ds and ds not in ('weekend', 'holiday') }} {{ 'today' if cell.date == today }}">
-            <div class="d">{{ cell.date.day }}{% if cell.date == today %} <span class="small">· today</span>{% endif %}</div>
-            {% if r %}
-              <div class="stat"><span class="badge b-{{ ds }}">{{ STATUS_NAMES.get(ds, ds) }}</span>
-                {% if r.override_status %}<span class="mark" title="Admin override: {{ r.override_reason }}">⚑</span>{% endif %}
-                {% if r.compensated %}<span class="mark" title="Compensated shortfall">↺</span>{% endif %}
-              </div>
-              {% if r.actual_minutes or r.target_minutes %}
-              <div class="small muted">{{ r.actual_minutes|hm }} / {{ r.target_minutes|hm }}</div>
-              {% endif %}
-              {% if r.variance_minutes is not none and r.variance_minutes != 0 %}
-              <div class="small {{ 'muted' if r.variance_minutes > 0 else '' }}"
-                   style="{{ 'color:var(--bad)' if r.variance_minutes < 0 }}">{{ r.variance_minutes|hm_signed }}</div>
-              {% endif %}
-            {% elif cell.date <= today %}
-              <div class="stat"><span class="badge b-pending">{{ 'pending' if cell.date == today else '—' }}</span></div>
-            {% endif %}
-          </td>
-        {% else %}<td class="off"></td>{% endif %}
-        {% endfor %}
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  <p class="small muted">⚑ = admin override (reason on hover) · ↺ = compensated shortfall · hours show actual / target · today's cell is outlined.</p>
-</div>
-
-<div class="card">
   <h2>Hours ledger (variance &amp; running balance)</h2>
   <p class="small muted" style="margin:-4px 0 10px">Click a week to see its days, then click a day's Entries to see the logged rows.</p>
   <table class="ledger-centered">

@@ -13,6 +13,7 @@ from app.util import (
     clamp_break_end,
     ensure_bootstrap_admins,
     ensure_list_status_backfill,
+    ensure_task_category_backfill,
     flags_to_role,
     mask_tail,
     normalize_title_case,
@@ -377,3 +378,56 @@ class TestEnsureListStatusBackfill:
         # safe to call on every startup even with zero projects/tasks
         ensure_list_status_backfill(db)
         assert list(db.execute(select(m.Project)).scalars()) == []
+
+
+class TestEnsureTaskCategoryBackfill:
+    """The TaskType.category column (Ganesh, 2026-08-30, the "All
+    departments" Category -> Task grouping with an hours rollup) — same
+    SQLite-ADD-COLUMN-leaves-existing-rows-NULL gap as
+    TestEnsureListStatusBackfill above, just for this newer column. Without
+    this backfill, every task created before this feature shipped would
+    group under a blank/None bucket in the "All departments" tree instead
+    of "General", the same bucket a brand-new task's ORM-level default
+    already puts it in."""
+
+    @pytest.fixture()
+    def db(self):
+        eng = create_engine("sqlite://")
+        Base.metadata.create_all(eng)
+        s = sessionmaker(bind=eng)()
+        yield s
+        s.close()
+
+    def test_backfills_null_category_to_general(self, db):
+        # Same raw-UPDATE technique TestEnsureListStatusBackfill uses above
+        # (see that test's own comment) — a real ALTER TABLE ADD COLUMN
+        # never goes through the ORM, so only a raw UPDATE reliably
+        # reproduces a NULL regardless of SQLAlchemy version.
+        t = m.TaskType(name="Legacy Task", active=True)
+        db.add(t)
+        db.commit()
+        db.execute(update(m.TaskType.__table__).where(m.TaskType.__table__.c.id == t.id).values(category=None))
+        db.commit()
+        db.expire_all()
+        assert t.category is None  # sanity: really NULL in the DB
+
+        ensure_task_category_backfill(db)
+
+        db.refresh(t)
+        assert t.category == "General"
+
+    def test_noop_when_category_already_set(self, db):
+        # a task an admin already categorized must NOT get silently reset
+        meetings_task = m.TaskType(name="Team Meeting", active=True, category="Meetings")
+        db.add(meetings_task)
+        db.commit()
+
+        ensure_task_category_backfill(db)
+
+        db.refresh(meetings_task)
+        assert meetings_task.category == "Meetings"
+
+    def test_noop_when_nothing_to_backfill(self, db):
+        # safe to call on every startup even with zero tasks
+        ensure_task_category_backfill(db)
+        assert list(db.execute(select(m.TaskType)).scalars()) == []

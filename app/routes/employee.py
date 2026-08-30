@@ -433,6 +433,28 @@ def _week_summary(db: Session, emp: m.Employee, cfg, today: dt.date) -> dict:
     }
 
 
+def _week_day_circles(today: dt.date) -> list:
+    """Mon-Sun circle row next to the Working date picker on Today (Ganesh,
+    2026-08-30: "week days in circle... today should be other color
+    highlighting and completed day should be greyed out"). Purely a
+    date-position read against the REAL today (never the `day` being
+    browsed via the date picker, per the ask's own wording — "for suppose
+    today is Tue") — no DayStatus/TaskEntry lookup at all, so this never
+    needs a DB call and always reflects the actual current week regardless
+    of which day the employee happens to be viewing. Three states only:
+    'past' (before today, this week), 'today', 'upcoming' (after today,
+    still this week) — deliberately not tied to whether hours were logged
+    that day (unlike _week_summary()'s day_badges), since the ask was
+    about calendar position, not compliance."""
+    monday = today - dt.timedelta(days=today.weekday())
+    circles = []
+    for i, label in enumerate(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]):
+        d = monday + dt.timedelta(days=i)
+        state = "past" if d < today else ("today" if d == today else "upcoming")
+        circles.append({"label": label, "date": d, "state": state})
+    return circles
+
+
 def _month_summary(db: Session, emp: m.Employee, cfg, today: dt.date) -> dict:
     """"My Month" card (Ganesh, 2026-08-29, from a pasted mockup) — replaces
     the earlier "This Week" card in the same Today-page slot with the
@@ -491,14 +513,20 @@ def _month_summary(db: Session, emp: m.Employee, cfg, today: dt.date) -> dict:
     # gets its OWN cell (state "holiday", no number) rather than being
     # dropped, specifically so every week stays the same width and later
     # cells in that row never shift into the wrong weekday column.
+    # Saturday/Sunday are always included too (Ganesh, 2026-08-29 follow-up:
+    # "I want Saturday and sunday also") even for an employee whose
+    # work_day_set doesn't include them — a weekend day still gets a
+    # DayStatus row (status='weekend', target usually 0) via the same
+    # recompute_employee() call above, so any voluntary weekend hours still
+    # show up here as a normal variance the same way a scheduled day does.
     _WEEKDAY_ABBR = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    work_weekdays = sorted(emp.work_day_set)
+    calendar_weekdays = sorted(set(emp.work_day_set) | {5, 6})
     holidays = engine.holidays_set(db)
     rows_by_date = {r.date: r for r in rows}
     calendar_weeks, week = [], []
     d = first
     while d <= last:
-        if d.weekday() in work_weekdays:
+        if d.weekday() in calendar_weekdays:
             if d > effective_end:
                 cell = {"day": d.day, "state": "future"}
             elif d in holidays:
@@ -519,7 +547,7 @@ def _month_summary(db: Session, emp: m.Employee, cfg, today: dt.date) -> dict:
         d += dt.timedelta(days=1)
     if week:
         calendar_weeks.append(week)
-    calendar_headers = [_WEEKDAY_ABBR[wd] for wd in work_weekdays]
+    calendar_headers = [_WEEKDAY_ABBR[wd] for wd in calendar_weekdays]
 
     return {
         "logged": logged,
@@ -864,6 +892,7 @@ def today_page(
             "day": day,
             "today": today,
             "allowed_dates": _allowed_dates(db, user, cfg),
+            "week_circles": _week_day_circles(today),
             # plain dicts, not ORM objects — the template feeds these straight
             # into the searchable-combo widget via |tojson. Assigned ones
             # (Ganesh, 2026-08-01) sort first and get a ★ — advisory only,
@@ -2025,28 +2054,6 @@ def my_month(
     strikes = engine.strikes_in(rows.values(), comp_erases)
     threshold = engine.cfg_int(cfg, "strike_threshold")
 
-    # calendar weeks (Mon-first) — display_status reuses the same
-    # Overtime-layered label the Hours ledger uses (_ledger_display_status),
-    # so "Overtime" means the same thing in both places on this page
-    # (Ganesh, 2026-08-29, "improvise this calendar view" — no preference
-    # given, so this stays consistent with the ledger rather than
-    # reinventing a second reading of the same DayStatus row).
-    weeks, week = [], [None] * 7
-    d = first
-    while d <= last:
-        r = rows.get(d)
-        week[d.weekday()] = {
-            "date": d,
-            "row": r,
-            "display_status": _ledger_display_status(r, comp_erases) if r else None,
-        }
-        if d.weekday() == 6:
-            weeks.append(week)
-            week = [None] * 7
-        d += dt.timedelta(days=1)
-    if any(week):
-        weeks.append(week)
-
     # leave by category (PRD §5: computed, not typed) — approved only; a
     # pending or rejected request was never actually taken.
     leave_totals = {}
@@ -2111,7 +2118,6 @@ def my_month(
             "user": user,
             "year": year,
             "month": month,
-            "weeks": weeks,
             "strikes": strikes,
             "threshold": threshold,
             "comp_erases": comp_erases,

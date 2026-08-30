@@ -322,6 +322,26 @@ def ensure_leave_v2_backfill(db: Session) -> None:
     db.commit()
 
 
+def ensure_task_category_backfill(db: Session) -> None:
+    """Backfill for `TaskType.category`, added 2026-08-30 (the "All
+    departments" tree's Category -> Task grouping, with an hours rollup, for
+    tasks nothing narrows to a specific project). Same root cause as every
+    other ensure_*_backfill above: SQLite's ADD COLUMN gives every existing
+    row NULL, not the ORM-level `default="General"` — without this, every
+    task created before this feature shipped would show up with no category
+    at all (a blank/None bucket) instead of falling into "General" the way
+    a brand-new task does automatically. A no-op once every row already has
+    a category, safe on every startup, same pattern as
+    ensure_list_status_backfill/ensure_location_backfill/
+    ensure_leave_v2_backfill."""
+    rows = list(db.execute(select(m.TaskType).where(m.TaskType.category.is_(None))).scalars())
+    if not rows:
+        return
+    for t in rows:
+        t.category = "General"
+    db.commit()
+
+
 def ensure_bootstrap_admins(db: Session) -> None:
     """Creates the initial Super Admin account(s) from the BOOTSTRAP_ADMINS
     env var, but ONLY if the employees table is completely empty.

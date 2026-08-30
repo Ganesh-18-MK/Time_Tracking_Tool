@@ -25,10 +25,15 @@
   <div class="tree-body">
     {% if user.is_super_admin %}
     <div class="tree-add-task" hidden>
-      <!-- Reuses the exact same /admin/lists/add route the All Tasks card's
-           own Add form posts to (Ganesh, 2026-08-29: "we can add task also
-           for each project") — project_id is pre-filled from this node
-           instead of picked via combo, since it's already known here. -->
+      <!-- Reuses the same /admin/lists/add route the (now-removed, Ganesh
+           2026-08-30: "complete remove the All tasks section") All Tasks
+           card's own Add form used to post to (Ganesh, 2026-08-29: "we can
+           add task also for each project") — project_id is pre-filled from
+           this node instead of picked via combo, since it's already known
+           here. This is now the ONLY way to add a brand-new task from this
+           page — see the CLAUDE.md bullet on the All Tasks removal for the
+           other capabilities (rename/deactivate/manage-projects/category
+           for an already-unrestricted task) that went with it. -->
       <form method="post" action="/admin/lists/add" class="formrow" style="margin-bottom:12px">
         <input type="hidden" name="kind" value="task">
         <input type="hidden" name="project_id" value="{{ p.id }}">
@@ -95,7 +100,7 @@
     {% endif %}
     {% endfor %}
     {% else %}
-    <div class="tree-empty">No tasks narrowed to just this project — every task usable everywhere applies here too (see All Tasks below).</div>
+    <div class="tree-empty">No tasks narrowed to just this project — every task usable everywhere applies here too (see the Category groupings under "All departments" above).</div>
     {% endif %}
   </div>
 </details>
@@ -136,10 +141,42 @@ available to everyone; see "Manage departments" on a project to narrow it.</p>
     <summary>
       <span class="tree-car">▶</span>
       <span class="tree-dept-nm">All departments</span>
-      <span class="badge b-pending">shared</span>
-      <span class="tree-meta">{{ shared_projects|length }} project(s)</span>
+      <span class="badge b-pending">shared · firm-wide</span>
+      <span class="tree-meta">shared firm-wide · {{ shared_projects|length }} project(s) · {{ unrestricted_task_count }} task(s)</span>
     </summary>
     <div class="tree-body">
+      {# Category -> Task grouping for the truly unrestricted/shared tasks
+         (Ganesh, 2026-08-30, from a pasted mockup: "these are common for
+         all departments") — sits ABOVE the existing shared-projects list
+         below rather than replacing it (AskUserQuestion 2026-08-30: "Keep
+         both"), since a shared project's own settings (Case Type, Manage
+         departments, its own narrowed task list, etc.) still need that
+         list's edit controls. Only ever shown here, never inside a
+         specific department group — see shared_task_categories' own
+         comment in lists_page() (app/routes/admin.py). #}
+      {% if shared_task_categories %}
+      <div class="tree-cat-list">
+        {% for cat in shared_task_categories %}
+        <details class="tree-cat">
+          <summary>
+            <span class="tree-car">▶</span>
+            <span class="tree-cat-nm">{{ cat.name }}</span>
+            <span class="tree-meta">{{ cat.task_count }} task(s)</span>
+            <span class="tree-hrs">{{ cat.hours }} hrs</span>
+          </summary>
+          <div class="tree-body">
+            {% for t in cat.tasks %}
+            <div class="tree-task-row" {% if not t.active %}style="opacity:.5"{% endif %}>
+              <span>· {{ t.name }}</span>
+              {% if not t.active %}<span class="muted">(inactive)</span>{% endif %}
+              <span class="tree-hrs">{{ task_hours.get(t.id, 0) }} hrs</span>
+            </div>
+            {% endfor %}
+          </div>
+        </details>
+        {% endfor %}
+      </div>
+      {% endif %}
       {% if shared_projects %}
       {% for p in shared_projects %}{{ project_node(p) }}{% endfor %}
       {% else %}
@@ -164,85 +201,8 @@ available to everyone; see "Manage departments" on a project to narrow it.</p>
   </details>
   {% endfor %}
 </div>
-{% if unrestricted_task_count %}
-<p class="small muted" style="margin:8px 2px">{{ unrestricted_task_count }} task(s) are usable under every project and aren't repeated inside each one above — manage them in the All Tasks list below.</p>
-{% endif %}
 
-<div class="card" style="margin-top:18px">
-  <h2>All Tasks ({{ tasks|selectattr('active')|list|length }} active)</h2>
-  <!-- Project-scoped tasks (Ganesh, 2026-08-27) — a new task now needs
-       its (first) Project picked here too; a task with zero linked
-       projects stays usable under every project until narrowed via its
-       own "Manage projects" panel below (see ProjectTask's docstring in
-       app/models.py). Kept as one flat master list (not nested inside the
-       tree above) since narrowing/renaming/deactivating a task is a
-       task-centric action regardless of which project(s) it's linked to
-       (Ganesh, 2026-08-29 — see the tree's own note above this card). -->
-  <form method="post" action="/admin/lists/add" class="formrow">
-    <input type="hidden" name="kind" value="task">
-    <div style="flex:1 1 200px"><input name="name" placeholder="Add task type" style="width:100%"></div>
-    <div class="combo" id="combo-add-task-project" data-placeholder="a project" style="flex:1 1 200px">
-      <input type="text" class="combo-input" autocomplete="off" placeholder="Project it's for…" required>
-      <input type="hidden" name="project_id">
-      <div class="combo-menu" hidden></div>
-    </div>
-    <div><button class="small">Add</button></div>
-  </form>
-  <div class="searchbar">
-    <input type="search" data-filter-table="tasks-table" placeholder="Search tasks…">
-  </div>
-  <table id="tasks-table">
-    <thead><tr><th>Task</th><th>Projects</th><th></th></tr></thead>
-    {% for t in tasks %}
-    {% set linked = task_project_ids.get(t.id, []) %}
-    <tr {% if not t.active %}style="opacity:.5"{% endif %}>
-      <td>{{ t.name }}
-        {% if user.is_super_admin %}
-        <details class="details-edit inline">
-          <summary class="small muted">✎ rename</summary>
-          <form method="post" action="/admin/lists/task/{{ t.id }}/rename" style="margin-top:6px;display:flex;gap:6px;align-items:flex-start">
-            <input name="name" value="{{ t.name }}" style="min-width:180px" required>
-            <button class="small">Save</button>
-          </form>
-        </details>
-        {% endif %}
-      </td>
-      <td class="small muted">
-        {% if user.is_super_admin %}
-        <details>
-          <summary style="cursor:pointer">{{ 'every project' if not linked else linked|length ~ ' project(s)' }} — manage</summary>
-          <div style="margin-top:6px">
-            <input type="search" class="ms-search" data-filter-checkboxes="ms-task-{{ t.id }}" placeholder="Search projects…">
-            <form method="post" action="/admin/lists/task/{{ t.id }}/projects">
-              <div class="ms-box" id="ms-task-{{ t.id }}" style="max-height:180px">
-                {% for p in projects if p.active %}
-                <label class="ms-opt"><input type="checkbox" name="project_ids" value="{{ p.id }}" {{ 'checked' if p.id in linked }}>{{ p.name }}</label>
-                {% endfor %}
-              </div>
-              <p class="small muted" style="margin:4px 0">Nothing checked = usable under every project.</p>
-              <button class="small">Save</button>
-            </form>
-          </div>
-        </details>
-        {% else %}
-        {{ 'every project' if not linked else linked|length ~ ' project(s)' }}
-        {% endif %}
-      </td>
-      <td class="right">{% if user.is_super_admin %}<form method="post" action="/admin/lists/task/{{ t.id }}/toggle" class="inline">
-        <button class="small secondary">{{ 'Deactivate' if t.active else 'Reactivate' }}</button></form>{% endif %}</td>
-    </tr>
-    {% endfor %}
-  </table>
-</div>
-
-<!-- msfilter.js (checkbox-list search, powers each task's "manage" panel
-     above) is already loaded globally by base.html; combo.js (the
-     Project picker on the Add-task form) is not, since this is the only
-     admin page that needs it. -->
-<script src="/static/combo.js?v={{ static_version }}"></script>
 <script>
-initCombo(document.getElementById('combo-add-task-project'), {{ active_projects_json|tojson }});
-
 // Projects & Tasks tree (Ganesh, 2026-08-29) — plain nested <details>, so
 // expand/collapse is free; this is just the search filter + expand/
 // collapse-all conveniences on top, same "small hand-rolled JS, no
