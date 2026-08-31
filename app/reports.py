@@ -788,8 +788,9 @@ def daily_task_log_report(db: Session, start: dt.date, end: dt.date,
                            department: Optional[str] = None, employee_id: Optional[int] = None) -> dict:
     """{"mode": "daily", "employee": Employee, "days": [{"date", "entries":
     [{"entry": TaskEntry, "unplanned": bool}, ...], "unplanned_count",
-    "total_minutes", "summary": {bullets, error, stale, hash}}, ...]}
-    when one employee is selected (most recent day first — unlike
+    "total_minutes", "summary": {"source": "ai" | "rule", "text": str | None,
+    "bullets": List[str] | None, "error": str | None}}, ...]} when one
+    employee is selected (most recent day first — unlike
     Attendance/Strikes' oldest-first daily mode, admins open this one to
     read today's or yesterday's actual work, not audit a whole range in
     order), else {"mode": "summary", "rows": [{"employee", "department",
@@ -820,6 +821,22 @@ def daily_task_log_report(db: Session, start: dt.date, end: dt.date,
         emp = emps[0]
         dates = sorted({d for (eid, d) in by_emp_date if eid == emp.id}, reverse=True)
         planned = planned_by_emp[emp.id]
+        # AI day summaries (Ganesh, 2026-08-31) — stored once per day on
+        # DaySubmission at Submit Day time (see llm_summary.py +
+        # submit_day() in app/routes/employee.py), one query for the whole
+        # visible range rather than one per day. A day with no
+        # DaySubmission row at all (not yet submitted, or from before this
+        # feature existed) has nothing here and falls through to
+        # rule_based_day_summary() below exactly as before this feature.
+        subs_by_date = {
+            row.date: row
+            for row in db.execute(
+                select(m.DaySubmission).where(
+                    m.DaySubmission.employee_id == emp.id,
+                    m.DaySubmission.date.between(start, end),
+                )
+            ).scalars()
+        }
         days = []
         for d in dates:
             rows = sorted(by_emp_date[(emp.id, d)], key=lambda r: r.start_minute)
@@ -828,12 +845,36 @@ def daily_task_log_report(db: Session, start: dt.date, end: dt.date,
                 {"entry": r, "unplanned": (r.project_id, r.task_type_id) not in planned_pairs}
                 for r in rows
             ]
+            sub = subs_by_date.get(d)
+            if sub and sub.summary_text:
+                summary = {"source": "ai", "text": sub.summary_text, "bullets": None, "error": None}
+            else:
+                # Surface WHY there's no AI summary (Ganesh, 2026-08-31,
+                # after seeing a submitted day still show only the
+                # rule-based bullets with no way to tell whether that's
+                # because GEMINI_API_KEY isn't set, the day predates this
+                # feature, or the call actually failed) — sub.summary_error
+                # is set by _generate_day_summary() (app/routes/
+                # employee.py) every time summarize_day() doesn't return
+                # text, including "GEMINI_API_KEY not set" itself, so this
+                # one field answers all three cases without digging into
+                # the database. None (not just falsy) specifically means
+                # "no DaySubmission row for this day at all" — a day from
+                # before this feature existed, or one that was never
+                # actually submitted through submit_day() (e.g. seeded
+                # demo data) — which reads differently from a real,
+                # attempted-and-failed generation.
+                summary = {
+                    "source": "rule", "text": None,
+                    "bullets": rule_based_day_summary(rows),
+                    "error": sub.summary_error if sub else None,
+                }
             days.append({
                 "date": d,
                 "entries": day_entries,
                 "unplanned_count": sum(1 for e in day_entries if e["unplanned"]),
                 "total_minutes": sum(r.duration_minutes for r in rows),
-                "summary": {"bullets": rule_based_day_summary(rows)},
+                "summary": summary,
             })
         return {"mode": "daily", "employee": emp, "days": days}
 
@@ -890,3 +931,122 @@ def task_log_export_rows(db: Session, start: dt.date, end: dt.date,
             "unplanned": (r.project_id, r.task_type_id) not in planned_pairs,
         })
     return rows
+
+
+def compliance_trend_report(
+    db: Session, emps: List[m.Employee], weeks: int, threshold: int,
+    comp_erases: bool, today: dt.date, target_pct: int,
+) -> dict:
+    """Dashboard's "Compliance Trend" card (Ganesh, 2026-08-30, from a pasted
+    mockup: a weekly line chart, a dashed "Target N%" reference line, the
+    current week's point called out, and a one-line explanation whenever
+    the most recent week is a drop from the one before). Flagged as a
+    follow-up when the "By Project" bar chart's own mockup pair was built
+    the same day ("needs a week-over-week historical rollup nothing in
+    this app computes yet") — this is that rollup.
+
+    `emps` is whatever employee set the caller has already scoped (Dashboard
+    passes its own `all_emps` — org-wide for a Super Admin, department-only
+    for a Team Lead, matching the mockup's "your teams" framing either way).
+
+    Weeks are Monday-Sunday, same convention as
+    app/routes/employee.py's `_week_summary()`. The most recent week is
+    "this week" — Monday through `today`, i.e. possibly partial — matching
+    Dashboard's own live "today" snapshot elsewhere on the page; every
+    earlier week is Monday through Sunday in full.
+
+    "Compliant" for one employee in one week is exactly My Month's own
+    compliant/at-risk definition (`strikes_in(that week's rows, comp_erases)
+    < threshold`), just evaluated over a single week's DayStatus rows
+    instead of a whole month's — reusing the existing Config strike
+    threshold rather than inventing a second, week-scoped one. Since
+    `strike_threshold` (default 5) was designed as a monthly tolerance, a
+    single bad day rarely pushes a week over it on its own — this trend is
+    a signal for genuinely serious weeks, not a sensitive day-to-day
+    tracker, and it will often sit near 100%. That's an accepted
+    consequence of reusing the existing config value (confirmed with
+    Ganesh) rather than a bug.
+
+    Known, accepted gap: an employee with zero DayStatus rows in a given
+    week (e.g. a week before they were hired, or one recompute_all() hasn't
+    reached) reads as compliant for that week (strikes_in([]) == 0) — the
+    same "vacuous truth" reporting.py's other functions don't special-case
+    for pre-hire dates either. At this org's size/tenure mix the effect is
+    small; flagged here rather than silently assumed away.
+
+    Root cause ("N people in {department} account for the whole drop") is
+    computed for real, not guessed: whoever was compliant last week but
+    ISN'T this week is the "newly non-compliant" set; if every one of them
+    sits in the same department, name it and the count exactly like the
+    mockup. If they're merely concentrated (>50%) in one department, say so
+    without claiming the whole drop. Otherwise, say the drop is spread out
+    rather than naming a department that wouldn't actually explain most of
+    it. No note at all when the most recent week isn't a drop (pct held or
+    rose) — a card that only speaks up when something needs attention is
+    the same instinct behind "Needs attention" elsewhere on this page.
+
+    {"points": [{"week_start", "week_end", "pct", "compliant", "total"}, ...]
+    oldest-first ending with "this week" (real dt.date objects — for any
+    future server-side/prose use), "chart_data": the same points as plain
+    JSON-safe {"label", "pct", "compliant", "total"} dicts for the
+    template's `|tojson` (see time_by_project_report()'s own chart_data for
+    the same pattern), "target_pct": int, "drop_note": str | None}."""
+    if not emps:
+        return {"points": [], "chart_data": [], "target_pct": target_pct, "drop_note": None}
+
+    emp_ids = [e.id for e in emps]
+    this_monday = today - dt.timedelta(days=today.weekday())
+    week_starts = [this_monday - dt.timedelta(weeks=(weeks - 1 - i)) for i in range(weeks)]
+    range_start = week_starts[0]
+
+    rows_by_emp: Dict[int, List[m.DayStatus]] = {}
+    for row in db.execute(
+        select(m.DayStatus).where(
+            m.DayStatus.employee_id.in_(emp_ids),
+            m.DayStatus.date.between(range_start, today),
+        )
+    ).scalars():
+        rows_by_emp.setdefault(row.employee_id, []).append(row)
+
+    points = []
+    compliant_sets: List[set] = []
+    for wk_start in week_starts:
+        wk_end = min(wk_start + dt.timedelta(days=6), today)
+        compliant_ids = set()
+        for e in emps:
+            wk_rows = [r for r in rows_by_emp.get(e.id, []) if wk_start <= r.date <= wk_end]
+            if engine.strikes_in(wk_rows, comp_erases) < threshold:
+                compliant_ids.add(e.id)
+        pct = round(len(compliant_ids) / len(emps) * 100, 1)
+        points.append({
+            "week_start": wk_start, "week_end": wk_end, "pct": pct,
+            "compliant": len(compliant_ids), "total": len(emps),
+        })
+        compliant_sets.append(compliant_ids)
+
+    drop_note = None
+    if len(points) >= 2 and points[-1]["pct"] < points[-2]["pct"]:
+        dropped_ids = compliant_sets[-2] - compliant_sets[-1]
+        if dropped_ids:
+            emp_by_id = {e.id: e for e in emps}
+            by_dept: Dict[str, int] = {}
+            for eid in dropped_ids:
+                dept = emp_by_id[eid].department or "—"
+                by_dept[dept] = by_dept.get(dept, 0) + 1
+            total_dropped = len(dropped_ids)
+            top_dept, top_n = max(by_dept.items(), key=lambda kv: kv[1])
+            noun = "person" if top_n == 1 else "people"
+            if top_n == total_dropped:
+                drop_note = f"{top_n} {noun} in {top_dept} account for the whole drop."
+            elif top_n > total_dropped / 2:
+                drop_note = f"{top_n} of {total_dropped} newly non-compliant people are in {top_dept}."
+            else:
+                drop_note = f"Spread across {len(by_dept)} departments — no single team stands out."
+
+    # Plain (label, pct) pairs, oldest-first — a JSON-safe mirror of `points`
+    # above for the chart's `|tojson` (dt.date objects in `points` itself
+    # aren't directly serializable — same reasoning as time_by_project_
+    # report()'s own chart_data next to its ORM-referencing `projects`).
+    chart_data = [{"label": p["week_start"].strftime("%b %d"), "pct": p["pct"],
+                   "compliant": p["compliant"], "total": p["total"]} for p in points]
+    return {"points": points, "chart_data": chart_data, "target_pct": target_pct, "drop_note": drop_note}

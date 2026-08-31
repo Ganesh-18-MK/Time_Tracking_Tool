@@ -6,7 +6,7 @@
 
 {% if LEAVE_MANAGEMENT_V2_ENABLED %}
 <div class="card">
-  <h2 style="margin-top:0">Your leave balance</h2>
+  <div class="card-head"><h2 style="margin-top:0">Your leave balance</h2></div>
   <div class="kpis">
     {% for t in leave_types %}
     {% set b = balance_v2[t] %}
@@ -38,7 +38,7 @@
 </div>
 
 <div class="card">
-  <h2>Request leave</h2>
+  <div class="card-head"><h2>Request leave</h2></div>
   <form method="post" action="/leave/request" class="formrow" id="leave-request-form">
     <div><label>From</label><input type="date" name="start_date" required></div>
     <div><label>To (blank = one day)</label><input type="date" name="end_date"></div>
@@ -88,7 +88,7 @@
 </script>
 {% else %}
 <div class="card">
-  <h2 style="margin-top:0">Your leave balance — {{ balance_year }}</h2>
+  <div class="card-head"><h2 style="margin-top:0">Your leave balance — {{ balance_year }}</h2></div>
   <div class="kpis">
     {% for t in ('Casual', 'Sick', 'Vacation') %}
     <div class="kpi{% if balance[t]['remaining'] < 0 %} badk{% endif %}">
@@ -101,7 +101,7 @@
 </div>
 
 <div class="card">
-  <h2>Request leave</h2>
+  <div class="card-head"><h2>Request leave</h2></div>
   <form method="post" action="/leave/request" class="formrow">
     <div><label>From</label><input type="date" name="start_date" required></div>
     <div><label>To (blank = one day)</label><input type="date" name="end_date"></div>
@@ -119,7 +119,7 @@
 {% endif %}
 
 <div class="card">
-  <h2>Your requests</h2>
+  <div class="card-head"><h2>Your requests</h2></div>
   <table>
     <thead><tr><th>When</th><th>Type</th><th>Hours</th><th>Note</th><th>Status</th><th></th></tr></thead>
     <tbody>

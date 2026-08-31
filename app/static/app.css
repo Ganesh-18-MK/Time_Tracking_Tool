@@ -74,6 +74,14 @@ h3 { font-size: 14px; margin: 16px 0 6px; }
   font-size: 13px; white-space: nowrap; }
 .navdrop-menu a:hover { background: var(--bg); }
 .userchip { margin-left: auto; display: flex; gap: 10px; align-items: center; color: var(--muted); }
+/* Userchip name is now a link to /profile (Ganesh, 2026-08-31, replacing
+   the removed standalone "Profile" nav link) — kept visually identical to
+   the plain text it replaced (inherited color, no underline) so this reads
+   as "the same chip, now clickable," not a generic blue hyperlink; the
+   underline on hover is the only new affordance, same as every other
+   linklike control in this app (.linklike above, nav links, etc.). */
+.userchip-name { display: flex; align-items: center; gap: 6px; color: inherit; text-decoration: none; }
+.userchip-name:hover { text-decoration: underline; }
 .linklike { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }
 
 .flashes { max-width: var(--content-width); margin: 12px auto 0; padding: 0 18px; }
@@ -90,6 +98,30 @@ h3 { font-size: 14px; margin: 16px 0 6px; }
 
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
   padding: 16px 18px; margin-bottom: 16px; }
+/* Card header as its own separated box, app-wide (Ganesh, 2026-08-31: "for
+   each header of all pages in both admin and employee dashboards i want
+   seperate box for headers") — the Today page already got this exact
+   treatment on 2026-08-29 (see .today-page .card-head further down), but
+   scoped under `.today-page` since that was the only page asked about at
+   the time. This is the same idea generalized to every other card on every
+   other admin/employee page: `.card-head` bleeds via negative margin out
+   to the *default* `.card`'s own 16px/18px padding (not the Today page's
+   own tighter 8px/14px override), gets its own background/border, and
+   reads as a distinct title bar sitting above the card's body instead of
+   just being the first line of text inside the same padded box. The more
+   specific `.today-page .card-head`/`.today-page .compact-card .card-head`
+   rules further down still win on the Today page itself (its own tighter
+   card padding needs different cancel-out margins), so nothing there
+   needed to change. Cards with no real title (a bare form/table with no
+   heading) were left alone — this only wraps a card's actual <h1>/<h2>. */
+.card-head {
+  margin: -16px -18px 12px -18px;
+  padding: 12px 18px;
+  background: var(--pending-bg);
+  border-bottom: 1px solid var(--line);
+  border-radius: 11px 11px 0 0;
+}
+.card-head h1, .card-head h2, .card-head h3 { margin: 0; }
 .cols { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
 .cols > * { flex: 1 1 340px; }
 .muted { color: var(--muted); }
@@ -124,9 +156,24 @@ h3 { font-size: 14px; margin: 16px 0 6px; }
 .msdrop-toggle:focus { outline: 2px solid var(--accent-light); border-color: var(--accent); }
 .msdrop-caret { color: var(--muted); font-size: 11px; margin-left: 8px; flex-shrink: 0; }
 .msdrop-menu { position: absolute; top: 100%; left: 0; right: 0; z-index: 20; margin-top: 3px;
-  max-height: 220px; box-shadow: 0 4px 14px rgba(0,0,0,.1); }
+  max-height: 260px; box-shadow: 0 4px 14px rgba(0,0,0,.1); }
 .msdrop-opt { cursor: pointer; }
 .msdrop-opt.disabled { color: var(--muted); text-decoration: line-through; cursor: default; }
+/* Reports -> Time by Project/Task (Ganesh, 2026-08-30: "department dropdown
+   kind field then it will open we can make selection", for the Employees/
+   Projects/Tasks filters) needs its .msdrop-menu to hold a search box ABOVE
+   the scrollable checkbox list, not just the checkbox list alone the way
+   Overtime's Surplus day(s) field does — so unlike that usage (which
+   combines `class="msdrop-menu ms-box"` on one element and gets .ms-box's
+   background/border for free), this page's .msdrop-menu wraps a `.ms-search`
+   input AND a separate `.ms-box` as two children, so the panel needs its
+   own background/border. New `.msdrop-panel` class carries that, added
+   ALONGSIDE .msdrop-menu (never replacing it) so Overtime's own
+   .msdrop-menu/.ms-box rules above are completely untouched; the nested
+   `.msdrop-panel .ms-box` override just strips the inner box's own
+   border/padding so there's no double border. */
+.msdrop-panel { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.msdrop-panel .ms-box { border: none; border-radius: 0; padding: 0; }
 
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -212,10 +259,36 @@ table.grid th, table.grid td { padding: 3px 4px; border: 1px solid #ece5d6; text
 table.grid td.name { text-align: left; position: sticky; left: 0; background: #fff; min-width: 170px;
   font-weight: 600; z-index: 1; }
 table.grid tr.depthead td { background: #efe9db; font-weight: 700; text-align: left; }
-/* By Project report (Ganesh, 2026-08-24) — same shaded group-header
-   treatment as table.grid's depthead above, just not scoped to that
-   specific table. */
-tr.proj-head td { background: #efe9db; font-weight: 700; }
+/* Roster table: department-wise grouping (Ganesh, 2026-08-31 — see
+   dept_groups's own comment in admin.roster(), app/routes/admin.py) reuses
+   this same tr.depthead look rather than a second, differently-styled
+   header convention. */
+#roster-table tr.depthead td { background: #efe9db; font-weight: 700; text-align: left; padding: 8px 10px; }
+/* By Project report — nested horizontal bar list (Ganesh, 2026-08-30,
+   from a pasted "Where my teams' hours went" mockup, replacing the plain
+   table this card used from 2026-08-24 to today — see
+   reports.time_by_project_report() for the unchanged data source; only
+   the rendering changed, in admin/reports_time.html). Every bar's width
+   is a percentage of the SAME reference value — the single busiest
+   project's own total (project_result.projects[0].total, since the list
+   is already sorted busiest-first) — for both project rows AND their
+   nested task rows, deliberately not re-scaled per-project, so two
+   projects' bars (and any two tasks' bars, even under different
+   projects) stay visually comparable at a glance, matching the mockup
+   (Tech Team's bar reads shorter than Case Processing's precisely because
+   396 < 494, not because it's a different scale). */
+.proj-bars { display: flex; flex-direction: column; gap: 4px; }
+.proj-bar-row { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
+.proj-bar-label { width: 220px; flex-shrink: 0; font-size: 13px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.proj-bar-track { flex: 1; background: var(--pending-bg); border-radius: 4px; height: 14px; overflow: hidden; }
+.proj-bar-fill { height: 100%; background: var(--brand-dark); border-radius: 4px; }
+.proj-bar-value { width: 72px; flex-shrink: 0; text-align: right; font-size: 12.5px; font-weight: 600; }
+.proj-bar-sub { padding: 1px 0; }
+.proj-bar-sub .proj-bar-label { padding-left: 20px; color: var(--muted); font-weight: 400; }
+.proj-bar-sub .proj-bar-track { height: 9px; }
+.proj-bar-sub .proj-bar-fill { background: var(--accent-light); }
+.proj-bar-sub .proj-bar-value { font-weight: 400; color: var(--muted); }
 table.grid td.wkend { background: #f2ede2; color: #b3ab98; }
 .cell { display: block; min-width: 26px; border-radius: 4px; padding: 2px 2px; font-weight: 600; }
 .c-complete { background: var(--ok-bg); color: var(--ok); }
@@ -620,18 +693,25 @@ details > summary { cursor: pointer; color: var(--accent); }
    already uses, and reused as-is inside .tree-task-row (also display:flex)
    for the per-task hrs figure. */
 .tree-hrs { margin-left: auto; color: var(--muted); font-size: 12.5px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
-/* Row-level hover actions ("+ Task", "Edit", "Deactivate" — Ganesh,
-   2026-08-29: "we can add task also for each project") — plain buttons
-   inside <summary>, each stopping click propagation so they don't also
-   toggle the row's own expand/collapse, revealing a sibling hidden div
-   via treeToggle() below rather than a second nested <details> (a
-   <details> can't nest inside a <summary>). Deactivate/Reactivate is a
-   real form that submits immediately, same route as the Edit panel's own
-   Active toggle — both exist, same as the mockup, since a project's row
-   and its edit panel are two different places someone might look for it. */
+/* Row-level actions ("+ Task", "Edit", "Deactivate" — Ganesh, 2026-08-29:
+   "we can add task also for each project") — plain buttons inside
+   <summary>, each stopping click propagation so they don't also toggle the
+   row's own expand/collapse, revealing a sibling hidden div via
+   treeToggle() below rather than a second nested <details> (a <details>
+   can't nest inside a <summary>). Deactivate/Reactivate is a real form
+   that submits immediately, same route as the Edit panel's own Active
+   toggle — both exist, same as the mockup, since a project's row and its
+   edit panel are two different places someone might look for it.
+   Originally hover-reveal (opacity:0, shown only on summary:hover) — Ganesh
+   changed this 2026-08-31 ("those should be always appear not like hover,
+   always be appear"): now always visible at opacity:1, matching
+   .tree-task-acts' own "always visible, not hover-reveal" precedent one
+   section down (that class's own comment already explains why a nested
+   task row never needed hover-hiding in the first place — the same
+   reasoning now applies here too, just by explicit request rather than by
+   the row's own nesting level). */
 .tree-row-acts { margin-left: auto; display: flex; align-items: center; gap: 14px;
-  opacity: 0; transition: opacity .1s; flex-shrink: 0; }
-.tree-proj > summary:hover .tree-row-acts { opacity: 1; }
+  opacity: 1; flex-shrink: 0; }
 .tree-row-acts .lnk { background: none; border: 0; font: inherit; font-size: 12.5px;
   font-weight: 600; color: var(--accent-dark); cursor: pointer; padding: 0; }
 .tree-row-acts .lnk:hover { text-decoration: underline; }
@@ -654,9 +734,11 @@ details > summary { cursor: pointer; color: var(--accent); }
 
 /* Per-task Edit/Deactivate on the tree's inline task rows (Ganesh,
    2026-08-29: "i should able to edit the tasks also") — always visible
-   (not hover-reveal like .tree-row-acts above), since a task row is only
-   ever shown once its parent project is already expanded, so there's no
-   collapsed-summary clutter to protect against here. */
+   from the start (.tree-row-acts above was hover-reveal at the time this
+   was written, but became always-visible too on 2026-08-31 — see its own
+   comment), since a task row is only ever shown once its parent project is
+   already expanded, so there was never any collapsed-summary clutter to
+   protect against here. */
 .tree-task-acts { margin-left: auto; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 .tree-task-acts .lnk { background: none; border: 0; font: inherit; font-size: 12px;
   font-weight: 600; color: var(--accent-dark); cursor: pointer; padding: 0; }

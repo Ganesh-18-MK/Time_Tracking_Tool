@@ -120,12 +120,17 @@ def dashboard(
     threshold = engine.cfg_int(cfg, "strike_threshold")
     days = [first + dt.timedelta(days=i) for i in range((last - first).days + 1)]
 
-    # "Needs attention" + "Recent activity" — only rendered on the landing
-    # view (not show_grid), so skip the extra queries when they won't be
-    # used. Violations are computed org-wide from all_emps (not the
-    # dept-filtered `emps`) since this is meant to surface everything that
-    # needs a look, regardless of which department card was last clicked.
-    pending_leave_rows, open_support_rows, violations, recent_audit, unlock_requests = [], [], [], [], []
+    # "Needs attention" — only rendered on the landing view (not show_grid),
+    # so skip the extra queries when they won't be used. Violations are
+    # computed org-wide from all_emps (not the dept-filtered `emps`) since
+    # this is meant to surface everything that needs a look, regardless of
+    # which department card was last clicked. "Recent activity" (and its
+    # recent_audit query) was removed from the Dashboard entirely (Ganesh,
+    # 2026-08-31: "remove the recent activity from the dashboard also") —
+    # the full audit trail is still one click away at Admin -> Settings &
+    # Configuration -> Audit Logs for anyone who needs it; this was just a
+    # preview widget, not the only way to see this data.
+    pending_leave_rows, open_support_rows, violations, unlock_requests = [], [], [], []
     if not show_grid:
         # Leave Management is now Super-Admin-only (Ganesh, 2026-08-28 —
         # narrowed the department-scoped Team Lead's access to 5 specific
@@ -150,9 +155,6 @@ def dashboard(
                     .order_by(m.SupportQuery.created_at)
                     .limit(5)
                 ).scalars()
-            )
-            recent_audit = list(
-                db.execute(select(m.AuditLog).order_by(m.AuditLog.at.desc()).limit(8)).scalars()
             )
             # Unlock requests (Ganesh, 2026-08-27) — super-admin-only
             # preview, same reasoning as Support Inbox/Audit Log just
@@ -185,6 +187,67 @@ def dashboard(
                 violations.append((e, e_strikes, e_strikes >= threshold))
         violations.sort(key=lambda row: (not row[2], -row[1]))
         violations = violations[:8]
+
+    # "Compliance Trend" card (Ganesh, 2026-08-30, from a pasted mockup) —
+    # landing-view only, like Needs Attention/Recent activity above, and
+    # deliberately NOT tied to the `ym` being browsed: it's always "the last
+    # COMPLIANCE_TREND_WEEKS real calendar weeks up to today", the same
+    # "your teams, weekly" framing regardless of which month's grid is on
+    # screen. Recomputes its own window separately from the `first`/`last`
+    # recompute above, since a browsed `ym` can be a different month than
+    # "today" (or even in the future) and this card only ever cares about
+    # real elapsed weeks. See reports.compliance_trend_report()'s own
+    # docstring for the compliant/drop-note definitions.
+    compliance_trend = None
+    if not show_grid:
+        COMPLIANCE_TREND_WEEKS = 8
+        trend_start = today - dt.timedelta(days=today.weekday() + 7 * (COMPLIANCE_TREND_WEEKS - 1))
+        engine.recompute_all(db, trend_start, today)
+        compliance_trend = reports.compliance_trend_report(
+            db, all_emps, COMPLIANCE_TREND_WEEKS, threshold, comp_erases, today,
+            engine.cfg_int(cfg, "compliance_target_pct"),
+        )
+
+    # "Projects Progression" card (Ganesh, 2026-08-31: "instead of [Compliance
+    # Trend's old slot] please add projects progression like [the Time by
+    # Project/Task bar-chart mockup] dont mention timmings just mention bar
+    # and how much percentage is completed") — landing-view only, same as
+    # Needs attention/Compliance Trend above. "Percentage completed" has no
+    # real meaning for a Project here (they're open-ended client work
+    # buckets, not tasks with a defined scope/target — confirmed via
+    # AskUserQuestion), so this deliberately reuses the exact same
+    # relative-share-of-the-busiest-project normalization the Time by
+    # Project/Task report's own "By Project" bars already use (the busiest
+    # project this month reads 100%, everything else scaled against it) —
+    # not a literal "done" percentage. Scoped to this page's own
+    # department-scoped `all_emps` roster (same as Compliance Trend above)
+    # and the currently-browsed month's `first`/`last` window (unlike
+    # Compliance Trend, which deliberately ignores `ym` — this one already
+    # matches the department attendance grid's own month, and the landing
+    # view never lets `ym` be changed anyway, so it's always "this month").
+    # Capped to the top 6 projects by minutes (same top-N-plus-rest instinct
+    # the "By Project" pie chart already uses) so a dashboard card doesn't
+    # try to list all ~300 Project/Employer rows.
+    projects_progression = None
+    if not show_grid:
+        PROJECTS_PROGRESSION_TOP_N = 6
+        pp_result = reports.time_by_project_report(
+            db, first, min(last, today), employee_ids=[e.id for e in all_emps],
+        )
+        pp_projects = pp_result["projects"]
+        pp_max = pp_projects[0]["total"] if pp_projects else 0
+        top_pp = pp_projects[:PROJECTS_PROGRESSION_TOP_N]
+        rest_pp = pp_projects[PROJECTS_PROGRESSION_TOP_N:]
+        projects_progression = {
+            "rows": [
+                {
+                    "name": p["project"].name,
+                    "pct": round((p["total"] / pp_max) * 100, 1) if pp_max else 0,
+                }
+                for p in top_pp
+            ],
+            "rest_count": len(rest_pp),
+        }
 
     groups = {}
     for e in emps:
@@ -219,8 +282,9 @@ def dashboard(
             "pending_leave_rows": pending_leave_rows,
             "open_support_rows": open_support_rows,
             "violations": violations,
-            "recent_audit": recent_audit,
             "unlock_requests": unlock_requests,
+            "compliance_trend": compliance_trend,
+            "projects_progression": projects_progression,
             "dept": dept or "",
             "exceptions": exceptions,
             "threshold": threshold,
@@ -1049,6 +1113,31 @@ def roster(
         key = e.department or "—"
         dept_counts[key] = dept_counts.get(key, 0) + 1
     all_depts = sorted(dept_counts)
+
+    # Department-wise grouping for the table itself (Ganesh, 2026-08-31:
+    # "If we click all its showing all employees list right but it should
+    # show like department wise like in last screenshot") — before this,
+    # picking "All" showed one flat table with a Department *column*; now
+    # it's grouped into one section per department, each with its own
+    # header row, reusing the exact `tr.depthead` convention the Dashboard's
+    # own compliance grid already established (`table.grid tr.depthead td`
+    # in app/static/app.css) rather than inventing new header styling.
+    # Deliberately keeps every existing column (ID, Country, Reports to,
+    # Work days, Start date, Flags, Edit) — the pasted mockup showed a
+    # different, narrower column set (Designation/Target/This month/
+    # Strikes/Leave remaining), but that's a compliance-summary view, not
+    # an employee-management one, and dropping Edit/Flags/Reports to would
+    # break this page's actual job; only the "group by department" idea was
+    # carried over; the columns are unchanged. `emps` is already ordered
+    # `department, name` by the query above (NULL/"—" sorts first), so this
+    # is a stable single pass, not a second query or a re-sort. The pill
+    # filter JS (roster.html's own <script>) already toggles individual
+    # `<tr>` visibility by `data-department` — it's extended to also toggle
+    # each group's `tr.depthead` the same way, so picking one department
+    # still shows just that one group, not every header.
+    dept_groups: dict = {}
+    for e in emps:
+        dept_groups.setdefault(e.department or "—", []).append(e)
     # dropdown always offers active people to report to, regardless of the
     # active/all toggle above (which only controls the table listing).
     # is_admin-only (Ganesh's manager, 2026-08-03): a "Reports to" pick is
@@ -1061,7 +1150,7 @@ def roster(
         request, "admin/roster.html",
         {
             "user": admin, "emps": emps, "show": show, "dept_counts": dept_counts,
-            "all_depts": all_depts, "lead_choices": lead_choices,
+            "all_depts": all_depts, "dept_groups": dept_groups, "lead_choices": lead_choices,
             "locations": m.LOCATIONS, "default_location": m.DEFAULT_LOCATION,
         },
         db=db,
@@ -2224,7 +2313,7 @@ def assignments_save(
 @router.get("/leave")
 def leave_page(
     request: Request,
-    admin: m.Employee = Depends(require_super_admin),
+    admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     # Department-scoped admin (team lead) — Leave Requests is one of the
@@ -2621,7 +2710,7 @@ def overtime_page(
     request: Request,
     ym: Optional[str] = None,
     employee_id: Optional[int] = None,
-    admin: m.Employee = Depends(require_super_admin),
+    admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     scope = led_by(admin, db)  # None => Super Admin, sees/can act on everyone

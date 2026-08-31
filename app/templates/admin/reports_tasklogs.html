@@ -68,11 +68,31 @@
   </div>
 
   <div class="tasklog-summary">
-    {% if day.summary.bullets %}
+    {% if day.summary.source == 'ai' and day.summary.text %}
+    {# AI day summary (Ganesh, 2026-08-31) — Gemini-generated at Submit Day
+       time, stored on DaySubmission.summary_text (see
+       reports.daily_task_log_report()). Admin-only, this report only —
+       Today/My Month still show every raw logged line, unchanged. Falls
+       back to the deterministic rule-based bullets below whenever no
+       stored AI summary exists (not yet submitted, generation failed, or
+       a day from before this feature existed) — see
+       reports.rule_based_day_summary(). #}
+    <div class="small muted">Summary (AI)</div>
+    <p class="small" style="white-space:pre-wrap;margin:2px 0 0">{{ day.summary.text }}</p>
+    {% elif day.summary.bullets %}
     <div class="small muted">Summary</div>
     <ul>
       {% for b in day.summary.bullets %}<li>{{ b }}</li>{% endfor %}
     </ul>
+    {% if day.summary.error and user.is_super_admin %}
+    {# Why there's no AI summary for this specific day (Ganesh, 2026-08-31
+       bugfix — a submitted day was showing the rule-based fallback with
+       no way to tell whether that meant "no key set", "predates this
+       feature", or "the call actually failed"). Super-admin-only since
+       this can mention infra details (missing env var, HTTP status codes)
+       a department-scoped Team Lead has no way to act on anyway. #}
+    <p class="small muted" style="margin:4px 0 0">AI summary unavailable: {{ day.summary.error }}</p>
+    {% endif %}
     {% endif %}
   </div>
 

@@ -50,7 +50,7 @@
 </div>
 
 <div class="card">
-  <h2>Comments</h2>
+  <div class="card-head"><h2>Comments</h2></div>
   {% for c in ticket.comments %}
   <div style="padding:8px 0; border-bottom:1px solid var(--line)">
     <div class="small muted">{{ c.employee.name }} · {{ c.created_at|mdy_dt }}</div>

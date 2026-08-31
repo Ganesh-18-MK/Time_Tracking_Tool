@@ -12,51 +12,7 @@
 </p>
 
 <div class="card">
-  <div class="deptpills" id="roster-deptpills">
-    <span class="deptpill active" data-dept="">All <span class="cnt">{{ emps|length }}</span></span>
-    {% for d in all_depts %}
-    <span class="deptpill" data-dept="{{ d }}">{{ d }} <span class="cnt">{{ dept_counts.get(d, 0) }}</span></span>
-    {% endfor %}
-  </div>
-  <div class="searchbar">
-    <input type="search" data-filter-table="roster-table" placeholder="Search employees…">
-  </div>
-  <table id="roster-table">
-    <thead><tr><th>ID</th><th>Name</th>{% if HOLIDAY_MANAGEMENT_ENABLED %}<th>Country</th>{% endif %}<th>Department</th><th>Designation</th><th>Reports to</th><th>Target/day</th>
-      <th>Work days</th><th>Start date</th><th>Flags</th><th></th></tr></thead>
-    <tbody>
-      {% for e in emps %}
-      <tr data-department="{{ e.department or '—' }}" {% if not e.active %}style="opacity:.55"{% endif %}>
-        <td class="small muted nowrap">{{ e.employee_code or '—' }}</td>
-        <td>
-          {% if e.photo_path %}<img src="/static/uploads/avatars/{{ e.photo_path }}" class="avatar-sm" alt="">{% endif %}
-          <a href="/admin/person/{{ e.id }}">{{ e.name }}</a>
-        </td>
-        {% if HOLIDAY_MANAGEMENT_ENABLED %}<td class="small">{{ e.location }}</td>{% endif %}
-        <td>{{ e.department or '—' }}</td>
-        <td>{{ e.designation or '—' }}</td>
-        <td class="small">{{ e.reports_to.name if e.reports_to else '—' }}</td>
-        <td>{{ e.daily_target_minutes|hm }}</td>
-        <td class="small">{% set names = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}
-          {% for d in e.work_day_set|sort %}{{ names[d] }}{% if not loop.last %} {% endif %}{% endfor %}</td>
-        <td>{{ e.start_date|mdy }}</td>
-        <td class="small">
-          {% if e.is_super_admin %}<span class="badge b-leave">super admin</span>
-          {% elif e.is_admin %}<span class="badge b-leave">admin (dept)</span>{% endif %}
-          {% if e.is_developer %}<span class="badge b-complete">developer</span>{% endif %}
-          {% if not e.tracked %}<span class="badge b-holiday">untracked</span>{% endif %}
-          {% if not e.active %}<span class="badge b-missing">gone</span>{% endif %}
-          {% if e.active and not e.password_hash %}<span class="badge b-missing" title="hasn't run /signup yet">no login</span>{% endif %}
-        </td>
-        <td><a class="btn secondary small" href="/admin/roster/{{ e.id }}/edit">Edit</a></td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-
-<div class="card">
-  <h2>Add person</h2>
+  <div class="card-head"><h2>Add person</h2></div>
   <form method="post" action="/admin/roster/add" class="formrow">
     <div><label>Name</label><input name="name" required></div>
     <div><label>Email</label><input name="email" type="email"></div>
@@ -111,8 +67,68 @@
   <p class="small muted">Deactivated people keep all history (the tracker's GONE section) but drop out of compliance runs — use Edit → untick Active. They move to the <strong>Ex-Employees</strong> list above, not deleted or hidden.</p>
 </div>
 
+<div class="card">
+  <div class="deptpills" id="roster-deptpills">
+    <span class="deptpill active" data-dept="">All <span class="cnt">{{ emps|length }}</span></span>
+    {% for d in all_depts %}
+    <span class="deptpill" data-dept="{{ d }}">{{ d }} <span class="cnt">{{ dept_counts.get(d, 0) }}</span></span>
+    {% endfor %}
+  </div>
+  <div class="searchbar">
+    <input type="search" data-filter-table="roster-table" placeholder="Search employees…">
+  </div>
+  {# Grouped by department (Ganesh, 2026-08-31: "If we click all its
+     showing all employees list right but it should show like department
+     wise like in last screenshot") — see dept_groups's own comment in
+     admin.roster() (app/routes/admin.py) for why the columns themselves
+     are unchanged, only the grouping is new. Reuses the Dashboard grid's
+     own tr.depthead convention for the header row. #}
+  <table id="roster-table">
+    <thead><tr><th>ID</th><th>Name</th>{% if HOLIDAY_MANAGEMENT_ENABLED %}<th>Country</th>{% endif %}<th>Department</th><th>Designation</th><th>Reports to</th><th>Target/day</th>
+      <th>Work days</th><th>Start date</th><th>Flags</th><th></th></tr></thead>
+    <tbody>
+      {% for dept_name, dept_emps in dept_groups.items() %}
+      <tr class="depthead" data-department="{{ dept_name }}"><td colspan="{{ 10 if HOLIDAY_MANAGEMENT_ENABLED else 9 }}">{{ dept_name }}</td></tr>
+      {% for e in dept_emps %}
+      <tr data-department="{{ e.department or '—' }}" {% if not e.active %}style="opacity:.55"{% endif %}>
+        <td class="small muted nowrap">{{ e.employee_code or '—' }}</td>
+        <td>
+          {% if e.photo_path %}<img src="/static/uploads/avatars/{{ e.photo_path }}" class="avatar-sm" alt="">{% endif %}
+          <a href="/admin/person/{{ e.id }}">{{ e.name }}</a>
+        </td>
+        {% if HOLIDAY_MANAGEMENT_ENABLED %}<td class="small">{{ e.location }}</td>{% endif %}
+        <td>{{ e.department or '—' }}</td>
+        <td>{{ e.designation or '—' }}</td>
+        <td class="small">{{ e.reports_to.name if e.reports_to else '—' }}</td>
+        <td>{{ e.daily_target_minutes|hm }}</td>
+        <td class="small">{% set names = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}
+          {% for d in e.work_day_set|sort %}{{ names[d] }}{% if not loop.last %} {% endif %}{% endfor %}</td>
+        <td>{{ e.start_date|mdy }}</td>
+        <td class="small">
+          {% if e.is_super_admin %}<span class="badge b-leave">super admin</span>
+          {% elif e.is_admin %}<span class="badge b-leave">admin (dept)</span>{% endif %}
+          {% if e.is_developer %}<span class="badge b-complete">developer</span>{% endif %}
+          {% if not e.tracked %}<span class="badge b-holiday">untracked</span>{% endif %}
+          {% if not e.active %}<span class="badge b-missing">gone</span>{% endif %}
+          {% if e.active and not e.password_hash %}<span class="badge b-missing" title="hasn't run /signup yet">no login</span>{% endif %}
+        </td>
+        <td><a class="btn secondary small" href="/admin/roster/{{ e.id }}/edit">Edit</a></td>
+      </tr>
+      {% endfor %}
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
 <script>
 (function () {
+  // Extended (Ganesh, 2026-08-31) to also toggle each department's own
+  // tr.depthead row, not just its employee rows — picking one department
+  // pill should show that one group's header and nothing else; picking
+  // "All" should show every header again. A depthead row's own
+  // data-department is the exact group name (never "—" vs "" mismatch,
+  // since both the header and its rows use the same `e.department or '—'`
+  // string), so the same match test works for both row types unchanged.
   var pills = document.querySelectorAll('#roster-deptpills .deptpill');
   var rows = document.querySelectorAll('#roster-table tbody tr');
   pills.forEach(function (pill) {

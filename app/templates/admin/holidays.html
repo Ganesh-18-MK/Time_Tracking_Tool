@@ -10,7 +10,7 @@
 use this same list, regardless of country.</p>
 
 <div class="card" style="max-width:520px">
-  <h2 style="margin-top:0">Holidays ({{ holidays|length }})</h2>
+  <div class="card-head"><h2 style="margin-top:0">Holidays ({{ holidays|length }})</h2></div>
   <form method="post" action="/admin/holidays/add" class="formrow">
     <div><label>Date</label><input type="date" name="date" required></div>
     <div style="flex:1"><label>Name</label><input name="name" style="width:100%"></div>

@@ -6,8 +6,8 @@
 <h1>Personal Details</h1>
 
 <div class="card" style="max-width:760px">
+  <div class="card-head"><h3>Personal information</h3></div>
   <form method="post" action="/profile/personal-details">
-    <h3 style="margin-top:0">Personal information</h3>
     <div class="formrow">
       <div><label>Date of birth</label>
         <input type="date" name="date_of_birth" value="{{ user.date_of_birth.isoformat() if user.date_of_birth }}"></div>

@@ -38,8 +38,8 @@
 </p>
 
 <div class="card">
-  <h2 style="margin-top:0">Departments</h2>
-  <p class="small muted" style="margin:-4px 0 10px">Present today / total headcount — click a department for its day-by-day grid.</p>
+  <div class="card-head"><h2>Departments</h2></div>
+  <p class="small muted" style="margin:8px 0 10px">Present today / total headcount — click a department for its day-by-day grid.</p>
   <div class="deptcards">
     {% if user.is_super_admin %}
     {# Given its own accent treatment, active or not (Ganesh, 2026-08-22) —
@@ -155,7 +155,7 @@
 
 <div class="cols">
   <div class="card">
-    <h2 style="margin-top:0">Needs attention</h2>
+    <div class="card-head"><h2>Needs attention</h2></div>
     {% if not pending_leave_rows and not open_support_rows and not violations and not unlock_requests %}
     <p class="muted small" style="margin:0">Nothing pending — you're all caught up.</p>
     {% else %}
@@ -212,26 +212,162 @@
   </div>
 
   <div class="card">
-    <h2 style="margin-top:0">Recent activity</h2>
-    {% if recent_audit %}
-    <table>
-      <tbody>
-        {% for a in recent_audit %}
-        <tr>
-          <td class="small muted nowrap">{{ a.at|mdy_dt }}</td>
-          <td class="small">{{ a.actor }}</td>
-          <td class="small">{{ humanize_audit_action(a.action) }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p class="muted small" style="margin:0">No recent activity.</p>
+    <div class="card-head" style="display:flex;justify-content:space-between;align-items:baseline">
+      <h2>Projects Progression</h2>
+      <span class="small muted">{{ month_label(year, month) }}</span>
+    </div>
+    {# Ganesh, 2026-08-31: "remove that compliance trend from admin dashboard
+       page and instead of that please add projects progression... dont
+       mention timmings just mention bar and how much percentage is
+       completed" — replaces Compliance Trend in this slot (Compliance Trend
+       itself moved into Recent activity's old slot below, see that card's
+       own comment). "Percentage completed" is deliberately the same
+       relative-share-vs-busiest-project normalization the Time by
+       Project/Task report's own "By Project" bars use (confirmed via
+       AskUserQuestion — projects have no real "done" concept here), not a
+       literal completion measure. See projects_progression in
+       admin.dashboard(). Reuses the exact .proj-bars/.proj-bar-row/
+       .proj-bar-track/.proj-bar-fill/.proj-bar-value CSS classes
+       admin/reports_time.html's "By Project" bars already established,
+       just showing a percentage in .proj-bar-value instead of a duration —
+       no new CSS needed. #}
+    {% if projects_progression and projects_progression.rows %}
+    <div class="proj-bars">
+      {% for row in projects_progression.rows %}
+      <div class="proj-bar-row">
+        <div class="proj-bar-label" title="{{ row.name }}">{{ row.name }}</div>
+        <div class="proj-bar-track"><div class="proj-bar-fill" style="width:{{ row.pct }}%"></div></div>
+        <div class="proj-bar-value">{{ row.pct }}%</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% if projects_progression.rest_count %}
+    <p class="small muted" style="margin:8px 0 0">+ {{ projects_progression.rest_count }} more project{{ 's' if projects_progression.rest_count != 1 }} this month, not shown here.</p>
     {% endif %}
-    {% if user.is_super_admin %}
-    <p class="small" style="margin:10px 0 0"><a href="/admin/audit">View full audit log →</a></p>
+    {% else %}
+    <p class="muted small" style="margin:0">No logged time yet this month.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-head" style="display:flex;justify-content:space-between;align-items:baseline">
+      <h2>Compliance Trend</h2>
+      <span class="small muted">your teams, weekly</span>
+    </div>
+    {# Moved here from Recent activity's old slot (Ganesh, 2026-08-31:
+       "instead of recent activity week wise compliance trend but it should
+       be look nice and understandable") — Recent activity is gone from the
+       Dashboard entirely (still fully available at Admin → Settings &amp;
+       Configuration → Audit Logs for anyone who needs the full trail).
+       "Nice and understandable" fixed a real rendering bug, not just moved
+       the card: the Target line's label and the current week's "N% this
+       week" label used to both anchor near the chart's top-right corner and
+       collide into unreadable overlapping text whenever the latest point
+       was near/above the target line (visible in the screenshot Ganesh
+       shared) — the target label now anchors top-LEFT instead, and a small
+       text legend under the chart spells out what the line/dot/dashed-line
+       mean instead of relying on hover tooltips alone. See
+       reports.compliance_trend_report() for the weekly compliant/at-risk
+       definition, the drop_note root-cause logic, and why this needs its
+       own recompute window independent of the ym being browsed. Hand-drawn
+       inline SVG, same "no charting library" convention as the Time by
+       Project/Task pie chart — rendered immediately on load (not behind a
+       toggle) since this card IS the point of landing on the Dashboard,
+       unlike that report's optional alternate view. #}
+    {% if compliance_trend and compliance_trend.chart_data %}
+    <svg id="compliance-trend-svg" viewBox="0 0 320 190" style="width:100%;height:auto;display:block"></svg>
+    <p class="small muted" style="margin:6px 0 0">
+      <span style="color:#072926">●</span> % of your team under the strike threshold, per week
+      &nbsp;·&nbsp; <span style="color:#8a5f38">- - -</span> target {{ compliance_trend.target_pct }}%
+    </p>
+    {% if compliance_trend.drop_note %}
+    <p class="small" style="margin:4px 0 0">{{ compliance_trend.drop_note }}</p>
+    {% endif %}
+    {% else %}
+    <p class="muted small" style="margin:0">Not enough data yet for a trend.</p>
     {% endif %}
   </div>
 </div>
+{% if compliance_trend and compliance_trend.chart_data %}
+<script>
+  // Compliance Trend line chart (Ganesh, 2026-08-30) — plain inline SVG
+  // built by hand, same "no charting library, small hand-rolled JS"
+  // convention as Reports -> Time by Project/Task's pie chart
+  // (renderProjectPie in admin/reports_time.html). Runs immediately on
+  // load, not behind a toggle, since this card's whole point is to be
+  // visible the moment the Dashboard loads.
+  (function () {
+    var data = {{ compliance_trend.chart_data|tojson }};
+    var targetPct = {{ compliance_trend.target_pct|tojson }};
+    if (!data.length) return;
+
+    var svg = document.getElementById('compliance-trend-svg');
+    var W = 320, H = 190;
+    var padL = 34, padR = 10, padT = 14, padB = 26;
+    var plotW = W - padL - padR, plotH = H - padT - padB;
+
+    function yFor(pct) { return padT + plotH * (1 - pct / 100); }
+    function xFor(i) { return data.length === 1 ? padL + plotW / 2 : padL + (plotW * i) / (data.length - 1); }
+
+    var parts = [];
+
+    // Y-axis gridlines + labels at 40/60/80/100%, matching the mockup.
+    [40, 60, 80, 100].forEach(function (pct) {
+      var y = yFor(pct);
+      parts.push('<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y +
+        '" stroke="#e7e1d2" stroke-width="1"></line>');
+      parts.push('<text x="' + (padL - 6) + '" y="' + (y + 3) + '" text-anchor="end" font-size="9" fill="#6b665c">' +
+        pct + '%</text>');
+    });
+
+    // Dashed target line + label. Anchored top-LEFT (Ganesh, 2026-08-31,
+    // "it should look nice and understandable") — it used to right-anchor
+    // at the same top-right corner the current week's "N% this week" label
+    // also lands near, so the two collided into unreadable overlapping
+    // text whenever the latest point was at/above the target line (exactly
+    // what happened in the screenshot Ganesh shared). Left-anchoring keeps
+    // it clear of that corner regardless of where the line's last point is.
+    if (targetPct !== null && targetPct !== undefined) {
+      var ty = yFor(targetPct);
+      parts.push('<line x1="' + padL + '" y1="' + ty + '" x2="' + (W - padR) + '" y2="' + ty +
+        '" stroke="#8a5f38" stroke-width="1.3" stroke-dasharray="4,3"></line>');
+      parts.push('<text x="' + (padL + 4) + '" y="' + (ty - 4) + '" text-anchor="start" font-size="9" fill="#8a5f38">Target ' + targetPct + '%</text>');
+    }
+
+    // Line connecting every week's point.
+    var linePoints = data.map(function (d, i) { return xFor(i).toFixed(1) + ',' + yFor(d.pct).toFixed(1); }).join(' ');
+    parts.push('<polyline points="' + linePoints + '" fill="none" stroke="#072926" stroke-width="2"></polyline>');
+
+    // One label per point if there's room, else every other one — always
+    // including the last ("this week"), same "don't crowd the axis"
+    // instinct as the mockup's own sparser tick labels.
+    var labelEvery = data.length > 6 ? 2 : 1;
+    data.forEach(function (d, i) {
+      var x = xFor(i), y = yFor(d.pct);
+      var isLast = i === data.length - 1;
+      var color = isLast ? '#b3261e' : '#072926';
+      var r = isLast ? 4 : 3;
+      parts.push('<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="' + r + '" fill="' + color + '">' +
+        '<title>' + d.label + ': ' + d.pct + '% (' + d.compliant + ' of ' + d.total + ')</title></circle>');
+      if (isLast) {
+        // "N% this week" label: below the point by default, but flipped
+        // ABOVE it whenever below would run off the bottom of the plot
+        // area (a near-0% latest week) — same "nice and understandable"
+        // pass as the target-label move above, so the label is never
+        // clipped or crammed against the axis labels underneath.
+        var labelBelow = y + 16 <= H - padB - 4;
+        var lblY = labelBelow ? y + 16 : y - 10;
+        parts.push('<text x="' + x.toFixed(1) + '" y="' + lblY + '" text-anchor="middle" font-size="9" fill="#b3261e" font-weight="700">' +
+          d.pct + '% this week</text>');
+      }
+      if (i % labelEvery === 0 || isLast) {
+        parts.push('<text x="' + x.toFixed(1) + '" y="' + (H - 6) + '" text-anchor="middle" font-size="8.5" fill="#6b665c">' + d.label + '</text>');
+      }
+    });
+
+    svg.innerHTML = parts.join('');
+  })();
+</script>
+{% endif %}
 {% endif %}
 {% endblock %}

@@ -11,7 +11,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import compensation, engine, models as m
+from app import compensation, engine, llm_summary, models as m
 from app.auth import current_user
 from app.db import get_db
 from app.templating import HOLIDAY_MANAGEMENT_ENABLED, LEAVE_MANAGEMENT_V2_ENABLED, flash, render
@@ -1842,6 +1842,50 @@ def punch_out(
     return RedirectResponse("/today", status_code=303)
 
 
+def _generate_day_summary(db: Session, sub: m.DaySubmission, user: m.Employee, day: dt.date) -> None:
+    """AI day summary (Ganesh, 2026-08-31) — called once from submit_day()
+    below, right after that day's DaySubmission/DayStatus are already
+    committed. Deliberately synchronous and in-request: this app has no
+    background job queue (see the "no background scheduler" note
+    elsewhere in this codebase), so there's no other point at which this
+    could run, and llm_summary.summarize_day() has its own short timeout
+    specifically so this can't turn a Submit Day click into a long hang.
+
+    Never lets a Gemini failure affect the employee's own submission —
+    everything past the `total == 0`/`already locked` guards in submit_day()
+    has already happened by the time this runs, so the worst case here is
+    a missing/errored summary on the admin side, never a failed Submit Day.
+    `sub` is re-used (not re-queried) since submit_day() already holds the
+    exact row that needs updating.
+
+    Only the fields the prompt actually needs (project/task names, minutes,
+    details) are pulled out of each TaskEntry into a plain dict before
+    calling summarize_day() — keeps llm_summary.py free of any ORM/DB
+    coupling, so it can be tested (or swapped for a different provider)
+    without a database at all."""
+    rows = list(
+        db.execute(
+            select(m.TaskEntry)
+            .where(m.TaskEntry.employee_id == user.id, m.TaskEntry.date == day)
+            .order_by(m.TaskEntry.start_minute)
+        ).scalars()
+    )
+    entries = [
+        {
+            "project": r.project.name if r.project else "—",
+            "task": r.task_type.name if r.task_type else "—",
+            "duration_minutes": r.duration_minutes,
+            "details": r.details,
+        }
+        for r in rows
+    ]
+    text, error = llm_summary.summarize_day(entries)
+    sub.summary_text = text
+    sub.summary_error = error
+    sub.summary_generated_at = dt.datetime.utcnow()
+    db.commit()
+
+
 @router.post("/submit-day")
 def submit_day(
     request: Request,
@@ -1875,6 +1919,7 @@ def submit_day(
         f"{user.id}:{day.isoformat()}", {"total_minutes": total},
     )
     engine.recompute_employee(db, user, day, day)
+    _generate_day_summary(db, sub, user, day)
 
     # Auto-carry unfinished plans to tomorrow (Ganesh, 2026-08-22) — a plan
     # still `planned` (never started) or `paused` at Submit Day time didn't

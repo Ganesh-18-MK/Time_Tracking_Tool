@@ -51,6 +51,13 @@
     </table>
     {% else %}<p class="muted small">No compensation links yet.</p>{% endif %}
 
+    {% if user.is_super_admin %}
+    {# Creating a link (POST /admin/person/{id}/complink, add_complink) is
+       super-admin-only, unchanged — a department-scoped admin now reaches
+       this page (Ganesh, 2026-08-30, view-only per AskUserQuestion) but
+       still has no route to act, so this whole picker/create-link flow is
+       hidden for them; the comp_links table above stays visible either
+       way since it was already read-only for everyone. #}
     <h3>Link a shortfall to make-up day(s)</h3>
     <form method="get" action="/admin/overtime" class="formrow">
       <input type="hidden" name="ym" value="{{ ym }}">
@@ -117,9 +124,16 @@
                `.ms-box`/`.ms-opt` (the existing "manage projects"/"manage
                departments" checklist look) are reused as-is for the
                panel's own box/row styling, just given `position:absolute`
-               so it floats over the page instead of pushing content down. -->
-          <div class="msdrop">
-            <button type="button" class="msdrop-toggle" onclick="toggleMsDrop(this)">
+               so it floats over the page instead of pushing content down.
+               Open/close + label text is wired by app/static/msdrop.js
+               (promoted to a shared file 2026-08-30 once Reports -> Time by
+               Project/Task needed the identical widget for its Employees/
+               Projects/Tasks filters — see that file's own header comment)
+               — no inline onclick/onchange needed, just these two data
+               attributes telling the shared script what to say when
+               nothing/one/many are checked. -->
+          <div class="msdrop" data-empty-label="Choose surplus day(s)" data-noun-plural="surplus day(s)">
+            <button type="button" class="msdrop-toggle">
               <span class="msdrop-label">Choose surplus day(s)</span>
               <span class="msdrop-caret">▾</span>
             </button>
@@ -127,7 +141,7 @@
               {% for s in link_surpluses %}
               {% set remaining = (s.variance_minutes or 0) - link_surplus_used_by_date.get(s.date, 0) %}
               <label class="ms-opt msdrop-opt{{ ' disabled' if remaining <= 0 }}">
-                <input type="checkbox" name="surplus_dates" value="{{ s.date.isoformat() }}" {{ 'disabled' if remaining <= 0 }} onchange="updateMsDropLabel(this)">
+                <input type="checkbox" name="surplus_dates" value="{{ s.date.isoformat() }}" {{ 'disabled' if remaining <= 0 }}>
                 {%- if remaining <= 0 -%}
                 ✓ {{ s.date|mdy }} — fully used
                 {%- elif remaining < s.variance_minutes -%}
@@ -145,11 +159,13 @@
         <div><button class="small" {% if not link_has_unlinked_shortfall %}disabled title="No shortfall days left to link for {{ link_target.name }} this month"{% endif %}>Link</button></div>
       </form>
     {% endif %}
+    {% endif %}
   </details>
 </div>
 
+{% if user.is_super_admin %}
 <div class="card">
-  <h2>Grant overtime directly</h2>
+  <div class="card-head"><h2>Grant overtime directly</h2></div>
   <p class="small muted" style="margin:-4px 0 10px">For approving ahead of a known busy period, or reviewing after
     the fact — no employee request needed either way. Start/end can be in the past.</p>
   <form method="post" action="/admin/overtime/grant" class="formrow">
@@ -167,10 +183,11 @@
   </form>
   {% if not emps %}<p class="muted small" style="margin:8px 0 0">No one currently reports to you — ask a Super Admin to set you as someone's Team Lead via Roster.</p>{% endif %}
 </div>
+{% endif %}
 
 {% if pending %}
 <div class="card">
-  <h2>Pending overtime requests ({{ pending|length }})</h2>
+  <div class="card-head"><h2>Pending overtime requests ({{ pending|length }})</h2></div>
   <table>
     <thead><tr><th>Employee</th><th>Dates</th><th>Note</th><th>Decision</th></tr></thead>
     <tbody>
@@ -180,6 +197,7 @@
         <td class="nowrap">{{ ot.start_date|mdy }}{% if ot.end_date != ot.start_date %} → {{ ot.end_date|mdy }}{% endif %}</td>
         <td class="small">{{ ot.note }}</td>
         <td class="nowrap">
+          {% if user.is_super_admin %}
           <form method="post" action="/admin/overtime/{{ ot.id }}/approve" class="inline">
             <button class="small">Approve</button>
           </form>
@@ -188,6 +206,9 @@
             <button type="button" class="small secondary"
               onclick="const n=prompt('Reason for rejecting (optional):'); if(n!==null){this.previousElementSibling.value=n; this.form.submit();}">Reject</button>
           </form>
+          {% else %}
+          <span class="muted small">Awaiting Super Admin</span>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}
@@ -202,7 +223,7 @@
      here from Leave Management: these are overtime decisions, not leave
      ones). Same CompensationLink rows/routes as before, just relocated —
      see overtime_page()'s pending_matches, super-admin only. #}
-  <h2>Overtime ↔ Missed Hours match requests ({{ pending_matches|length }})</h2>
+  <div class="card-head"><h2>Overtime ↔ Missed Hours match requests ({{ pending_matches|length }})</h2></div>
   <table>
     <thead><tr><th>Employee</th><th>Missed day</th><th>Matched against</th><th>Note</th><th>Decision</th></tr></thead>
     <tbody>
@@ -233,12 +254,12 @@
 {% endif %}
 
 <div class="card">
-  <h2>Approved overtime</h2>
+  <div class="card-head"><h2>Approved overtime</h2></div>
   <div class="searchbar">
     <input type="search" data-filter-table="overtime-approved-table" placeholder="Search approved overtime…">
   </div>
   <table id="overtime-approved-table">
-    <thead><tr><th>Employee</th><th>Dates</th><th>Note</th><th>By</th><th></th></tr></thead>
+    <thead><tr><th>Employee</th><th>Dates</th><th>Note</th><th>By</th>{% if user.is_super_admin %}<th></th>{% endif %}</tr></thead>
     <tbody>
       {% for ot in approved %}
       <tr>
@@ -246,8 +267,10 @@
         <td class="nowrap">{{ ot.start_date|mdy }}{% if ot.end_date != ot.start_date %} → {{ ot.end_date|mdy }}{% endif %}</td>
         <td class="small">{{ ot.note }}{% if ot.requested_by and ot.requested_by != ot.reviewed_by %} <span class="muted">(employee-requested)</span>{% endif %}</td>
         <td class="small muted">{{ ot.reviewed_by }}</td>
+        {% if user.is_super_admin %}
         <td><form method="post" action="/admin/overtime/{{ ot.id }}/delete" class="inline"
           onsubmit="return confirm('Delete this overtime approval?')"><button class="small secondary">✕</button></form></td>
+        {% endif %}
       </tr>
       {% endfor %}
     </tbody>
@@ -256,7 +279,7 @@
 </div>
 
 <div class="card">
-  <h2>Who worked overtime — {{ month_label(year, month) }}</h2>
+  <div class="card-head"><h2>Who worked overtime — {{ month_label(year, month) }}</h2></div>
   <p class="small muted" style="margin:-4px 0 10px">From logged task-log hours vs. each day's target — the same
     "surplus" figure the Missed Hours and Compensation picker above sums per day (not Punch In/Out time; this app tracks
     overtime by what's logged, not by the punch clock). "Approved" only counts surplus on days inside one of that
@@ -283,34 +306,4 @@
   {% else %}<p class="muted small">No overtime worked this month yet.</p>{% endif %}
 </div>
 
-<script>
-// Surplus day(s) closed-dropdown checklist (Ganesh, 2026-08-30) — same
-// "small hand-rolled JS, no framework" convention as combo.js/msfilter.js/
-// tablefilter.js elsewhere in this app. Only one .msdrop is on this page
-// today, but written to support more than one without them interfering.
-function toggleMsDrop(btn) {
-  var wrap = btn.closest('.msdrop');
-  var menu = wrap.querySelector('.msdrop-menu');
-  var willOpen = menu.hidden;
-  document.querySelectorAll('.msdrop-menu').forEach(function (m) { m.hidden = true; });
-  menu.hidden = !willOpen;
-}
-document.addEventListener('click', function (ev) {
-  if (!ev.target.closest('.msdrop')) {
-    document.querySelectorAll('.msdrop-menu').forEach(function (m) { m.hidden = true; });
-  }
-});
-function updateMsDropLabel(checkboxEl) {
-  var wrap = checkboxEl.closest('.msdrop');
-  var label = wrap.querySelector('.msdrop-label');
-  var checked = wrap.querySelectorAll('input[type=checkbox]:checked');
-  if (checked.length === 0) {
-    label.textContent = 'Choose surplus day(s)';
-  } else if (checked.length === 1) {
-    label.textContent = checked[0].closest('label').textContent.trim();
-  } else {
-    label.textContent = checked.length + ' surplus day(s) selected';
-  }
-}
-</script>
 {% endblock %}

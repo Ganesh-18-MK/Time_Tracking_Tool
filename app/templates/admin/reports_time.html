@@ -21,29 +21,63 @@
     </div>
     <div>
       <label>Employees <span class="small muted">(none = all)</span></label>
-      <input type="search" class="ms-search" data-filter-checkboxes="ms-emp" placeholder="Search employees…">
-      <div class="ms-box" id="ms-emp">
-        {% for e in employees %}
-        <label class="ms-opt"><input type="checkbox" name="emp" value="{{ e.id }}" {{ 'checked' if e.id in emp }}>{{ e.name }}</label>
-        {% endfor %}
+      <!-- Closed-until-clicked dropdown (Ganesh, 2026-08-30: "department
+           dropdown kind field then it will open we can make selection" —
+           i.e. behave like the Department field to its left, not the
+           always-open checkbox box this used to be). Open/close + the
+           toggle's own label text is wired by the shared
+           app/static/msdrop.js (see its header comment) — no inline
+           onclick/onchange needed, just the two data attributes below.
+           The search input + checkbox list markup/behavior (msfilter.js,
+           data-filter-checkboxes) is completely unchanged, just moved
+           inside the dropdown panel instead of always being visible. -->
+      <div class="msdrop" data-empty-label="All Employees" data-noun-plural="employees">
+        <button type="button" class="msdrop-toggle">
+          <span class="msdrop-label">All Employees</span>
+          <span class="msdrop-caret">▾</span>
+        </button>
+        <div class="msdrop-menu msdrop-panel" hidden>
+          <input type="search" class="ms-search" data-filter-checkboxes="ms-emp" placeholder="Search employees…">
+          <div class="ms-box" id="ms-emp">
+            {% for e in employees %}
+            <label class="ms-opt"><input type="checkbox" name="emp" value="{{ e.id }}" {{ 'checked' if e.id in emp }}>{{ e.name }}</label>
+            {% endfor %}
+          </div>
+        </div>
       </div>
     </div>
     <div>
       <label>Projects <span class="small muted">(none = all)</span></label>
-      <input type="search" class="ms-search" data-filter-checkboxes="ms-project" placeholder="Search projects…">
-      <div class="ms-box" id="ms-project">
-        {% for p in projects %}
-        <label class="ms-opt"><input type="checkbox" name="project" value="{{ p.id }}" {{ 'checked' if p.id in project }}>{{ p.name }}</label>
-        {% endfor %}
+      <div class="msdrop" data-empty-label="All Projects" data-noun-plural="projects">
+        <button type="button" class="msdrop-toggle">
+          <span class="msdrop-label">All Projects</span>
+          <span class="msdrop-caret">▾</span>
+        </button>
+        <div class="msdrop-menu msdrop-panel" hidden>
+          <input type="search" class="ms-search" data-filter-checkboxes="ms-project" placeholder="Search projects…">
+          <div class="ms-box" id="ms-project">
+            {% for p in projects %}
+            <label class="ms-opt"><input type="checkbox" name="project" value="{{ p.id }}" {{ 'checked' if p.id in project }}>{{ p.name }}</label>
+            {% endfor %}
+          </div>
+        </div>
       </div>
     </div>
     <div>
       <label>Tasks <span class="small muted">(none = all)</span></label>
-      <input type="search" class="ms-search" data-filter-checkboxes="ms-task" placeholder="Search tasks…">
-      <div class="ms-box" id="ms-task">
-        {% for t in tasks %}
-        <label class="ms-opt"><input type="checkbox" name="task" value="{{ t.id }}" {{ 'checked' if t.id in task }}>{{ t.name }}</label>
-        {% endfor %}
+      <div class="msdrop" data-empty-label="All Tasks" data-noun-plural="tasks">
+        <button type="button" class="msdrop-toggle">
+          <span class="msdrop-label">All Tasks</span>
+          <span class="msdrop-caret">▾</span>
+        </button>
+        <div class="msdrop-menu msdrop-panel" hidden>
+          <input type="search" class="ms-search" data-filter-checkboxes="ms-task" placeholder="Search tasks…">
+          <div class="ms-box" id="ms-task">
+            {% for t in tasks %}
+            <label class="ms-opt"><input type="checkbox" name="task" value="{{ t.id }}" {{ 'checked' if t.id in task }}>{{ t.name }}</label>
+            {% endfor %}
+          </div>
+        </div>
       </div>
     </div>
     <div>
@@ -89,8 +123,8 @@
    Employer rows org-wide, mostly client names — unlike the employee table
    below, an all-zero row here would be noise, not signal). #}
 <div class="card">
-  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-    <h2 style="margin:0">By Project</h2>
+  <div class="card-head" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+    <h2>By Project</h2>
     <button type="button" class="small" id="pie-toggle-btn" onclick="toggleProjectPie()">Pie chart</button>
   </div>
   <p class="small muted" style="margin:4px 0 10px">Each project's total, broken down by task worked on within it.</p>
@@ -107,27 +141,36 @@
     {% endif %}
   </div>
 
-  <div class="gridwrap">
-    <table id="project-table">
-      <thead><tr><th>Project</th><th>Task</th><th>Time</th></tr></thead>
-      <tbody>
-        {% for p in project_result.projects %}
-        <tr class="proj-head">
-          <td colspan="2"><strong>{{ p.project.name }}</strong></td>
-          <td class="nowrap"><strong>{{ p.total|hm }}</strong></td>
-        </tr>
-        {% for t in p.tasks %}
-        <tr>
-          <td></td>
-          <td class="small" style="padding-left:18px">{{ t.task.name }}</td>
-          <td class="small nowrap">{{ t.minutes|hm }}</td>
-        </tr>
-        {% endfor %}
-        {% else %}
-        <tr><td colspan="3" class="muted">No logged time matches this filter.</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  {# Nested horizontal bar list (Ganesh, 2026-08-30, from a pasted "Where
+     my teams' hours went" mockup) — replaces the plain table this card
+     showed from 2026-08-24 to today. Same project_result.projects data
+     (reports.time_by_project_report(), unchanged), just rendered as bars
+     instead of table rows. Every bar — project row AND its nested task
+     rows — is scaled against the SAME reference (the busiest project's
+     own total), not re-scaled per project, so bars stay comparable across
+     the whole list at a glance, matching the mockup. max_total falls back
+     to 1 (never 0) purely to keep the division safe; the {% for %}/
+     {% else %} below means that fallback is never actually rendered
+     against real data (a project only appears here with total > 0 per
+     time_by_project_report()'s own docstring). #}
+  {% set max_total = project_result.projects[0].total if project_result.projects else 1 %}
+  <div class="proj-bars">
+    {% for p in project_result.projects %}
+    <div class="proj-bar-row">
+      <div class="proj-bar-label"><strong>{{ p.project.name }}</strong></div>
+      <div class="proj-bar-track"><div class="proj-bar-fill" style="width:{{ (p.total / max_total * 100)|round(1) }}%"></div></div>
+      <div class="proj-bar-value">{{ p.total|hm }}</div>
+    </div>
+    {% for t in p.tasks %}
+    <div class="proj-bar-row proj-bar-sub">
+      <div class="proj-bar-label">{{ t.task.name }}</div>
+      <div class="proj-bar-track"><div class="proj-bar-fill" style="width:{{ (t.minutes / max_total * 100)|round(1) }}%"></div></div>
+      <div class="proj-bar-value">{{ t.minutes|hm }}</div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <p class="muted small">No logged time matches this filter.</p>
+    {% endfor %}
   </div>
   <p class="small muted" style="margin-top:8px">Grand total: <strong>{{ project_result.grand_total|hm if project_result.grand_total else '—' }}</strong></p>
 </div>

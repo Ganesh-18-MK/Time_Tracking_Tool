@@ -6,12 +6,12 @@
 <h1>Employment Details</h1>
 
 <div class="card" style="max-width:640px">
+  <div class="card-head"><h3>Bank account</h3></div>
   <p class="small muted">Bank account and statutory IDs, for payroll. The sensitive numbers below are
   masked as soon as they're saved — even you won't see the full value again here, only the last 4
   characters. Leave a masked field blank to keep what's already saved; type a new value to replace it.</p>
 
   <form method="post" action="/profile/employment-details">
-    <h3 style="margin-top:0">Bank account</h3>
     <div class="formrow">
       <div><label>Account holder name</label>
         <input name="account_holder_name" value="{{ bd.account_holder_name or '' }}"></div>

@@ -881,6 +881,25 @@ class DaySubmission(Base):
     submitted_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     locked: Mapped[bool] = mapped_column(Boolean, default=True)
     unlock_count: Mapped[int] = mapped_column(Integer, default=0)
+    # AI day summary (Ganesh, 2026-08-31) — a 3-4 line Gemini-generated
+    # summary of that day's task rows, generated once at Submit Day time
+    # (see app/llm_summary.py + submit_day() in app/routes/employee.py) and
+    # shown ONLY on the admin Task Logs report (reports.daily_task_log_
+    # report() prefers this over rule_based_day_summary() when present).
+    # Nullable with no backfill needed — unlike TaskType.category or
+    # similar additive columns elsewhere in this file, None here is a
+    # permanently correct answer for any day submitted before this feature
+    # existed (and for any day where the call failed or the API key isn't
+    # set), not a gap to fill in later. summary_error mirrors the old
+    # (now-deleted) TaskDaySummary.error's own reasoning: store WHY a
+    # summary is missing instead of silently retrying the same failing
+    # call on every report view. summary_generated_at is a plain UTC audit
+    # timestamp (elapsed-time value, not a clock-face one — see the
+    # BUSINESS_TZ hard rule), so an admin/dev can tell how stale a stored
+    # summary is.
+    summary_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    summary_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    summary_generated_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
 
 
 LEAVE_REQUESTED = "requested"
@@ -1334,4 +1353,15 @@ CONFIG_DEFAULTS = {
     # calendar-year boundary instead of running for an employee's whole
     # tenure the way Planned Time's entitlement does.
     "unplanned_hours_year_cap": "40",
+    # Dashboard's "Compliance Trend" card (Ganesh, 2026-08-30, from a pasted
+    # mockup showing a weekly line chart with a dashed "Target 90%" line) —
+    # there was no existing notion of a compliance *rate* target anywhere in
+    # this app before this (strike_threshold above is a per-person strike
+    # COUNT, not an org-wide percentage), so per the hard rule above
+    # ("never hardcode thresholds"), this is a new Config key rather than a
+    # literal 90 baked into the template/JS. DB-default-only for now, same
+    # as probation_days_default/planned_days_year_*/unplanned_hours_year_cap
+    # above — not exposed on /admin/config; see
+    # reports.compliance_trend_report()'s docstring for how it's used.
+    "compliance_target_pct": "90",
 }

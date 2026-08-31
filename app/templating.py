@@ -9,6 +9,7 @@ from markupsafe import Markup
 from sqlalchemy import func, select
 
 from app import models as m
+from app.auth import led_by
 from app.util import (
     STATUS_LABELS,
     STATUS_NAMES,
@@ -153,14 +154,23 @@ def _admin_nav_badges(db, user) -> dict:
     needing to remember to add it.
 
     A department-scoped admin (is_admin=True, is_super_admin=False — see
-    Employee.is_super_admin docstring) no longer has Leave Management or
-    Overtime Management in their nav at all (Ganesh, 2026-08-28 — narrowed
-    to the 5-item Team Lead access list: Add Project/Task names, Assign,
-    Approve suggestions, View task logs, View reports), so this function
-    skips computing pending_leave/pending_overtime for them entirely —
-    those counts would have nowhere to display and no action they could
-    take. Support Inbox is likewise super-admin-only and isn't in their
-    nav, so its count is skipped for them too."""
+    Employee.is_super_admin docstring) still can't act on Leave/Overtime
+    requests (Ganesh, 2026-08-28's 5-item Team Lead access list didn't
+    include them), but as of 2026-08-30 ("add leaves and overtime
+    viewable access to admins", confirmed VIEW ONLY via AskUserQuestion)
+    they DO have a real page to go look at both from — Team Requests is no
+    longer hidden from their nav (see base.html). A dead "0 pending" badge
+    next to a link that quietly hides real pending requests would be
+    misleading, so this now computes a scoped pending_leave (by
+    department, matching leave_page()'s own admin_department_scope()
+    filter) and pending_overtime (by direct-report set via led_by(),
+    matching overtime_page()'s own filter) for them too — just without
+    _pending_complink_count() folded in, since that count is exclusively
+    about the Overtime ↔ Missed Hours match-request decision card, which
+    stays super-admin-only end to end (approve_complink/reject_complink
+    are still require_super_admin) and isn't shown to a department-scoped
+    admin at all. Support Inbox is still super-admin-only and isn't in
+    their nav, so its count is still skipped for them."""
     def _pending_overtime_count(employee_ids=None) -> int:
         # employee_ids=None -> org-wide (super admin, unscoped like
         # app/auth.py led_by() itself); otherwise only requests from that
@@ -182,10 +192,11 @@ def _admin_nav_badges(db, user) -> dict:
         # Compensation links tables showed a still-pending request
         # identically to an already-approved link; see the status-badge
         # fix in those templates the same day). approve_complink/
-        # reject_complink are both require_super_admin (unlike
-        # pending_leave/pending_overtime above, which a department-scoped
-        # Team Lead can also act on), so this is only ever added into the
-        # super-admin badge below, never the department-scoped one.
+        # reject_complink are both require_super_admin — a department-
+        # scoped Team Lead can now VIEW pending_leave/pending_overtime
+        # counts too (2026-08-30), but never act on any of it — so this
+        # stays folded into the super-admin badge only, never the
+        # department-scoped one.
         # Folded into pending_overtime, not pending_leave — the decision
         # card itself lives on Overtime Management (moved there from
         # Leave Management the same day, see overtime_page()'s
@@ -221,9 +232,20 @@ def _admin_nav_badges(db, user) -> dict:
 
     if getattr(user, "is_admin", False) and not getattr(user, "is_super_admin", False):
         dept = user.department or "—"
+        dept_pending_leave = db.execute(
+            select(func.count()).select_from(m.LeaveRecord)
+            .join(m.Employee, m.Employee.id == m.LeaveRecord.employee_id)
+            .where(
+                m.LeaveRecord.status == m.LEAVE_REQUESTED,
+                func.coalesce(func.nullif(m.Employee.department, ""), "—") == dept,
+            )
+        ).scalar() or 0
+        report_ids = led_by(user, db)  # never None here — user isn't super_admin
         return {
             "open_support": 0,
             "pending_suggestions": _pending_suggestions_count(dept),
+            "pending_leave": dept_pending_leave,
+            "pending_overtime": _pending_overtime_count(report_ids),
         }
     pending_leave = db.execute(
         select(func.count()).select_from(m.LeaveRecord).where(

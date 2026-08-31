@@ -7,14 +7,14 @@
 
 <div class="cols">
   <div class="card">
-    <h2 style="margin-top:0">Onboard new employees</h2>
+    <div class="card-head"><h2 style="margin-top:0">Onboard new employees</h2></div>
     <p class="small muted">Full Name, Department, Designation, Target/day and Workdays are required
     for a new hire — everything else is optional. Leave Employee ID blank; it's assigned
     automatically (LOMK001, LOMK002, ...).</p>
     <a class="btn secondary" href="/admin/roster/bulk-upload/sample.xlsx">Download blank template</a>
   </div>
   <div class="card">
-    <h2 style="margin-top:0">Update existing employees</h2>
+    <div class="card-head"><h2 style="margin-top:0">Update existing employees</h2></div>
     <p class="small muted">Downloads every active employee with their current details, Employee ID
     first. Edit only the cells you're changing — e.g. fill in Phone for whoever's missing it — and
     leave the rest as-is. Blank cells are never applied as changes.</p>
@@ -29,7 +29,7 @@
 </div>
 
 <div class="card" style="max-width:640px">
-  <h2 style="margin-top:0">Upload your sheet</h2>
+  <div class="card-head"><h2 style="margin-top:0">Upload your sheet</h2></div>
   <p class="small muted">Rows with a blank Employee ID onboard a new hire; rows with an Employee ID
   update that person. You can mix both in the same file.</p>
   <form method="post" action="/admin/roster/bulk-upload" enctype="multipart/form-data" class="formrow">
@@ -40,7 +40,7 @@
 
 {% if result %}
 <div class="card" style="max-width:760px">
-  <h2 style="margin-top:0">Result</h2>
+  <div class="card-head"><h2 style="margin-top:0">Result</h2></div>
   <p>{{ result.added }} added, {{ result.updated }} updated{% if result.deactivated %} ({{ result.deactivated }} deactivated){% endif %}.</p>
   {% if result.skipped %}
   <table>

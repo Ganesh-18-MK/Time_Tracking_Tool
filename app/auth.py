@@ -59,14 +59,27 @@ def require_super_admin(admin: m.Employee = Depends(require_admin)) -> m.Employe
     Project/Task names from their team, view task logs for their team
     (Person Detail, read-only), and view Time/Project/Strikes/Attendance
     reports for their team. Everything else stays super-admin-only:
-    Roster, Settings, Audit Log, Support Inbox, Leave Management,
-    Overtime Management, Projects & Tasks list-maintenance actions
-    (Deactivate/Reactivate/Rename — but NOT the Add form or bulk upload,
-    which a department admin does keep), and the person-detail actions
-    that change history (override/unlock/reject-unlock-request/
-    compensation-link add-delete). A department-scoped admin gets
-    Forbidden() here same as a non-admin does from require_admin — see
-    Employee.is_super_admin's docstring for the tier split."""
+    Roster, Settings, Audit Log, Support Inbox, Projects & Tasks
+    list-maintenance actions (Deactivate/Reactivate/Rename — but NOT the
+    Add form or bulk upload, which a department admin does keep), and
+    the person-detail actions that change history (override/unlock/
+    reject-unlock-request/compensation-link add-delete). A department-
+    scoped admin gets Forbidden() here same as a non-admin does from
+    require_admin — see Employee.is_super_admin's docstring for the
+    tier split.
+
+    Leave Management and Overtime Management (leave_page/overtime_page)
+    were carved OUT of this super-admin-only gate on 2026-08-30 (Ganesh:
+    "add leaves and overtime viewable access to admins" — confirmed via
+    AskUserQuestion to be VIEW ONLY, not restoring the ability to act) —
+    those two GET routes now sit behind require_admin instead, while
+    every mutating route underneath them (leave_approve/leave_reject/
+    leave_add/leave_delete, the leave bulk-upload routes, overtime_approve/
+    overtime_reject/overtime_grant/overtime_delete, and the compensation-
+    link approve/reject routes) is still gated here, unchanged. See the
+    dedicated CLAUDE.md bullet for the full reasoning and the template-
+    side guards that hide the action forms from a department-scoped
+    admin."""
     if not admin.is_super_admin:
         raise Forbidden()
     return admin

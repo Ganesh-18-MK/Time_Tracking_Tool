@@ -65,7 +65,7 @@ function empTreeFilter() {
 
 {% if selected %}
 <div class="card">
-  <h2>Assigned tasks for {{ selected.name }}{% if assigned_plans %} ({{ assigned_plans|length }}){% endif %}</h2>
+  <div class="card-head"><h2>Assigned tasks for {{ selected.name }}{% if assigned_plans %} ({{ assigned_plans|length }}){% endif %}</h2></div>
   <!-- TK-04 (Ganesh, 2026-08-28), moved here from Person Detail 2026-08-29 —
        reuses the exact same /admin/person/{emp_id}/plan/add|edit|delete
        routes Person Detail's own "Assigned tasks" card posts to; return_to
@@ -154,7 +154,7 @@ function empTreeFilter() {
 </div>
 
 <div class="card">
-  <h2>{{ selected.name }} — assigned projects/tasks</h2>
+  <div class="card-head"><h2>{{ selected.name }} — assigned projects/tasks</h2></div>
   <p class="small muted" style="margin-top:0">Advisory only — assigning projects/tasks to someone highlights those
     first on their Today entry form, but they can still log time against any active project or task. Nobody is ever
     blocked from logging time just because assignments haven't been set up yet.</p>

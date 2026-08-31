@@ -41,7 +41,7 @@
 </div>
 
 <div class="card">
-  <h2>Day statuses</h2>
+  <div class="card-head"><h2>Day statuses</h2></div>
   <table>
     <thead><tr><th>Date</th><th>Status</th><th>Act/Target</th><th>Var</th><th>Notes</th><th></th></tr></thead>
     <tbody>
@@ -88,7 +88,7 @@
 
 {% if comp.days %}
 <div class="card">
-  <h2 style="margin-top:0">Punch Clock compensation (automatic)</h2>
+  <div class="card-head"><h2 style="margin-top:0">Punch Clock compensation (automatic)</h2></div>
   <p class="small muted" style="margin:-4px 0 10px">Separate from the manual Compensation links below —
   this comes from Punch In/Out shortfall vs. overtime and updates on its own, no admin action needed.</p>
   <table>
@@ -109,7 +109,7 @@
 {% endif %}
 
 <div class="card">
-  <h2>Compensation links</h2>
+  <div class="card-head"><h2>Compensation links</h2></div>
   {% if links %}
   <table>
     <thead><tr><th>Shortfall</th><th>Made up on</th><th>Status</th><th>Note</th><th></th></tr></thead>
@@ -193,7 +193,7 @@
 
 <div class="cols">
   <div class="card">
-    <h2>Leave history</h2>
+    <div class="card-head"><h2>Leave history</h2></div>
     <table>
       <thead><tr><th>When</th><th>Type</th><th>Hours</th><th>Note</th></tr></thead>
       <tbody>
@@ -213,7 +213,7 @@
   </div>
 
   <div class="card">
-    <h2>Breaks ({{ month_label(year, month) }})</h2>
+    <div class="card-head"><h2>Breaks ({{ month_label(year, month) }})</h2></div>
     <p class="small muted">Allowance: {{ max_break_minutes }} min/day — time over it extends that day's target.</p>
     <table>
       <thead><tr><th>Date</th><th>Type</th><th>When</th><th>Duration</th></tr></thead>
@@ -236,7 +236,7 @@
 </div>
 
 <div class="card">
-  <h2>Assigned tasks{% if assigned_plans %} ({{ assigned_plans|length }}){% endif %}</h2>
+  <div class="card-head"><h2>Assigned tasks{% if assigned_plans %} ({{ assigned_plans|length }}){% endif %}</h2></div>
   <!-- TK-04 (Ganesh, 2026-08-28) — an admin/team lead can drop a Project+Task
        into this employee's plan ahead of time; it shows on their Today page
        as status Planned with an "assigned" badge and they run it with the
@@ -326,7 +326,7 @@
 </div>
 
 <div class="card">
-  <h2>Task log ({{ month_label(year, month) }})</h2>
+  <div class="card-head"><h2>Task log ({{ month_label(year, month) }})</h2></div>
   {% for day, items in by_day %}
   <h3>{{ day.strftime('%A') }} {{ day|mdy }}
     {% set sub = subs.get(day) %}
@@ -384,7 +384,7 @@
 
 <div class="cols">
   <div class="card">
-    <h2>Personal details</h2>
+    <div class="card-head"><h2>Personal details</h2></div>
     {% if emp.personal_details %}
     {% set pd = emp.personal_details %}
     <table>
@@ -416,7 +416,7 @@
   </div>
 
   <div class="card">
-    <h2>Bank &amp; statutory details</h2>
+    <div class="card-head"><h2>Bank &amp; statutory details</h2></div>
     <p class="small muted" style="margin:-4px 0 10px">Sensitive numbers are masked — the full value is
     never shown here, even to admins, once the employee has saved it.</p>
     {% if emp.bank_details %}

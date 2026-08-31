@@ -6,7 +6,7 @@
 
 {% if TICKETING_ENABLED %}
 <div class="card">
-  <h2 style="margin-top:0">Tickets</h2>
+  <div class="card-head"><h2 style="margin-top:0">Tickets</h2></div>
   <p class="small muted" style="margin-top:-4px">Bugs, enhancements, or new-feature ideas for the dashboard itself.</p>
   <div class="formrow">
     <a class="btn small" href="/tickets/new">Raise a ticket</a>
@@ -16,7 +16,7 @@
 {% endif %}
 
 <div class="card">
-  <h2 style="margin-top:0">Ask a question</h2>
+  <div class="card-head"><h2 style="margin-top:0">Ask a question</h2></div>
   <form method="post" action="/support/submit" class="formrow" style="flex-direction:column">
     <div style="width:100%">
       <label>Describe your question or issue</label>
@@ -27,7 +27,7 @@
 </div>
 
 <div class="card">
-  <h2 style="margin-top:0">Your questions</h2>
+  <div class="card-head"><h2 style="margin-top:0">Your questions</h2></div>
   <div class="searchbar">
     <input type="search" data-filter-table="my-support-table" placeholder="Search your questions…">
   </div>

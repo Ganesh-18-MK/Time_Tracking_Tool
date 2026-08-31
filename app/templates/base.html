@@ -22,7 +22,10 @@
          "Today My hours My requests Support Profile" — Leave/Overtime
          [/Holidays/Usage Report] folded into one "My requests" dropdown,
          same .navdrop pattern the admin nav below already uses, so this
-         didn't need any new CSS/JS). #}
+         didn't need any new CSS/JS). The standalone "Profile" link was
+         removed 2026-08-31 (Ganesh: "remove that Profile button... click
+         on their name") — the userchip's own name/photo now links to
+         /profile instead, see the <div class="userchip"> markup below. #}
       <a href="/today" class="{{ 'on' if active_nav == 'today' }}">My Day</a>
       <a href="/my-month" class="{{ 'on' if active_nav == 'month' }}">My Hours</a>
       <details class="navdrop">
@@ -35,7 +38,6 @@
         </div>
       </details>
       <a href="/support" class="{{ 'on' if active_nav == 'support' }}">Support</a>
-      <a href="/profile" class="{{ 'on' if active_nav == 'profile' }}">Profile</a>
     {% elif active_nav in employee_zone %}
       {# An admin who clicked "My Work" (renamed from "Employee login"
          2026-08-30) — same employee toolkit, plus one link back to their
@@ -52,7 +54,6 @@
         </div>
       </details>
       <a href="/support" class="{{ 'on' if active_nav == 'support' }}">Support</a>
-      <a href="/profile" class="{{ 'on' if active_nav == 'profile' }}">Profile</a>
     {% else %}
       {# Admin zone (Ganesh, 2026-08-30: "My Work , Dashboard, Team Requests,
          Projects & Tasks , Employees, Analytics & Reports , Settings &
@@ -68,7 +69,17 @@
          is now three separate guards instead of one. #}
       <a href="/today">My Work</a>
       <a href="/admin" class="{{ 'on' if active_nav == 'dash' }}">Dashboard</a>
-      {% if user.is_super_admin %}
+      {# Team Requests (Leave Management + Overtime Management) opened up
+         to department-scoped admins on 2026-08-30 (Ganesh: "add leaves and
+         overtime viewable access to admins", confirmed VIEW ONLY via
+         AskUserQuestion) — no longer gated to user.is_super_admin the way
+         Employees/Settings & Configuration/Support still are below. The
+         two pages themselves (leave_page/overtime_page) already filter to
+         a department-scoped admin's own team; every Approve/Reject/Add/
+         Grant/Delete action inside them stays hidden via its own
+         user.is_super_admin check in leave.html/overtime.html, and the
+         underlying routes stay require_super_admin regardless of what the
+         UI shows — see CLAUDE.md for the full reasoning. #}
       <details class="navdrop">
         <summary class="{{ 'on' if active_nav in ('admin_leave', 'admin_overtime') }}">Team Requests ▾{% if nav_badges and (nav_badges.pending_leave or nav_badges.pending_overtime) %}<span class="navbadge">{{ (nav_badges.pending_leave or 0) + (nav_badges.pending_overtime or 0) }}</span>{% endif %}</summary>
         <div class="navdrop-menu">
@@ -76,7 +87,6 @@
           <a href="/admin/overtime">Overtime Management{% if nav_badges and nav_badges.pending_overtime %}<span class="navbadge">{{ nav_badges.pending_overtime }}</span>{% endif %}</a>
         </div>
       </details>
-      {% endif %}
       <details class="navdrop">
         <summary class="{{ 'on' if active_nav in ('suggestions', 'assignments', 'lists') }}">Projects &amp; Tasks ▾{% if nav_badges and nav_badges.pending_suggestions %}<span class="navbadge">{{ nav_badges.pending_suggestions }}</span>{% endif %}</summary>
         <div class="navdrop-menu">
@@ -89,24 +99,22 @@
       <a href="/admin/roster" class="{{ 'on' if active_nav == 'roster' }}">Employees</a>
       {% endif %}
       <details class="navdrop">
-        <summary class="{{ 'on' if active_nav in ('reports', 'audit') }}">Analytics &amp; Reports ▾</summary>
+        <summary class="{{ 'on' if active_nav == 'reports' }}">Analytics &amp; Reports ▾</summary>
         <div class="navdrop-menu">
           <a href="/admin/reports/attendance">Attendance Reports</a>
           <a href="/admin/reports/strikes">Strike Reports</a>
           <a href="/admin/reports/time">Time by Project/Task</a>
           <a href="/admin/reports/usage">Feature Usage Report</a>
           <a href="/admin/reports/tasklogs">Task Logs</a>
-          {% if user.is_super_admin %}
-          <a href="/admin/audit">Audit Logs</a>
-          {% endif %}
         </div>
       </details>
       {% if user.is_super_admin %}
       <details class="navdrop">
-        <summary class="{{ 'on' if active_nav in ('config', 'admin_holidays') }}">Settings &amp; Configuration ▾</summary>
+        <summary class="{{ 'on' if active_nav in ('config', 'admin_holidays', 'audit') }}">Settings &amp; Configuration ▾</summary>
         <div class="navdrop-menu">
           <a href="/admin/config">Settings</a>
           {% if HOLIDAY_MANAGEMENT_ENABLED %}<a href="/admin/holidays">Holiday Management</a>{% endif %}
+          <a href="/admin/audit">Audit Logs</a>
         </div>
       </details>
       <a href="/admin/support" class="{{ 'on' if active_nav == 'admin_support' }}">Support{% if nav_badges and nav_badges.open_support %}<span class="navbadge">{{ nav_badges.open_support }}</span>{% endif %}</a>
@@ -114,10 +122,19 @@
     {% endif %}
   </nav>
   <div class="userchip">
-    <span>
+    {# The standalone "Profile" nav link was removed (Ganesh, 2026-08-31:
+       "remove that Profile button... i want that link to redirect when
+       the employees click on thier name then the profile page will
+       open") — clicking the name/photo here now opens /profile instead.
+       Applies for every signed-in user, not just plain employees: /profile
+       itself was never role-restricted (every tier has personal/employment
+       details to fill in), the old nav link just wasn't shown in the pure
+       admin-zone branch below — this is a strictly bigger surface to reach
+       the same page, not a narrower one. #}
+    <a href="/profile" class="userchip-name">
       {% if user.photo_path %}<img src="/static/uploads/avatars/{{ user.photo_path }}" class="avatar-sm" alt="">{% endif %}
       {{ user.name }}{% if user.designation %} · {{ user.designation }}{% endif %}{% if user.is_super_admin %} · super admin{% elif user.is_admin %} · admin ({{ user.department or '—' }}){% endif %}
-    </span>
+    </a>
     <form method="post" action="/logout"><button class="linklike">Sign out</button></form>
   </div>
   {% endif %}
@@ -175,6 +192,7 @@
 
 <script src="/static/tablefilter.js?v={{ static_version }}"></script>
 <script src="/static/msfilter.js?v={{ static_version }}"></script>
+<script src="/static/msdrop.js?v={{ static_version }}"></script>
 <script src="/static/mdy_datepicker.js?v={{ static_version }}"></script>
 <script>
   // Close any open nav dropdown (e.g. Reports) when clicking outside it.

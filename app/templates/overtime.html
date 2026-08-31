@@ -5,7 +5,7 @@
 <h1>Overtime</h1>
 
 <div class="card">
-  <h2>Request pre-approval</h2>
+  <div class="card-head"><h2>Request pre-approval</h2></div>
   <form method="post" action="/overtime/request" class="formrow">
     <div><label>From</label><input type="date" name="start_date" required></div>
     <div><label>To (blank = one day)</label><input type="date" name="end_date"></div>
@@ -17,7 +17,7 @@
 </div>
 
 <div class="card">
-  <h2>Your requests</h2>
+  <div class="card-head"><h2>Your requests</h2></div>
   <table>
     <thead><tr><th>Dates</th><th>Note</th><th>Status</th><th></th></tr></thead>
     <tbody>
@@ -54,7 +54,7 @@
    the admin-side move of the same feature's decision card). See
    my_overtime()'s match_shortfalls/match_surpluses/match_links. #}
 <div class="card">
-  <h2>Request an Overtime ↔ Missed Hours match</h2>
+  <div class="card-head"><h2>Request an Overtime ↔ Missed Hours match</h2></div>
   <p class="small muted">Missed part of a day but made it up with extra time on another day in the same
     calendar month? Request a match here — an admin approves or declines it.</p>
   <p class="small muted" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">

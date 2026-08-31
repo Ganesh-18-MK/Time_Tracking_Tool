@@ -12,7 +12,7 @@ duplicated; nothing here renames or deactivates a value.</p>
 
 <div class="cols">
   <div class="card">
-    <h2 style="margin-top:0">Projects / Employers</h2>
+    <div class="card-head"><h2 style="margin-top:0">Projects / Employers</h2></div>
     <p class="small muted">Columns: <strong>Project / Employer Name</strong> and an optional <strong>Department</strong>
       (leave blank for every department to use it; list the same project on more than one row to link it to
       more than one department).</p>
@@ -28,7 +28,7 @@ duplicated; nothing here renames or deactivates a value.</p>
   </div>
 
   <div class="card">
-    <h2 style="margin-top:0">Tasks</h2>
+    <div class="card-head"><h2 style="margin-top:0">Tasks</h2></div>
     <p class="small muted">Columns: <strong>Task Name</strong> and <strong>Project Name</strong> (must match an
       existing project exactly — the template includes a Projects sheet to check against). One row per task+project
       pair; list the same task on more than one row to link it to more than one project.</p>
@@ -46,7 +46,7 @@ duplicated; nothing here renames or deactivates a value.</p>
 
 {% if result %}
 <div class="card" style="max-width:760px">
-  <h2 style="margin-top:0">Result — {{ 'Projects' if result_kind == 'project' else 'Tasks' }}</h2>
+  <div class="card-head"><h2 style="margin-top:0">Result — {{ 'Projects' if result_kind == 'project' else 'Tasks' }}</h2></div>
   <p>{{ result.added }} {{ 'project(s) added.' if result_kind == 'project' else 'task+project link(s) added.' }}
     {% if result_kind == 'project' and result.department_links_added %}{{ result.department_links_added }} department link(s) added.{% endif %}</p>
   {% if result.skipped %}
