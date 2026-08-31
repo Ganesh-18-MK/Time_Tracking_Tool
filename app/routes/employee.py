@@ -21,6 +21,7 @@ from app.util import (
     audit,
     capitalize_first,
     clamp_break_end,
+    fmt_date,
     fmt_time,
     normalize_title_case,
     now_local,
@@ -69,14 +70,50 @@ ALLOWED_PHOTO_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": 
 MAX_PHOTO_BYTES = 2 * 1024 * 1024  # 2 MB
 
 
+# Plan-ahead window (Ganesh, 2026-08-31 — "the employees should be able to
+# plan their day the previous day itself"; first cut let any day up to a
+# flat 30 days out be planned, then narrowed the same day to a week-scoped
+# rule instead: "if today is monday so i can plan my days till friday...
+# if today is friday then i can only able to add a plan for next monday
+# only for monday, once that monday came then i can plan for that whole
+# week days"). Not a Config row: this bounds a date-picker dropdown, not a
+# business threshold admins tune per CLAUDE.md's "never hardcode
+# thresholds" rule (that rule is about compliance math — strike counts,
+# caps, accrual — this is neither). Only ever used to bound
+# _allowed_dates()'s dropdown and add_plan()'s own "not too far out" check
+# below; nothing engine.py/validation.py reads plans by date range, so
+# this can't silently affect strikes/targets.
+def _plan_ahead_max_date(today: dt.date, work_days: set) -> dt.date:
+    """The furthest date `today` is allowed to plan for, per the rule
+    above: through the last configured work day of THIS calendar week
+    (Monday-Sunday) — but once `today` itself IS that last work day (or
+    later, e.g. a weekend for a Mon-Fri employee), jump straight to the
+    FIRST configured work day of NEXT week instead of the whole week, so
+    there's always exactly one new day to plan for on your way out the
+    door on a Friday, not a wide-open week you'd have to guess at. The
+    moment that next Monday actually arrives (becomes `today`), this
+    function is called fresh and returns THAT week's own last work day —
+    the "whole week" opens up again automatically, no day-rollover
+    bookkeeping needed anywhere. Falls back to Mon-Fri ({0,1,2,3,4}) if
+    `work_days` is empty, same default Roster's own Add-person form uses."""
+    days = work_days or {0, 1, 2, 3, 4}
+    this_monday = today - dt.timedelta(days=today.weekday())
+    last_day_this_week = this_monday + dt.timedelta(days=max(days))
+    if today < last_day_this_week:
+        return last_day_this_week
+    next_monday = this_monday + dt.timedelta(days=7)
+    return next_monday + dt.timedelta(days=min(days))
+
+
 def _allowed_dates(db: Session, emp: m.Employee, cfg) -> list:
     today = today_local()
     earliest = earliest_allowed_date(
         emp, today, engine.cfg_int(cfg, "backdate_working_days"), engine.holidays_set(db)
     )
+    latest = _plan_ahead_max_date(today, emp.work_day_set)
     days = []
     d = earliest
-    while d <= today:
+    while d <= latest:
         days.append(d)
         d += dt.timedelta(days=1)
     return days
@@ -321,9 +358,21 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
     # `past_plans` (Ganesh, 2026-08-22) is the read-only counterpart for
     # browsing a past day via the date dropdown — same PlannedTask rows,
     # no forms/buttons, just what was planned/done that day for context.
+    #
+    # Plan-ahead (Ganesh, 2026-08-31 — see PLAN_AHEAD_DAYS above) widened
+    # this from `date == today` to `date >= today`: a future day's plans
+    # now come back through this same `plans` list too, so the Today
+    # template's add/edit/delete forms work on it exactly like today's own
+    # plans do — Start/Pause/Resume/Stop stay gated to `day == today` in
+    # the template itself (today.html), since a future day's row can only
+    # ever be `planned` (nothing can start a live timer for a day that
+    # hasn't arrived yet — see start_plan()'s own guard). Once that future
+    # date actually becomes today, this same query naturally picks its rows
+    # up as ordinary, fully-interactive today's-plan items — no day-
+    # rollover bookkeeping needed anywhere.
     plans = []
     past_plans = []
-    if date == today_local():
+    if date >= today_local():
         plans = list(
             db.execute(
                 select(m.PlannedTask)
@@ -892,6 +941,7 @@ def today_page(
             "day": day,
             "today": today,
             "allowed_dates": _allowed_dates(db, user, cfg),
+            "plan_ahead_max_date": _plan_ahead_max_date(today, user.work_day_set),
             "week_circles": _week_day_circles(today),
             # plain dicts, not ORM objects — the template feeds these straight
             # into the searchable-combo widget via |tojson. Assigned ones
@@ -920,7 +970,7 @@ def _client_required_error(project: Optional[m.Project], client: str) -> Optiona
     left it blank), and add_plan — NOT from _finish_task_timer, since by
     the time a segment finishes, Client was already required at whichever
     of those entry points started it."""
-    if project is not None and project.is_case_type and not client.strip():
+    if project is not None and project.is_case_type and not (client or "").strip():
         return f"'{project.name}' is a Case Type project — enter the Client."
     return None
 
@@ -1210,8 +1260,8 @@ def _log_timer_as_entry(db: Session, user: m.Employee, timer: m.ActiveTaskTimer,
         return False, "; ".join(e.errors)
     db.add(m.TaskEntry(
         employee_id=user.id, date=timer.date, project_id=timer.project_id,
-        task_type_id=timer.task_type_id, details=capitalize_first(timer.details.strip()),
-        client=timer.client.strip(),
+        task_type_id=timer.task_type_id, details=capitalize_first((timer.details or "").strip()),
+        client=(timer.client or "").strip(),
         start_minute=timer.start_minute, end_minute=end_minute,
         entry_method=m.ENTRY_METHOD_PLAN if timer.planned_task_id else m.ENTRY_METHOD_AUTO_TIMER,
     ))
@@ -1544,6 +1594,29 @@ def _today_day_locked(db: Session, user: m.Employee) -> bool:
     return sub is not None and sub.locked
 
 
+def _parse_estimated_minutes(raw: str) -> "tuple[Optional[int], Optional[str]]":
+    """Plan-ahead / estimated time (Ganesh, 2026-08-31). Returns
+    (minutes_or_None, error_or_None). Blank input is valid and means "no
+    estimate" (stored as NULL, see PlannedTask.estimated_minutes's own
+    docstring) — this field was never made required. Bounded to a single
+    calendar day (1440 minutes) for the same reason `max_row_minutes`
+    bounds a single logged row: an estimate bigger than a whole day is
+    almost certainly a typo (e.g. hours typed where minutes were
+    expected), not a real plan."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None, None
+    try:
+        minutes = int(raw)
+    except ValueError:
+        return None, "Estimated time must be a whole number of minutes."
+    if minutes < 0:
+        return None, "Estimated time can't be negative."
+    if minutes > 1440:
+        return None, "Estimated time can't be more than a day (1440 minutes)."
+    return minutes, None
+
+
 @router.post("/plan/add")
 def add_plan(
     request: Request,
@@ -1551,41 +1624,71 @@ def add_plan(
     task_type_id: int = Form(...),
     details: str = Form(""),
     client: str = Form(""),
+    date: str = Form(""),
+    estimated_minutes: str = Form(""),
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    if _today_day_locked(db, user):
-        flash(request, "Day is already submitted — can't add a new plan.", "err")
+    today = today_local()
+    # Plan-ahead (Ganesh, 2026-08-31): a plan can now be added for today OR
+    # any day through _plan_ahead_max_date()'s week-scoped boundary (see
+    # that function's own docstring above _allowed_dates) — never a past
+    # day, planning something that already happened doesn't mean anything.
+    # Blank/unparseable `date` falls back to today, same as today_page()'s
+    # own `date` query param handling, so this stays backward-compatible
+    # with anything that still posts here without a date field.
+    try:
+        plan_date = dt.date.fromisoformat(date) if date else today
+    except ValueError:
+        plan_date = today
+    max_plan_date = _plan_ahead_max_date(today, user.work_day_set)
+    if plan_date < today:
+        flash(request, "Can't plan a day that's already passed.", "err")
         return RedirectResponse("/today", status_code=303)
+    if plan_date > max_plan_date:
+        flash(request, f"Can't plan past {fmt_date(max_plan_date)} yet — more days open up once your next work week starts.", "err")
+        return RedirectResponse("/today", status_code=303)
+    redirect_url = "/today" if plan_date == today else f"/today?date={plan_date.isoformat()}"
+
+    # A locked day can only ever be *today* (a future day has no
+    # DaySubmission row yet — nothing to lock), so this check stays scoped
+    # to that case rather than generalizing _today_day_locked() for a date
+    # that can never actually be locked.
+    if plan_date == today and _today_day_locked(db, user):
+        flash(request, "Day is already submitted — can't add a new plan.", "err")
+        return RedirectResponse(redirect_url, status_code=303)
     project = db.get(m.Project, project_id)
     task = db.get(m.TaskType, task_type_id)
     if project is None or not project.active or task is None or not task.active:
         flash(request, "Choose a Project and Task before adding a plan.", "err")
-        return RedirectResponse("/today", status_code=303)
+        return RedirectResponse(redirect_url, status_code=303)
     # Project-scoped tasks (Ganesh, 2026-08-27) — same
     # validation.task_allowed_for_project() validate_entry() uses, checked
     # here too for immediate feedback rather than only discovering the
     # mismatch once this plan is Started/finished into a real TaskEntry.
     if not task_allowed_for_project(db, project_id, task_type_id):
         flash(request, f"'{task.name}' isn't set up for '{project.name}' — choose a different task.", "err")
-        return RedirectResponse("/today", status_code=303)
+        return RedirectResponse(redirect_url, status_code=303)
     # Department-scoped projects (Ganesh, 2026-08-28) — same
     # validation.project_allowed_for_department() validate_entry() uses,
     # checked here too for immediate feedback (mirrors the
     # task_allowed_for_project check right above).
     if not project_allowed_for_department(db, project_id, user.department):
         flash(request, f"'{project.name}' isn't available to your department.", "err")
-        return RedirectResponse("/today", status_code=303)
+        return RedirectResponse(redirect_url, status_code=303)
     client_err = _client_required_error(project, client)
     if client_err:
         flash(request, client_err, "err")
-        return RedirectResponse("/today", status_code=303)
+        return RedirectResponse(redirect_url, status_code=303)
     cleaned = capitalize_first(details.strip())
     if not cleaned:
         flash(request, "Say what you plan to do.", "err")
-        return RedirectResponse("/today", status_code=303)
+        return RedirectResponse(redirect_url, status_code=303)
+    est_minutes, est_err = _parse_estimated_minutes(estimated_minutes)
+    if est_err:
+        flash(request, est_err, "err")
+        return RedirectResponse(redirect_url, status_code=303)
 
-    today = today_local()
     # Auto Punch In on the day's very first plan (Ganesh, 2026-08-22) —
     # "first plan of the day" is checked BEFORE the new row is added below,
     # so it's unambiguous. The "already punched in" check is the exact same
@@ -1593,30 +1696,35 @@ def add_plan(
     # invariant) — duplicated rather than calling punch_in() directly since
     # that route also flashes/redirects on its own, which would fight the
     # "plan added" flash below; this needs to stay a silent side effect.
-    is_first_plan_today = db.execute(
-        select(m.PlannedTask.id).where(
-            m.PlannedTask.employee_id == user.id, m.PlannedTask.date == today
-        )
-    ).first() is None
-    already_punched_in = db.execute(
-        select(m.PunchSession.id).where(
-            m.PunchSession.employee_id == user.id, m.PunchSession.date == today,
-            m.PunchSession.punched_out_at.is_(None),
-        )
-    ).first() is not None
+    # Scoped to plan_date == today (Ganesh, 2026-08-31, plan-ahead) —
+    # punching in for a day that hasn't happened yet makes no sense, and
+    # planning tomorrow shouldn't silently punch you in for today either.
+    punched_in_now = False
+    if plan_date == today:
+        is_first_plan_today = db.execute(
+            select(m.PlannedTask.id).where(
+                m.PlannedTask.employee_id == user.id, m.PlannedTask.date == today
+            )
+        ).first() is None
+        already_punched_in = db.execute(
+            select(m.PunchSession.id).where(
+                m.PunchSession.employee_id == user.id, m.PunchSession.date == today,
+                m.PunchSession.punched_out_at.is_(None),
+            )
+        ).first() is not None
+        if is_first_plan_today and not already_punched_in:
+            db.add(m.PunchSession(employee_id=user.id, date=today, punched_in_at=dt.datetime.utcnow()))
+            punched_in_now = True
 
     db.add(m.PlannedTask(
-        employee_id=user.id, date=today, project_id=project_id,
+        employee_id=user.id, date=plan_date, project_id=project_id,
         task_type_id=task_type_id, details=cleaned, client=client.strip(), status=m.PLAN_PLANNED,
-        created_by_employee_id=user.id,
+        created_by_employee_id=user.id, estimated_minutes=est_minutes,
     ))
-    punched_in_now = False
-    if is_first_plan_today and not already_punched_in:
-        db.add(m.PunchSession(employee_id=user.id, date=today, punched_in_at=dt.datetime.utcnow()))
-        punched_in_now = True
     db.commit()
-    flash(request, "Added to today's plan." + (" Punched in for you." if punched_in_now else ""), "ok")
-    return RedirectResponse("/today", status_code=303)
+    msg = "Added to today's plan." if plan_date == today else f"Added to the plan for {fmt_date(plan_date)}."
+    flash(request, msg + (" Punched in for you." if punched_in_now else ""), "ok")
+    return RedirectResponse(redirect_url, status_code=303)
 
 
 @router.post("/plan/{plan_id}/edit")
@@ -1624,6 +1732,7 @@ def edit_plan(
     plan_id: int,
     request: Request,
     details: str = Form(""),
+    estimated_minutes: str = Form(""),
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -1632,21 +1741,32 @@ def edit_plan(
     for a logged TaskEntry's Details: changing Project/Task is a bigger
     change than what was asked for, and if the plan was picked wrong,
     Delete-and-re-add (while still `planned`) is the existing pattern for
-    that, same as a mis-added row anywhere else in this app."""
+    that, same as a mis-added row anywhere else in this app. Estimated
+    time (Ganesh, 2026-08-31) was added to this same form rather than
+    treated as another "delete and re-add" field — unlike Project/Task, a
+    wrong estimate has no downstream effect on anything (it isn't read by
+    engine.py/validation.py at all), so there's no reason to withhold
+    editing it here."""
     plan = db.get(m.PlannedTask, plan_id)
     if plan is None or plan.employee_id != user.id:
         return RedirectResponse("/today", status_code=303)
+    redirect_url = "/today" if plan.date == today_local() else f"/today?date={plan.date.isoformat()}"
     if plan.status not in (m.PLAN_PLANNED, m.PLAN_PAUSED):
         flash(request, "Pause it first before editing — a running or finished plan can't be changed.", "err")
-        return RedirectResponse("/today", status_code=303)
+        return RedirectResponse(redirect_url, status_code=303)
     cleaned = capitalize_first(details.strip())
     if not cleaned:
         flash(request, "Say what you plan to do.", "err")
-        return RedirectResponse("/today", status_code=303)
+        return RedirectResponse(redirect_url, status_code=303)
+    est_minutes, est_err = _parse_estimated_minutes(estimated_minutes)
+    if est_err:
+        flash(request, est_err, "err")
+        return RedirectResponse(redirect_url, status_code=303)
     plan.details = cleaned
+    plan.estimated_minutes = est_minutes
     db.commit()
     flash(request, "Plan updated.", "ok")
-    return RedirectResponse("/today", status_code=303)
+    return RedirectResponse(redirect_url, status_code=303)
 
 
 @router.post("/plan/{plan_id}/delete")
@@ -1659,6 +1779,7 @@ def delete_plan(
     plan = db.get(m.PlannedTask, plan_id)
     if plan is None or plan.employee_id != user.id:
         return RedirectResponse("/today", status_code=303)
+    redirect_url = "/today" if plan.date == today_local() else f"/today?date={plan.date.isoformat()}"
     # TK-04 (Ganesh, 2026-08-28) — "Employee cannot delete an assigned
     # entry." created_by_employee_id != user.id (and not None, though that
     # can't happen for a row that passed the ownership check above) means
@@ -1669,13 +1790,13 @@ def delete_plan(
     # NOT restricted the same way — TK-04 only calls out delete.
     if plan.created_by_employee_id is not None and plan.created_by_employee_id != user.id:
         flash(request, "This was assigned by an admin — ask them to remove it.", "err")
-        return RedirectResponse("/today", status_code=303)
+        return RedirectResponse(redirect_url, status_code=303)
     if plan.status != m.PLAN_PLANNED:
         flash(request, "Only a not-yet-started plan can be removed.", "err")
-        return RedirectResponse("/today", status_code=303)
+        return RedirectResponse(redirect_url, status_code=303)
     db.delete(plan)
     db.commit()
-    return RedirectResponse("/today", status_code=303)
+    return RedirectResponse(redirect_url, status_code=303)
 
 
 @router.post("/plan/{plan_id}/start")
@@ -1695,6 +1816,16 @@ def start_plan(
     plan = db.get(m.PlannedTask, plan_id)
     if plan is None or plan.employee_id != user.id:
         return RedirectResponse("/today", status_code=303)
+    # Plan-ahead (Ganesh, 2026-08-31): a plan dated after today can exist
+    # now (see add_plan()), but there's nothing to Start yet — the live
+    # timer this opens always runs against `now_local()`, which can't be
+    # inside a day that hasn't started. today.html already hides the
+    # Start/Resume button for a future-day item; this is the server-side
+    # backstop, same "hidden in the UI, still blocked in the route"
+    # precedent every other button-guard in this file already follows.
+    if plan.date != today_local():
+        flash(request, "Can't start a plan before its day arrives.", "err")
+        return RedirectResponse(f"/today?date={plan.date.isoformat()}", status_code=303)
     if _today_day_locked(db, user):
         flash(request, "Day is already submitted.", "err")
         return RedirectResponse("/today", status_code=303)

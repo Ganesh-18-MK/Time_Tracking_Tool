@@ -859,6 +859,22 @@ class PlannedTask(Base):
     # first place) — never backfilled, same as every other NULL-is-
     # "doesn't apply"/"not yet" column in this app.
     assigned_notified_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    # Estimated time (Ganesh, 2026-08-31 — "add an estimated time for each
+    # planned task"), integer minutes per this app's hard rule (no floats,
+    # no separate hour/minute fields — same convention as every other
+    # duration in this app, formatted for display via the `hm` Jinja
+    # filter). Nullable, not defaulted to 0: None means "no estimate given"
+    # (an employee can still add a plan without one — this was never made
+    # required), which every read treats as plain falsy (`{% if
+    # p.estimated_minutes %}`), same "NULL is a correct, permanent answer"
+    # reasoning as Employee.is_developer/Project.is_case_type above. Purely
+    # informational — nothing in app/engine.py or app/validation.py reads
+    # it, and it plays no part in compliance math, strikes, or the 4h/day
+    # cap; it exists only to show up next to a planned item on Today's Plan
+    # (employee view) and on the admin Assign Work / Person Detail "Assigned
+    # tasks" cards, per Ganesh's own scoping answer for where this should
+    # display.
+    estimated_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     employee = relationship("Employee", foreign_keys=[employee_id])
     # TK-04 — who created this plan, when it wasn't the employee themself.

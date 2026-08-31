@@ -21,7 +21,7 @@ from app.db import get_db
 # employee-side rule add_plan()/start_task_timer()/add_entry() already
 # enforce. No circular import risk — app/routes/employee.py never imports
 # from this module.
-from app.routes.employee import _client_required_error
+from app.routes.employee import _client_required_error, _parse_estimated_minutes
 from app.validation import task_allowed_for_project
 from app.templating import (
     HOLIDAY_MANAGEMENT_ENABLED,
@@ -598,6 +598,7 @@ def admin_add_plan(
     date: str = Form(...),
     details: str = Form(""),
     client: str = Form(""),
+    estimated_minutes: str = Form(""),
     ym: str = Form(""),
     return_to: str = Form(""),
     admin: m.Employee = Depends(require_admin),
@@ -649,6 +650,10 @@ def admin_add_plan(
     if client_err:
         flash(request, client_err, "err")
         return RedirectResponse(dest, status_code=303)
+    est_minutes, est_err = _parse_estimated_minutes(estimated_minutes)
+    if est_err:
+        flash(request, est_err, "err")
+        return RedirectResponse(dest, status_code=303)
     sub = db.execute(
         select(m.DaySubmission).where(m.DaySubmission.employee_id == emp_id, m.DaySubmission.date == d)
     ).scalar_one_or_none()
@@ -659,7 +664,7 @@ def admin_add_plan(
     plan = m.PlannedTask(
         employee_id=emp_id, date=d, project_id=project_id, task_type_id=task_type_id,
         details=capitalize_first(details.strip()), client=client.strip(), status=m.PLAN_PLANNED,
-        created_by_employee_id=admin.id,
+        created_by_employee_id=admin.id, estimated_minutes=est_minutes,
     )
     db.add(plan)
     db.commit()
@@ -680,6 +685,7 @@ def admin_edit_plan(
     date: str = Form(...),
     details: str = Form(""),
     client: str = Form(""),
+    estimated_minutes: str = Form(""),
     ym: str = Form(""),
     return_to: str = Form(""),
     admin: m.Employee = Depends(require_admin),
@@ -722,12 +728,17 @@ def admin_edit_plan(
     if client_err:
         flash(request, client_err, "err")
         return RedirectResponse(dest, status_code=303)
+    est_minutes, est_err = _parse_estimated_minutes(estimated_minutes)
+    if est_err:
+        flash(request, est_err, "err")
+        return RedirectResponse(dest, status_code=303)
 
     plan.project_id = project_id
     plan.task_type_id = task_type_id
     plan.date = d
     plan.details = capitalize_first(details.strip())
     plan.client = client.strip()
+    plan.estimated_minutes = est_minutes
     if plan.created_by_employee_id is not None and plan.created_by_employee_id != plan.employee_id:
         plan.assigned_notified_at = None
     db.commit()

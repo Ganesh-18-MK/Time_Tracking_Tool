@@ -59,13 +59,6 @@
     </div>
     {% endif %}
 
-    {% if not day_locked %}
-    {# Convenience scroll-link (2026-08-29 reskin) — #addrowcard is the
-       existing Add Row card's own id (see it further down this page);
-       a plain anchor needs no JS and doesn't touch the form itself. #}
-    <a href="#addrowcard" class="btn secondary small">Add Task</a>
-    {% endif %}
-
     {% if not day_locked and entries %}
     {# Submit Day (moved here from the bottom of the Task log card in the
        2026-08-29 reskin, per the mockup showing it as a header action) —
@@ -262,7 +255,7 @@
           {% endfor %}
         </select>
       </div>
-      <div class="muted small">You can log today plus a limited back-dating window (admin-configurable).</div>
+      <div class="muted small">You can log today plus a limited back-dating window (admin-configurable), and plan ahead through {{ plan_ahead_max_date|mdy }}.</div>
     </form>
     {# Mon-Sun week-position circles (Ganesh, 2026-08-30: "week days in
        circle... today should be other color highlighting and completed
@@ -311,18 +304,27 @@
    columns in the same row. #}
 <div class="today-grid">
 <div class="today-col" style="grid-column:2">
-{% if day == today and not day_locked %}
+{% if day >= today and not day_locked %}
 {# "Plan for the day" — the add form (Ganesh, 2026-08-21, see
    docs/TASK_PLANNING_TIMER_PLAN.md; moved to this column 2026-08-29,
    live feedback: "Today's Plan should be in place of task logs" — the
    resulting checklist, "Today's Plan", moved to the other column so it
    sits where the Task log card used to be; this form stays here since
-   it's small and doesn't need that prime real estate). Always "today"
-   only, same live/right-now convention as Punch/Break/Auto time capture
-   on this page — a plan only ever carries today's date. #}
+   it's small and doesn't need that prime real estate).
+
+   Plan-ahead (Ganesh, 2026-08-31, "employees should be able to plan
+   their day the previous day itself") widened this from `day == today`
+   to `day >= today` — the Working-date picker above can now be set to
+   any day through plan_ahead_max_date (a week-scoped boundary, see
+   _plan_ahead_max_date() in app/routes/employee.py), and this form
+   posts a hidden `date` field for whichever day is currently selected
+   (see add_plan()). Still hidden entirely for any day in the PAST, same
+   as before — see the day_locked guard below on Add Task/Auto time
+   capture for why a past day never shows an editable form at all. #}
 <div class="card">
-  <div class="card-head"><h2>Plan for the day</h2></div>
+  <div class="card-head"><h2>{% if day == today %}Plan for the day{% else %}Plan for {{ day.strftime('%A') }}, {{ day|mdy }}{% endif %}</h2></div>
   <form method="post" action="/plan/add" class="formrow">
+    <input type="hidden" name="date" value="{{ day.isoformat() }}">
     <div class="combo" id="combo-plan-project" data-placeholder="a project">
       <label>Project/Employer</label>
       <input type="text" class="combo-input" autocomplete="off" placeholder="Type to search…" required>
@@ -343,9 +345,13 @@
       <label>Plan</label>
       <textarea name="details" rows="1" style="width:100%; resize:vertical" placeholder="e.g. Need to work on the new leave management system" required></textarea>
     </div>
+    <div style="width:110px">
+      <label>Est. minutes</label>
+      <input type="number" name="estimated_minutes" min="0" max="1440" placeholder="optional" style="width:100%">
+    </div>
     <div><button>Add</button></div>
   </form>
-  <p class="small muted" style="margin:3px 0 0">Add what you intend to work on before you start it — it shows up in Today's Plan with Start/Pause/Stop. Multiple lines (e.g. a numbered list) are fine and display as typed.</p>
+  <p class="small muted" style="margin:3px 0 0">{% if day == today %}Add what you intend to work on before you start it — it shows up in Today's Plan with Start/Pause/Stop.{% else %}Adding this here doesn't start anything now — it'll be waiting in your plan when {{ day|mdy }} arrives.{% endif %} Multiple lines (e.g. a numbered list) are fine and display as typed. Estimated time is optional and just for your own reference.</p>
 </div>
 {% endif %}
 
@@ -419,21 +425,24 @@
 </div>
 <div class="today-col" style="grid-column:1">
 
-{% if day == today and not day_locked %}
+{% if day >= today and not day_locked %}
 {# "Today's Plan" — the checklist itself (Ganesh, 2026-08-29, live
    feedback: "Today's Plan should be in place of task logs and task logs
    section should go down") — moved here, to the top of this column,
    swapping places with the Task log card below it; the "Plan for the
    day" add form that feeds this list stayed in the other column (see its
-   own comment there). Always "today" only, same live/right-now
-   convention as Punch/Break/Auto time capture on this page — a plan only
-   ever carries today's date (see _day_context's `plans`), so this
-   interactive section is hidden while browsing a past day via the date
-   dropdown above, same as those other live widgets. A read-only view of
-   that day's plans (Ganesh, 2026-08-22) shows instead — see the
-   `past_plans` block right below. #}
+   own comment there).
+
+   Plan-ahead (Ganesh, 2026-08-31) widened this from `day == today` to
+   `day >= today` — a future day's plans (see _day_context's `plans`)
+   show here too now, with Add/Edit/Delete still available but
+   Start/Pause/Resume/Stop hidden (wrapped in an extra day == today check
+   below) since there's no live timer to open for a day that hasn't
+   arrived — start_plan() enforces this server-side too, this is just the
+   matching UI. A past day still shows nothing here at all — see the
+   read-only `past_plans` block right below. #}
 <div class="card">
-  <div class="card-head"><h2>Today's Plan{% if plans %} - {{ plans|length }} {{ 'task' if plans|length == 1 else 'Tasks' }}{% endif %}</h2></div>
+  <div class="card-head"><h2>{{ 'Today' if day == today else day|mdy }}'s Plan{% if plans %} - {{ plans|length }} {{ 'task' if plans|length == 1 else 'Tasks' }}{% endif %}</h2></div>
   {% if plans %}
   {% for p in plans %}
   <div class="plan-item plan-{{ p.status }}">
@@ -443,6 +452,7 @@
         {% elif p.status == 'running' %}<span class="badge b-plan-in-progress">in progress</span>
         {% elif p.status == 'paused' %}<span class="badge b-plan-paused">paused</span>
         {% else %}<span class="badge b-plan-done">done</span>{% endif %}
+        {% if p.estimated_minutes %}<span class="badge b-pending" title="Estimated time">~{{ p.estimated_minutes|hm }}</span>{% endif %}
         {% if p.created_by_employee_id and p.created_by_employee_id != user.id %}
         {# TK-04 (Ganesh, 2026-08-28) — "a marker showing it was assigned." #}
         <span class="badge b-pending" title="Assigned by {{ p.assigned_by.name if p.assigned_by else 'an admin' }}">assigned{% if p.assigned_by %} · {{ p.assigned_by.name }}{% endif %}</span>
@@ -454,13 +464,14 @@
           <summary class="small muted">✎ edit</summary>
           <form method="post" action="/plan/{{ p.id }}/edit" style="margin-top:6px;display:flex;gap:6px;align-items:flex-start">
             <textarea name="details" rows="2" style="flex:1;min-width:180px">{{ p.details }}</textarea>
+            <input type="number" name="estimated_minutes" min="0" max="1440" value="{{ p.estimated_minutes or '' }}" placeholder="est. min" style="width:80px">
             <button class="small">Save</button>
           </form>
         </details>
         {%- endif %}</div>
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap">
-      {% if p.status in ('planned', 'paused') %}
+      {% if day == today and p.status in ('planned', 'paused') %}
       <form method="post" action="/plan/{{ p.id }}/start" class="inline">
         <button class="small">{{ 'Resume' if p.status == 'paused' else 'Start' }}</button>
       </form>
@@ -494,16 +505,20 @@
   {% else %}
   <p class="small muted">Nothing planned yet — add what you intend to work on above.</p>
   {% endif %}
-  <p class="small muted" style="margin:2px 0 0">Start/Resume opens a live timer; Pause or Stop logs that stretch of time into your task log below automatically, with the actual time it happened. Starting a different plan (or the Auto time capture timer below) while one's running pauses it for you first — nothing gets lost.</p>
+  <p class="small muted" style="margin:2px 0 0">{% if day == today %}Start/Resume opens a live timer; Pause or Stop logs that stretch of time into your task log below automatically, with the actual time it happened. Starting a different plan (or the Auto time capture timer below) while one's running pauses it for you first — nothing gets lost.{% else %}You can edit or remove these until {{ day|mdy }} arrives — Start/Pause/Stop show up here once that day is today.{% endif %}</p>
 </div>
 {% endif %}
 
-{% if day != today and past_plans %}
+{% if day < today and past_plans %}
 {# Read-only counterpart to "Today's Plan" above (Ganesh, 2026-08-22) —
    same plan-item markup/badges/colors for visual consistency, but no
    Start/Pause/Stop/edit/delete forms: a past day's PlannedTask rows are
    just context for what was planned/left running/done that day, not
-   something this page can act on (see `past_plans` in _day_context). #}
+   something this page can act on (see `past_plans` in _day_context).
+   Changed from `day != today` to `day < today` (Ganesh, 2026-08-31,
+   plan-ahead) — a future day now has its own writable section above
+   instead (`plans`, not `past_plans`), so this strictly-less-than check
+   is what keeps the two mutually exclusive. #}
 <div class="card">
   <div class="card-head"><h2>Plan — {{ day.strftime('%A') }}, {{ day|mdy }} ({{ past_plans|length }} {{ 'task' if past_plans|length == 1 else 'tasks' }})</h2></div>
   {% for p in past_plans %}
@@ -514,6 +529,7 @@
         {% elif p.status == 'running' %}<span class="badge b-plan-in-progress">in progress</span>
         {% elif p.status == 'paused' %}<span class="badge b-plan-paused">paused</span>
         {% else %}<span class="badge b-plan-done">done</span>{% endif %}
+        {% if p.estimated_minutes %}<span class="badge b-pending" title="Estimated time">~{{ p.estimated_minutes|hm }}</span>{% endif %}
         {% if p.created_by_employee_id and p.created_by_employee_id != user.id %}
         {# TK-04 (Ganesh, 2026-08-28) — "a marker showing it was assigned." #}
         <span class="badge b-pending" title="Assigned by {{ p.assigned_by.name if p.assigned_by else 'an admin' }}">assigned{% if p.assigned_by %} · {{ p.assigned_by.name }}{% endif %}</span>
@@ -527,6 +543,19 @@
 </div>
 {% endif %}
 
+{% if day <= today %}
+{# Auto time capture / Add Task / Task log — the whole day-logging
+   apparatus — is hidden entirely for a future day (Ganesh, 2026-08-31:
+   "the auto time should not work for next days, or future days only plan
+   for the day can be accessible"). A future day has no work to log yet
+   and no live timer that could possibly belong to it (ActiveTaskTimer is
+   employee-scoped, not date-scoped — see _day_context's own comment in
+   app/routes/employee.py — so without this guard it was rendering
+   whatever timer happens to be running RIGHT NOW even while browsing a
+   day that hasn't arrived, which made no sense). Plan for the day / X's
+   Plan (above, in the other column) is deliberately the ONE thing that
+   stays available on a future day — everything below this line is
+   `day <= today` only, closed again right after the Task log card. #}
 {% if not day_locked %}
 {# Auto time capture + Add row (manager's redesign, 2026-08-14 — reordered
    2026-08-29 to sit between Today's Plan and Task log, per Ganesh's live
@@ -777,6 +806,7 @@
   <p class="small muted" style="margin:2px 0 0">Already counted toward today, whether or not you submit — Submit Day only locks it from further edits.</p>
   {% endif %}
 </div>
+{% endif %}
 
 </div>
 </div>
@@ -827,6 +857,14 @@
 // wrapper element + any sticky-on-failure re-show value, so
 // initProjectTaskCombo can reveal Client the moment a case-type project
 // is picked (see combo.js and Project.is_case_type's docstring).
+{% if day <= today %}
+// combo-project/combo-task (Add Task) and combo-timer-* (Auto time
+// capture) only exist in the DOM when day is today or a past day
+// (Ganesh, 2026-08-31 — the whole day-logging apparatus is hidden
+// entirely for a future day, see the matching guard further up this
+// page around Auto time capture/Add Task/Task log) — this script guard
+// must match that template guard exactly, same reasoning as the
+// combo-plan-* guard below.
 initProjectTaskCombo(
   document.getElementById('combo-project'), document.getElementById('combo-task'),
   {{ projects|tojson }}, {{ tasks|tojson }}, {{ reopen_project_id|tojson }}, {{ reopen_task_type_id|tojson }},
@@ -842,10 +880,13 @@ initProjectTaskCombo(
   document.getElementById('client-timer')
 );
 {% endif %}
-{% if day == today %}
+{% endif %}
+{% if day >= today and not day_locked %}
 // Plan for the Day (Ganesh, 2026-08-21) — combo-plan-* only exist in the
-// DOM when day == today (see the Task Planning section above), same
-// guard as combo-timer-* above.
+// DOM when day >= today and not day_locked (see the Task Planning
+// section above — widened from day == today by the 2026-08-31 plan-ahead
+// feature, must match that guard exactly or this script tries to wire up
+// elements that were never rendered), same guard as combo-timer-* above.
 initProjectTaskCombo(
   document.getElementById('combo-plan-project'), document.getElementById('combo-plan-task'),
   {{ projects|tojson }}, {{ tasks|tojson }}, null, null,
@@ -875,6 +916,12 @@ initProjectTaskCombo(
 })();
 {% endif %}
 
+{% if day <= today %}
+// Add Task's #addrow form (and its start_time/end_time/durpreview
+// fields) only exists in the DOM when day <= today — see the matching
+// template guard around Auto time capture/Add Task/Task log. Without
+// this guard, browsing a future day (Ganesh, 2026-08-31 plan-ahead
+// feature) would throw here on the null #addrow lookup.
 (function () {
   const f = document.getElementById('addrow');
   const s = f.querySelector('[name=start_time]'), e = f.querySelector('[name=end_time]');
@@ -890,6 +937,7 @@ initProjectTaskCombo(
   }
   s.addEventListener('input', upd); e.addEventListener('input', upd);
 })();
+{% endif %}
 
 // Fill a gap row (Ganesh, 2026-08-22) — sets Add Row's Start/End to this
 // exact gap's window and scrolls to it, same idea as the single earliest-

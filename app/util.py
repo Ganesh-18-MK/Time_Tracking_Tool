@@ -322,6 +322,38 @@ def ensure_leave_v2_backfill(db: Session) -> None:
     db.commit()
 
 
+def ensure_client_text_backfill(db: Session) -> None:
+    """Backfill for `ActiveTaskTimer.client`/`TaskEntry.client`/
+    `PlannedTask.client` (Case Type / Client, Ganesh, 2026-08-28). Same
+    root cause as every other ensure_*_backfill here: the ORM-level
+    `default=""` only applies to a fresh INSERT through SQLAlchemy — any
+    row that existed before this column was added, or that otherwise
+    ended up with a NULL here, keeps NULL forever without this.
+
+    Unlike TaskType.category (a pure display value, safe to leave NULL
+    indefinitely since every read is `{% if x.client %}` truthiness),
+    this one is a real bug source: `_log_timer_as_entry()`
+    (app/routes/employee.py) calls `.strip()` on `timer.client`
+    unconditionally when it turns a finished timer segment into a
+    TaskEntry — a NULL there raises AttributeError and 500s the Today
+    page for that employee on every load, since `_day_context()` calls
+    the auto-split path on every GET (2026-08-31 incident: an employee's
+    ActiveTaskTimer had a NULL client, left the Today page permanently
+    erroring for her). `_client_required_error()` was hardened to treat
+    None the same as "" too, but this backfill closes the gap at the
+    data layer as well so no other NULL row is waiting to hit the same
+    or a similar unguarded `.strip()` elsewhere. A no-op once every row
+    already has a string, safe on every startup."""
+    any_changed = False
+    for model in (m.ActiveTaskTimer, m.TaskEntry, m.PlannedTask):
+        rows = list(db.execute(select(model).where(model.client.is_(None))).scalars())
+        for r in rows:
+            r.client = ""
+            any_changed = True
+    if any_changed:
+        db.commit()
+
+
 def ensure_task_category_backfill(db: Session) -> None:
     """Backfill for `TaskType.category`, added 2026-08-30 (the "All
     departments" tree's Category -> Task grouping, with an hours rollup, for

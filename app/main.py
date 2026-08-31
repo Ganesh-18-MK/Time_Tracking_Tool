@@ -22,6 +22,7 @@ from app.routes import tickets as ticket_routes
 from app.templating import TICKETING_ENABLED, render, templates  # noqa: F401 (templates import registers filters)
 from app.util import (
     ensure_bootstrap_admins,
+    ensure_client_text_backfill,
     ensure_employee_codes,
     ensure_leave_v2_backfill,
     ensure_list_status_backfill,
@@ -164,6 +165,7 @@ def _startup() -> None:
         ensure_location_backfill(db)
         ensure_leave_v2_backfill(db)
         ensure_task_category_backfill(db)
+        ensure_client_text_backfill(db)
         ensure_bootstrap_admins(db)
     finally:
         db.close()
