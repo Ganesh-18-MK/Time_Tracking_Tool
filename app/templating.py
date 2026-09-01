@@ -9,10 +9,10 @@ from markupsafe import Markup
 from sqlalchemy import func, select
 
 from app import models as m
-from app.auth import led_by
 from app.util import (
     STATUS_LABELS,
     STATUS_NAMES,
+    approval_progress_steps,
     fmt_date,
     fmt_datetime,
     fmt_hm,
@@ -65,6 +65,22 @@ HOLIDAY_MANAGEMENT_ENABLED = os.environ.get("HOLIDAY_MANAGEMENT_ENABLED", "1") =
 # my_leave()/request_leave() and app/routes/admin.py's leave_page()/
 # leave_approve() for the guards this flag controls.
 LEAVE_MANAGEMENT_V2_ENABLED = os.environ.get("LEAVE_MANAGEMENT_V2_ENABLED", "1") == "1"
+
+# Multilevel approval (Ganesh, 2026-09-01: "i want multilevel approval for
+# leave and overtime management... first team lead... admin should get
+# request then admin can verify and they can deny or accept with reason
+# then... it should go to super admin then super admin can verify it and
+# can approve or reject"). Same on/off-by-env-var convention as every flag
+# above — defaults on, set to 0 on a host to instantly fall back to today's
+# single-step Super-Admin-only approval with no code change. Covers Leave
+# requests, Overtime requests, and Overtime <-> Missed Hours match requests
+# (CompensationLink) per Ganesh's own scope answer; Special Paid Time and
+# every admin-direct entry (leave_add/overtime_grant/add_complink) are
+# untouched — nobody requested those, so there's nothing for a Team Lead to
+# review (see LeaveRecord.requires_lead_review's own comment in
+# app/models.py). See app/routes/admin.py's leave_page()/overtime_page()
+# and the new */lead-review routes for what this guards.
+MULTILEVEL_APPROVAL_ENABLED = os.environ.get("MULTILEVEL_APPROVAL_ENABLED", "1") == "1"
 
 # Task Logs report's daily summary was originally an LLM call gated by a
 # TASK_SUMMARY_ENABLED flag (app/llm.py, Anthropic Messages API) — replaced
@@ -125,6 +141,16 @@ templates.env.globals["TICKET_STATUSES"] = list(m.TICKET_STATUSES)
 templates.env.globals["TICKETING_ENABLED"] = TICKETING_ENABLED
 templates.env.globals["HOLIDAY_MANAGEMENT_ENABLED"] = HOLIDAY_MANAGEMENT_ENABLED
 templates.env.globals["LEAVE_MANAGEMENT_V2_ENABLED"] = LEAVE_MANAGEMENT_V2_ENABLED
+templates.env.globals["MULTILEVEL_APPROVAL_ENABLED"] = MULTILEVEL_APPROVAL_ENABLED
+templates.env.globals["LEAD_ACCEPTED"] = m.LEAD_ACCEPTED
+templates.env.globals["LEAD_DENIED"] = m.LEAD_DENIED
+# Multilevel approval progress tracker (Ganesh, 2026-09-02) — registered as
+# a plain callable global, not wired through each route's own render()
+# context, since it's a pure function of (record, flag) that every Leave/
+# Overtime/CompensationLink template already has both of in scope (the row
+# being looped over, and MULTILEVEL_APPROVAL_ENABLED already global) — see
+# approval_progress_steps()'s own docstring in app/util.py.
+templates.env.globals["approval_progress_steps"] = approval_progress_steps
 templates.env.globals["LEAVE_TYPES_V2"] = list(m.LEAVE_TYPES_V2)
 templates.env.globals["LEAVE_DURATIONS"] = list(m.LEAVE_DURATIONS)
 templates.env.globals["BEREAVEMENT_RELATIONS"] = list(m.BEREAVEMENT_RELATIONS)
@@ -154,28 +180,33 @@ def _admin_nav_badges(db, user) -> dict:
     needing to remember to add it.
 
     A department-scoped admin (is_admin=True, is_super_admin=False — see
-    Employee.is_super_admin docstring) still can't act on Leave/Overtime
-    requests (Ganesh, 2026-08-28's 5-item Team Lead access list didn't
-    include them), but as of 2026-08-30 ("add leaves and overtime
-    viewable access to admins", confirmed VIEW ONLY via AskUserQuestion)
-    they DO have a real page to go look at both from — Team Requests is no
-    longer hidden from their nav (see base.html). A dead "0 pending" badge
-    next to a link that quietly hides real pending requests would be
-    misleading, so this now computes a scoped pending_leave (by
-    department, matching leave_page()'s own admin_department_scope()
-    filter) and pending_overtime (by direct-report set via led_by(),
-    matching overtime_page()'s own filter) for them too — just without
-    _pending_complink_count() folded in, since that count is exclusively
-    about the Overtime ↔ Missed Hours match-request decision card, which
-    stays super-admin-only end to end (approve_complink/reject_complink
-    are still require_super_admin) and isn't shown to a department-scoped
-    admin at all. Support Inbox is still super-admin-only and isn't in
-    their nav, so its count is still skipped for them."""
+    Employee.is_super_admin docstring) could only VIEW Leave/Overtime as of
+    2026-08-30 ("add leaves and overtime viewable access to admins",
+    confirmed VIEW ONLY via AskUserQuestion) — Team Requests was no longer
+    hidden from their nav (see base.html), but every actual decision stayed
+    Super-Admin-only. Multilevel approval (2026-09-01) gives them a REAL
+    action again, just a narrower one: they can accept or deny a request as
+    its first-stage "Team Lead" review (always with a reason), before a
+    Super Admin makes the actual final call — see LeaveRecord.
+    requires_lead_review's comment in app/models.py for the full shape.
+    This badge now counts what's actually awaiting THIS admin's own lead-
+    stage decision (department-scoped for both Leave and Overtime — the
+    reviewer-scoping rule is now the same for both, replacing Overtime's
+    old per-person led_by() scoping), not the older "every pending
+    request" count a Super Admin's own badge still shows below.
+    _pending_complink_count() (org-wide, Overtime <-> Missed Hours match
+    requests) is now ALSO computed department-scoped for this tier, for the
+    same reason — the final decision on those stays Super-Admin-only
+    (approve_complink/reject_complink are still require_super_admin), but
+    the new lead-review stage on them is not. Support Inbox is still
+    super-admin-only and isn't in their nav, so its count is still skipped
+    for them."""
     def _pending_overtime_count(employee_ids=None) -> int:
-        # employee_ids=None -> org-wide (super admin, unscoped like
-        # app/auth.py led_by() itself); otherwise only requests from that
-        # admin's direct reports (Team Lead scoping is per-person via
-        # reports_to_id, not by department — see led_by()'s docstring).
+        # employee_ids=None -> org-wide (super admin); otherwise only
+        # requests from the given set of employee ids. Only ever called
+        # with None now (see the department-scoped branch below, which
+        # queries OvertimeApproval directly instead) — kept as a small
+        # helper since the super-admin branch further down still uses it.
         q = select(func.count()).select_from(m.OvertimeApproval).where(
             m.OvertimeApproval.status == m.OT_REQUESTED
         )
@@ -185,30 +216,38 @@ def _admin_nav_badges(db, user) -> dict:
             q = q.where(m.OvertimeApproval.employee_id.in_(employee_ids))
         return db.execute(q).scalar() or 0
 
-    def _pending_complink_count() -> int:
+    def _pending_complink_count(dept=None) -> int:
         # Overtime-for-Missed-Hours match requests awaiting a decision
         # (Ganesh, 2026-08-22) — admin wasn't being notified of these
-        # anywhere before this (no nav badge counted them, and the
-        # Compensation links tables showed a still-pending request
-        # identically to an already-approved link; see the status-badge
-        # fix in those templates the same day). approve_complink/
-        # reject_complink are both require_super_admin — a department-
-        # scoped Team Lead can now VIEW pending_leave/pending_overtime
-        # counts too (2026-08-30), but never act on any of it — so this
-        # stays folded into the super-admin badge only, never the
-        # department-scoped one.
+        # anywhere before this. The FINAL decision (approve_complink/
+        # reject_complink) is still require_super_admin end to end, so
+        # dept=None (org-wide, every such request) is still what feeds the
+        # Super Admin's own badge below. Multilevel approval (2026-09-01)
+        # gives a department-scoped admin a real lead-review action on
+        # these too, so dept=<their department> now also returns a
+        # meaningful, narrower count (scoped to the REQUESTING employee's
+        # department, and further narrowed to "not yet lead-reviewed" —
+        # same shape as the leave/overtime lead filters above).
         # Folded into pending_overtime, not pending_leave — the decision
-        # card itself lives on Overtime Management (moved there from
-        # Leave Management the same day, see overtime_page()'s
-        # pending_matches), so the badge now matches where the action is.
+        # card lives on Overtime Management (moved there from Leave
+        # Management 2026-08-22, see overtime_page()'s pending_matches), so
+        # the badge matches where the action is either way.
         if not LEAVE_MANAGEMENT_V2_ENABLED:
             return 0
-        return db.execute(
-            select(func.count()).select_from(m.CompensationLink).where(
-                m.CompensationLink.status == m.LEAVE_REQUESTED,
-                m.CompensationLink.requested_by_employee.is_(True),
+        conds = [
+            m.CompensationLink.status == m.LEAVE_REQUESTED,
+            m.CompensationLink.requested_by_employee.is_(True),
+        ]
+        q = select(func.count()).select_from(m.CompensationLink).where(*conds)
+        if dept is not None:
+            if MULTILEVEL_APPROVAL_ENABLED:
+                conds += [m.CompensationLink.requires_lead_review.is_(True), m.CompensationLink.lead_decision.is_(None)]
+            q = (
+                select(func.count()).select_from(m.CompensationLink)
+                .join(m.Employee, m.Employee.id == m.CompensationLink.employee_id)
+                .where(*conds, func.coalesce(func.nullif(m.Employee.department, ""), "—") == dept)
             )
-        ).scalar() or 0
+        return db.execute(q).scalar() or 0
 
     def _pending_suggestions_count(dept=None) -> int:
         # dept=None -> org-wide (super admin); otherwise scoped to whichever
@@ -232,20 +271,45 @@ def _admin_nav_badges(db, user) -> dict:
 
     if getattr(user, "is_admin", False) and not getattr(user, "is_super_admin", False):
         dept = user.department or "—"
+        # Multilevel approval (2026-09-01): a department-scoped admin's own
+        # badge counts requests actually AWAITING THEIR review — once they've
+        # accepted/denied, the ball is in the Super Admin's court and it
+        # should stop nagging this admin's nav. With the flag off, this
+        # collapses back to exactly the old "every pending request in my
+        # department" count (requires_lead_review is False for anything
+        # created while the flag was off, but a stale True row from before
+        # a flag flip would otherwise still gate it, so the flag itself is
+        # checked directly rather than relying only on the per-row column).
+        leave_lead_filter = [m.LeaveRecord.status == m.LEAVE_REQUESTED]
+        ot_lead_filter = [m.OvertimeApproval.status == m.OT_REQUESTED]
+        if MULTILEVEL_APPROVAL_ENABLED:
+            leave_lead_filter += [m.LeaveRecord.requires_lead_review.is_(True), m.LeaveRecord.lead_decision.is_(None)]
+            ot_lead_filter += [m.OvertimeApproval.requires_lead_review.is_(True), m.OvertimeApproval.lead_decision.is_(None)]
         dept_pending_leave = db.execute(
             select(func.count()).select_from(m.LeaveRecord)
             .join(m.Employee, m.Employee.id == m.LeaveRecord.employee_id)
             .where(
-                m.LeaveRecord.status == m.LEAVE_REQUESTED,
+                *leave_lead_filter,
                 func.coalesce(func.nullif(m.Employee.department, ""), "—") == dept,
             )
         ).scalar() or 0
-        report_ids = led_by(user, db)  # never None here — user isn't super_admin
+        # Overtime's admin-facing scoping switched from led_by() (per-person
+        # reports_to) to admin_department_scope() (department match) on
+        # 2026-09-01 to match Leave's own reviewer-scoping rule — see
+        # OvertimeApproval.requires_lead_review's comment in app/models.py.
+        dept_pending_overtime = db.execute(
+            select(func.count()).select_from(m.OvertimeApproval)
+            .join(m.Employee, m.Employee.id == m.OvertimeApproval.employee_id)
+            .where(
+                *ot_lead_filter,
+                func.coalesce(func.nullif(m.Employee.department, ""), "—") == dept,
+            )
+        ).scalar() or 0
         return {
             "open_support": 0,
             "pending_suggestions": _pending_suggestions_count(dept),
             "pending_leave": dept_pending_leave,
-            "pending_overtime": _pending_overtime_count(report_ids),
+            "pending_overtime": dept_pending_overtime + _pending_complink_count(dept),
         }
     pending_leave = db.execute(
         select(func.count()).select_from(m.LeaveRecord).where(

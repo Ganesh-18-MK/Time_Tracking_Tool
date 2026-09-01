@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as macros %}
 {% set active_nav = 'overtime' %}
 {% block title %}Overtime · MK Timekeeping{% endblock %}
 {% block content %}
@@ -19,19 +20,13 @@
 <div class="card">
   <div class="card-head"><h2>Your requests</h2></div>
   <table>
-    <thead><tr><th>Dates</th><th>Note</th><th>Status</th><th></th></tr></thead>
+    <thead><tr><th>Dates</th><th>Note</th><th>Progress</th><th></th></tr></thead>
     <tbody>
       {% for ot in records %}
       <tr>
         <td class="nowrap">{{ ot.start_date|mdy }}{% if ot.end_date != ot.start_date %} → {{ ot.end_date|mdy }}{% endif %}</td>
-        <td class="small">{{ ot.note }}
-          {% if ot.status != 'requested' and ot.review_note %}<div class="muted">Lead: {{ ot.review_note }}</div>{% endif %}
-        </td>
-        <td>
-          {% if ot.status == 'approved' %}<span class="badge b-complete">approved</span>
-          {% elif ot.status == 'rejected' %}<span class="badge b-missing">rejected</span>
-          {% else %}<span class="badge b-partial">pending</span>{% endif %}
-        </td>
+        <td class="small">{{ ot.note }}</td>
+        <td>{{ macros.approval_stepper(ot) }}</td>
         <td>
           {% if ot.status == 'requested' %}
           <form method="post" action="/overtime/{{ ot.id }}/cancel" class="inline"
@@ -109,19 +104,14 @@
 
   {% if match_links %}
   <table style="margin-top:14px">
-    <thead><tr><th>Missed day</th><th>Matched against</th><th>Note</th><th>Status</th><th>Admin note</th></tr></thead>
+    <thead><tr><th>Missed day</th><th>Matched against</th><th>Note</th><th>Progress</th></tr></thead>
     <tbody>
       {% for lk, surplus_dates in match_links %}
       <tr>
         <td class="nowrap">{{ lk.shortfall_date|mdy }}</td>
         <td class="small">{{ surplus_dates|map('mdy')|join(', ') }}</td>
         <td class="small">{{ lk.note }}</td>
-        <td>
-          {% if lk.status == 'approved' %}<span class="badge b-complete">approved</span>
-          {% elif lk.status == 'rejected' %}<span class="badge b-missing">rejected</span>
-          {% else %}<span class="badge b-partial">pending</span>{% endif %}
-        </td>
-        <td class="small muted">{{ lk.review_note or '' }}</td>
+        <td>{{ macros.approval_stepper(lk) }}</td>
       </tr>
       {% endfor %}
     </tbody>

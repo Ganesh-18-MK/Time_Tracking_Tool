@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as macros %}
 {% set active_nav = 'leave' %}
 {% block title %}Leave · MK Timekeeping{% endblock %}
 {% block content %}
@@ -121,7 +122,7 @@
 <div class="card">
   <div class="card-head"><h2>Your requests</h2></div>
   <table>
-    <thead><tr><th>When</th><th>Type</th><th>Hours</th><th>Note</th><th>Status</th><th></th></tr></thead>
+    <thead><tr><th>When</th><th>Type</th><th>Hours</th><th>Note</th><th>Progress</th><th></th></tr></thead>
     <tbody>
       {% for lv in records %}
       <tr>
@@ -129,16 +130,11 @@
         <td>{{ lv.type }}{% if lv.relation %} <span class="muted">({{ lv.relation }})</span>{% endif %}</td>
         <td>{{ 'full day' if lv.minutes_per_day is none else lv.minutes_per_day|hm }}</td>
         <td class="small">{{ lv.note }}
-          {% if lv.status != 'requested' and lv.review_note %}<div class="muted">Admin: {{ lv.review_note }}</div>{% endif %}
           {% if lv.status == 'approved' and lv.approved_minutes_per_day is not none and lv.approved_minutes_per_day != lv.minutes_per_day %}
           <div class="muted">Approved for {{ lv.approved_minutes_per_day|hm }}/day (partial).</div>
           {% endif %}
         </td>
-        <td>
-          {% if lv.status == 'approved' %}<span class="badge b-complete">approved</span>
-          {% elif lv.status == 'rejected' %}<span class="badge b-missing">rejected</span>
-          {% else %}<span class="badge b-partial">pending</span>{% endif %}
-        </td>
+        <td>{{ macros.approval_stepper(lv) }}</td>
         <td>
           {% if lv.status == 'requested' %}
           <form method="post" action="/leave/{{ lv.id }}/cancel" class="inline"

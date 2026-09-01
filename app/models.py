@@ -897,16 +897,22 @@ class DaySubmission(Base):
     submitted_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     locked: Mapped[bool] = mapped_column(Boolean, default=True)
     unlock_count: Mapped[int] = mapped_column(Integer, default=0)
-    # AI day summary (Ganesh, 2026-08-31) — a 3-4 line Gemini-generated
-    # summary of that day's task rows, generated once at Submit Day time
-    # (see app/llm_summary.py + submit_day() in app/routes/employee.py) and
+    # AI day summary (Ganesh, 2026-08-31) — a 3-4 line LLM-generated summary
+    # of that day's task rows, generated once at Submit Day time (see
+    # app/llm_summary.py + submit_day() in app/routes/employee.py) and
     # shown ONLY on the admin Task Logs report (reports.daily_task_log_
     # report() prefers this over rule_based_day_summary() when present).
+    # Backend swapped twice more on 2026-09-02: Gemini -> self-hosted Ollama
+    # -> Groq's hosted API (Ganesh wanted zero infrastructure cost, and
+    # Ollama needed a paid always-on host to be reachable from Cloud Run) —
+    # see app/llm_summary.py's own docstring for the full reasoning and
+    # Groq's no-training-on-any-tier data policy. This column is backend-
+    # agnostic through all of it, no schema/migration impact from any swap.
     # Nullable with no backfill needed — unlike TaskType.category or
     # similar additive columns elsewhere in this file, None here is a
     # permanently correct answer for any day submitted before this feature
-    # existed (and for any day where the call failed or the API key isn't
-    # set), not a gap to fill in later. summary_error mirrors the old
+    # existed (and for any day where the call failed or the LLM backend
+    # isn't configured), not a gap to fill in later. summary_error mirrors the old
     # (now-deleted) TaskDaySummary.error's own reasoning: store WHY a
     # summary is missing instead of silently retrying the same failing
     # call on every report view. summary_generated_at is a plain UTC audit
@@ -921,6 +927,20 @@ class DaySubmission(Base):
 LEAVE_REQUESTED = "requested"
 LEAVE_APPROVED = "approved"
 LEAVE_REJECTED = "rejected"
+
+# Multilevel approval (Ganesh, 2026-09-01) — a department-scoped admin
+# ("Team Lead") reviews a request FIRST (accept or deny, always with a
+# reason), then a Super Admin makes the actual final call (status above
+# still only ever flips to LEAVE_APPROVED/LEAVE_REJECTED via that final
+# decision — engine.py/validation.py read nothing new here, this is purely
+# an extra recommendation stage in front of the same status field that
+# already existed). Reused across LeaveRecord, OvertimeApproval, and
+# CompensationLink below, same "generic status strings, not a new enum per
+# table" precedent LEAVE_REQUESTED/LEAVE_APPROVED/LEAVE_REJECTED already
+# set (see UnlockRequest's own docstring for that precedent).
+LEAD_ACCEPTED = "accepted"
+LEAD_DENIED = "denied"
+LEAD_DECISIONS = (LEAD_ACCEPTED, LEAD_DENIED)
 
 
 class UnlockRequest(Base):
@@ -1000,6 +1020,23 @@ class LeaveRecord(Base):
     # review_note carries the "why partial" explanation and is already a
     # plain-text field above, no new column needed for that half of it.
     approved_minutes_per_day: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Multilevel approval (Ganesh, 2026-09-01) — see LEAD_ACCEPTED/
+    # LEAD_DENIED's own comment above for the shared design. requires_lead_
+    # review defaults True at the ORM level (every NEW request from here on
+    # needs a Team Lead's say before Super Admin's final decision), but a
+    # brand-new column added via SQLite/Postgres ALTER TABLE never backfills
+    # existing rows to that default (see feedback_timekeeping_sqlite_add_
+    # column_gap) — util.ensure_lead_review_backfill() sets it False on
+    # every row that existed before this feature shipped, which is exactly
+    # the grandfathering Ganesh asked for: old pending requests keep the old
+    # single-step flow, only new ones go through Team Lead review first.
+    # leave_add() (admin-direct entry) also explicitly sets this False —
+    # nobody requested it, so there's nothing for a lead to review.
+    requires_lead_review: Mapped[bool] = mapped_column(Boolean, default=True)
+    lead_decision: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    lead_reason: Mapped[str] = mapped_column(Text, default="")
+    lead_reviewed_by: Mapped[str] = mapped_column(String(120), default="")
+    lead_reviewed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
 
     employee = relationship("Employee")
 
@@ -1086,6 +1123,23 @@ class OvertimeApproval(Base):
     reviewed_by: Mapped[str] = mapped_column(String(120), default="")
     reviewed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
     review_note: Mapped[str] = mapped_column(Text, default="")
+    # Multilevel approval (Ganesh, 2026-09-01) — same shape/reasoning as
+    # LeaveRecord's own columns above; see LEAD_ACCEPTED's comment. Also
+    # marks a real scoping change for this table specifically: the
+    # department-scoped Team Lead who reviews this stage is determined by
+    # admin_department_scope() (department string match), NOT led_by()
+    # (per-person reports_to) the way this table's admin-facing scoping
+    # worked before — Ganesh confirmed "department-based, for both" so
+    # Leave and Overtime use one consistent reviewer-scoping rule. led_by()
+    # itself is untouched/still defined (app/auth.py) in case something
+    # else wants per-person reporting-line scope later, it's just no longer
+    # what decides who reviews an Overtime request. overtime_grant()
+    # (admin-direct entry) explicitly sets this False, same as leave_add().
+    requires_lead_review: Mapped[bool] = mapped_column(Boolean, default=True)
+    lead_decision: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    lead_reason: Mapped[str] = mapped_column(Text, default="")
+    lead_reviewed_by: Mapped[str] = mapped_column(String(120), default="")
+    lead_reviewed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
 
     employee = relationship("Employee")
 
@@ -1296,6 +1350,20 @@ class CompensationLink(Base):
     reviewed_by: Mapped[str] = mapped_column(String(120), default="")
     reviewed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
     review_note: Mapped[str] = mapped_column(Text, default="")
+    # Multilevel approval (Ganesh, 2026-09-01) — same shape as LeaveRecord/
+    # OvertimeApproval above; only meaningful for a requested_by_employee=
+    # True row (an admin-direct add_complink() link is already-approved,
+    # same "nobody requested it" reasoning as leave_add()/overtime_grant(),
+    # so add_complink() sets this False). Department scope for the Team
+    # Lead stage is the REQUESTING employee's department (admin_department_
+    # scope()), matching Leave/Overtime's own reviewer-scoping rule — the
+    # final approve/reject decision stays Super-Admin-only end to end,
+    # unchanged (see approve_complink/reject_complink's own docstring).
+    requires_lead_review: Mapped[bool] = mapped_column(Boolean, default=True)
+    lead_decision: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    lead_reason: Mapped[str] = mapped_column(Text, default="")
+    lead_reviewed_by: Mapped[str] = mapped_column(String(120), default="")
+    lead_reviewed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
 
     employee = relationship("Employee")
 

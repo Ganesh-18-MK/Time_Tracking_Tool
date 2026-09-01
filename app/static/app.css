@@ -784,3 +784,34 @@ details > summary { cursor: pointer; color: var(--accent); }
 .deptpill input { display: none; }
 .deptpill:has(input:checked) { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .deptpill:has(input:checked)::after { content: " \00d7"; }
+
+/* Multilevel-approval progress tracker (Ganesh, 2026-09-02, from a pasted
+   stepper mockup) — util.approval_progress_steps() returns the ordered
+   step list, this renders it as a small horizontal stepper wherever a
+   Leave/Overtime/CompensationLink row is shown (employee "Your requests"
+   and admin Pending/Approved tables alike). "Simple version" per Ganesh's
+   own AskUserQuestion pick: this app's own terms, no elapsed-day counter,
+   no named reviewer at the still-in-progress step — tone (ok/bad/accent/
+   neutral) is a separate axis from state so a "done" step can be colored
+   green (accepted/approved) or red (denied/rejected). */
+.approval-steps { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0; margin: 2px 0; }
+.approval-step { display: flex; align-items: flex-start; gap: 6px; position: relative;
+  padding-right: 22px; min-width: 110px; }
+.approval-step:not(:last-child)::after { content: ""; position: absolute; top: 8px;
+  left: calc(100% - 16px); width: 14px; height: 2px; background: var(--line); }
+.approval-step .as-dot { width: 17px; height: 17px; border-radius: 50%; flex-shrink: 0;
+  margin-top: 1px; border: 2px solid var(--line); background: var(--card);
+  display: flex; align-items: center; justify-content: center; font-size: 10px; line-height: 1; }
+.approval-step .as-body { display: flex; flex-direction: column; gap: 1px; }
+.approval-step .as-label { font-size: 12px; font-weight: 600; color: var(--ink); }
+.approval-step .as-detail { font-size: 11px; color: var(--muted); max-width: 240px; }
+.approval-step.tone-ok .as-dot { background: var(--ok); border-color: var(--ok); color: #fff; }
+.approval-step.tone-ok .as-dot::before { content: "\2713"; }
+.approval-step.tone-bad .as-dot { background: var(--bad); border-color: var(--bad); color: #fff; }
+.approval-step.tone-bad .as-dot::before { content: "\2715"; }
+.approval-step.tone-accent .as-dot { border-color: var(--accent); }
+.approval-step.tone-accent .as-dot::before { content: ""; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); }
+.approval-step.tone-accent .as-label { color: var(--accent-dark); }
+.approval-step.tone-neutral .as-dot { border-style: dashed; }
+.approval-step.tone-neutral .as-label, .approval-step.tone-neutral .as-detail { color: var(--muted); font-style: italic; }

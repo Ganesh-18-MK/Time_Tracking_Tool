@@ -12,7 +12,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app import bulk_upload, compensation, engine, holiday_bulk_upload, leave_bulk_upload, lists_bulk_upload, models as m, reports
-from app.auth import Forbidden, admin_department_scope, led_by, require_admin, require_super_admin
+from app.auth import Forbidden, admin_department_scope, require_admin, require_super_admin
 from app.db import get_db
 # TK-04 (Ganesh, 2026-08-28) — _client_required_error() is the one rule
 # that decides whether a Case Type project needs its Client field filled
@@ -26,6 +26,7 @@ from app.validation import task_allowed_for_project
 from app.templating import (
     HOLIDAY_MANAGEMENT_ENABLED,
     LEAVE_MANAGEMENT_V2_ENABLED,
+    MULTILEVEL_APPROVAL_ENABLED,
     TICKETING_ENABLED,
     flash,
     render,
@@ -950,6 +951,7 @@ def add_complink(
         surplus_minutes=json.dumps(allocation),
         note=note.strip(),
         linked_by=admin.name,
+        requires_lead_review=False,  # admin-direct, not a request — nobody requested it — nothing for a Team Lead to review
     )
     db.add(link)
     db.commit()
@@ -1022,7 +1024,7 @@ def approve_complink(
     link = db.get(m.CompensationLink, link_id)
     if link is None:
         flash(request, "Match request not found.", "err")
-        return RedirectResponse("/admin/leave", status_code=303)
+        return RedirectResponse("/admin/overtime", status_code=303)
     surplus_dates = [dt.date.fromisoformat(x) for x in json.loads(link.surplus_dates or "[]")]
     bad = [s.isoformat() for s in surplus_dates if not engine.compensation_window_ok(link.shortfall_date, s)]
     if bad:
@@ -1031,7 +1033,7 @@ def approve_complink(
             f"Can't approve — surplus day(s) fall outside the compensation window: {', '.join(bad)}",
             "err",
         )
-        return RedirectResponse("/admin/leave", status_code=303)
+        return RedirectResponse("/admin/overtime", status_code=303)
     link.status = m.LEAVE_APPROVED
     link.reviewed_by = admin.name
     link.reviewed_at = dt.datetime.utcnow()
@@ -1063,7 +1065,7 @@ def approve_complink(
            else " — not yet fully covered (kept as-is)."),
         "ok",
     )
-    return RedirectResponse("/admin/leave", status_code=303)
+    return RedirectResponse("/admin/overtime", status_code=303)
 
 
 @router.post("/complink/{link_id}/reject")
@@ -1079,7 +1081,7 @@ def reject_complink(
     link = db.get(m.CompensationLink, link_id)
     if link is None:
         flash(request, "Match request not found.", "err")
-        return RedirectResponse("/admin/leave", status_code=303)
+        return RedirectResponse("/admin/overtime", status_code=303)
     link.status = m.LEAVE_REJECTED
     link.reviewed_by = admin.name
     link.reviewed_at = dt.datetime.utcnow()
@@ -1088,7 +1090,57 @@ def reject_complink(
     audit(db, admin.name, "reject_compensation_match", "CompensationLink", link.id,
           {"shortfall": link.shortfall_date.isoformat(), "review_note": review_note.strip()})
     flash(request, "Match request declined.", "ok")
-    return RedirectResponse("/admin/leave", status_code=303)
+    return RedirectResponse("/admin/overtime", status_code=303)
+
+
+@router.post("/complink/{link_id}/lead-review")
+def complink_lead_review(
+    link_id: int,
+    request: Request,
+    decision: str = Form(...),
+    reason: str = Form(...),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """The Overtime <-> Missed Hours match-request equivalent of
+    leave_lead_review()/overtime_lead_review() above — same shape, same
+    soft-gate reasoning, same required reason. Scoped by the REQUESTING
+    employee's department (there's no other "team" concept for a
+    CompensationLink). The final decision (approve_complink/
+    reject_complink above) stays require_super_admin end to end, unchanged
+    — this route only ever records a recommendation, never flips `status`."""
+    if not (LEAVE_MANAGEMENT_V2_ENABLED and MULTILEVEL_APPROVAL_ENABLED):
+        raise HTTPException(status_code=404)
+    link = db.get(m.CompensationLink, link_id)
+    if link is None:
+        flash(request, "Match request not found.", "err")
+        return RedirectResponse("/admin/overtime", status_code=303)
+    emp = db.get(m.Employee, link.employee_id)
+    scope = admin_department_scope(admin)
+    if scope is not None and emp is not None and (emp.department or "—") != scope:
+        raise Forbidden()
+    decision = decision.strip().lower()
+    if decision not in m.LEAD_DECISIONS:
+        flash(request, "Choose Accept or Deny.", "err")
+        return RedirectResponse("/admin/overtime", status_code=303)
+    reason = reason.strip()
+    if not reason:
+        flash(request, "A reason is required to accept or deny a request.", "err")
+        return RedirectResponse("/admin/overtime", status_code=303)
+    link.lead_decision = decision
+    link.lead_reason = reason
+    link.lead_reviewed_by = admin.name
+    link.lead_reviewed_at = dt.datetime.utcnow()
+    db.commit()
+    audit(db, admin.name, "complink_lead_review", "CompensationLink", link.id,
+          {"employee": emp.name if emp else link.employee_id, "decision": decision, "reason": reason})
+    flash(
+        request,
+        f"Recorded your {decision} for {emp.name if emp else link.employee_id}'s match request "
+        "— a Super Admin will make the final decision.",
+        "ok",
+    )
+    return RedirectResponse("/admin/overtime", status_code=303)
 
 
 # --------------------------------------------------------------------------
@@ -2364,6 +2416,24 @@ def leave_page(
         # recent rows before the scoping filter ever sees them
         pending = [lv for lv in pending if lv.employee_id in scoped_ids]
         approved = [lv for lv in approved if lv.employee_id in scoped_ids][:100]
+
+    # Multilevel approval (Ganesh, 2026-09-01) — split the one pending queue
+    # into two groups the template renders as separate cards: still
+    # awaiting a Team Lead's accept/deny (requires_lead_review and no
+    # lead_decision yet), vs already lead-reviewed (or grandfathered/
+    # admin-direct, which never needed lead review to begin with) and now
+    # awaiting the Super Admin's actual final call. A department-scoped
+    # admin acts on the first group via the new POST /leave/{id}/lead-
+    # review route below; only a Super Admin's existing approve/reject
+    # acts on the second (still available on either group — see the
+    # "soft gate, not a hard block" reasoning in leave_lead_review()).
+    # With the flag off, pending_lead is always empty and pending_super is
+    # every pending request, i.e. exactly today's single-step behavior.
+    if MULTILEVEL_APPROVAL_ENABLED:
+        pending_lead = [lv for lv in pending if lv.requires_lead_review and lv.lead_decision is None]
+        pending_super = [lv for lv in pending if not (lv.requires_lead_review and lv.lead_decision is None)]
+    else:
+        pending_lead, pending_super = [], pending
     if LEAVE_MANAGEMENT_V2_ENABLED:
         cfg = engine.get_config(db)
         today = today_local()
@@ -2375,7 +2445,8 @@ def leave_page(
         return render(
             request, "admin/leave.html",
             {
-                "user": admin, "emps": emps, "pending": pending, "approved": approved,
+                "user": admin, "emps": emps, "pending": pending,
+                "pending_lead": pending_lead, "pending_super": pending_super, "approved": approved,
                 "leave_types": m.LEAVE_TYPES_V2, "balances_v2": balances_v2,
             },
             db=db,
@@ -2384,11 +2455,73 @@ def leave_page(
     return render(
         request, "admin/leave.html",
         {
-            "user": admin, "emps": emps, "pending": pending, "approved": approved,
+            "user": admin, "emps": emps, "pending": pending,
+            "pending_lead": pending_lead, "pending_super": pending_super, "approved": approved,
             "leave_types": m.LEAVE_TYPES, "balances": balances, "balance_year": today_local().year,
         },
         db=db,
     )
+
+
+@router.post("/leave/{leave_id}/lead-review")
+def leave_lead_review(
+    leave_id: int,
+    request: Request,
+    decision: str = Form(...),
+    reason: str = Form(...),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """The new first stage of multilevel approval (Ganesh, 2026-09-01) —
+    a department-scoped admin's ("Team Lead") own accept/deny recommendation,
+    ALWAYS with a reason, on a leave request from someone in their own
+    department. Deliberately does NOT touch LeaveRecord.status — that field
+    still only ever flips to LEAVE_APPROVED/LEAVE_REJECTED via a Super
+    Admin's existing leave_approve()/leave_reject() below, unchanged, so
+    engine.py's leave_minutes_on()/leave_balance_v2() (which only ever read
+    status) can't be affected by this route no matter what a Team Lead
+    decides here. A Super Admin can call this route too (require_admin
+    already covers is_super_admin, see its own docstring) — useful for a
+    department with no Team Lead assigned, or if a Super Admin just wants
+    to record the recommendation themselves before deciding.
+
+    Soft gate, not a hard block: this route only ever sets lead_decision/
+    lead_reason, it doesn't prevent leave_approve()/leave_reject() from
+    being called before or after it. A department-scoped admin whose team
+    has nobody to review a request would otherwise strand it forever if
+    this were a hard prerequisite — a Super Admin can always act directly,
+    with or without a Team Lead's input, same as before this feature."""
+    if not MULTILEVEL_APPROVAL_ENABLED:
+        raise HTTPException(status_code=404)
+    lv = db.get(m.LeaveRecord, leave_id)
+    if lv is None:
+        return RedirectResponse("/admin/leave", status_code=303)
+    emp = db.get(m.Employee, lv.employee_id)
+    scope = admin_department_scope(admin)
+    if scope is not None and emp is not None and (emp.department or "—") != scope:
+        raise Forbidden()
+    decision = decision.strip().lower()
+    if decision not in m.LEAD_DECISIONS:
+        flash(request, "Choose Accept or Deny.", "err")
+        return RedirectResponse("/admin/leave", status_code=303)
+    reason = reason.strip()
+    if not reason:
+        flash(request, "A reason is required to accept or deny a request.", "err")
+        return RedirectResponse("/admin/leave", status_code=303)
+    lv.lead_decision = decision
+    lv.lead_reason = reason
+    lv.lead_reviewed_by = admin.name
+    lv.lead_reviewed_at = dt.datetime.utcnow()
+    db.commit()
+    audit(db, admin.name, "leave_lead_review", "LeaveRecord", lv.id,
+          {"employee": emp.name if emp else lv.employee_id, "decision": decision, "reason": reason})
+    flash(
+        request,
+        f"Recorded your {decision} for {emp.name if emp else lv.employee_id}'s leave request "
+        "— a Super Admin will make the final decision.",
+        "ok",
+    )
+    return RedirectResponse("/admin/leave", status_code=303)
 
 
 # --------------------------------------------------------------------------
@@ -2605,6 +2738,7 @@ def leave_add(
         relation=relation or None,
         status=m.LEAVE_APPROVED,  # admin direct-entry is already-approved by definition
         approved_minutes_per_day=minutes,  # already-approved: what was entered IS what's approved
+        requires_lead_review=False,  # nobody requested it, so there's nothing for a Team Lead to review
     )
     db.add(lv)
     db.commit()
@@ -2724,14 +2858,22 @@ def overtime_page(
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    scope = led_by(admin, db)  # None => Super Admin, sees/can act on everyone
+    # Scoping switched from led_by() (per-person reports_to) to
+    # admin_department_scope() (department string match) on 2026-09-01,
+    # per Ganesh's multilevel-approval answer ("department-based, for
+    # both") — Leave and Overtime now use the exact same reviewer-scoping
+    # rule instead of two different axes. led_by() itself is untouched in
+    # app/auth.py in case a future feature wants per-person scoping again;
+    # it's just no longer what decides who reviews an Overtime request.
+    scope = admin_department_scope(admin)  # None => Super Admin, sees/can act on everyone
     emps = list(
         db.execute(
             select(m.Employee).where(m.Employee.active.is_(True)).order_by(m.Employee.name)
         ).scalars()
     )
     if scope is not None:
-        emps = [e for e in emps if e.id in scope]
+        emps = [e for e in emps if (e.department or "—") == scope]
+    scoped_ids = {e.id for e in emps} if scope is not None else None
 
     pending = list(
         db.execute(
@@ -2745,15 +2887,27 @@ def overtime_page(
         .where(m.OvertimeApproval.status == m.OT_APPROVED)
         .order_by(m.OvertimeApproval.created_at.desc())
     )
-    if scope is None:
+    if scoped_ids is None:
         approved_q = approved_q.limit(100)
     approved = list(db.execute(approved_q).scalars())
-    if scope is not None:
+    if scoped_ids is not None:
         # filter *before* trimming to 100 — same reasoning as Leave's
         # leave_page above: a small team's older approvals could otherwise
         # get pushed out by other leads' more recent rows first.
-        pending = [ot for ot in pending if ot.employee_id in scope]
-        approved = [ot for ot in approved if ot.employee_id in scope][:100]
+        pending = [ot for ot in pending if ot.employee_id in scoped_ids]
+        approved = [ot for ot in approved if ot.employee_id in scoped_ids][:100]
+
+    # Multilevel approval (Ganesh, 2026-09-01) — same split as leave_page()
+    # above: pending_lead is still awaiting a Team Lead's accept/deny,
+    # pending_super is everything else (already lead-reviewed, or never
+    # needed review — grandfathered/admin-direct) and awaiting a Super
+    # Admin's actual final call. See leave_lead_review()'s docstring for
+    # why this is a soft gate, not a hard block.
+    if MULTILEVEL_APPROVAL_ENABLED:
+        pending_lead = [ot for ot in pending if ot.requires_lead_review and ot.lead_decision is None]
+        pending_super = [ot for ot in pending if not (ot.requires_lead_review and ot.lead_decision is None)]
+    else:
+        pending_lead, pending_super = [], pending
 
     # Compensation links (Ganesh, 2026-08-21) — a quick org/team-scoped view
     # of the same CompensationLink rows Person Detail already shows one
@@ -2798,9 +2952,9 @@ def overtime_page(
     # report(), which sums each employee's positive DayStatus.variance_
     # minutes instead (the same "surplus" figure the Compensation Links
     # picker above already uses) so the two sections on this page agree on
-    # what "overtime" means. Already scoped via `emps` (led_by()), so no
-    # separate scope filter needed here unlike the old attendance_report()
-    # path.
+    # what "overtime" means. Already scoped via `emps` (admin_department_
+    # scope()), so no separate scope filter needed here unlike the old
+    # attendance_report() path.
     overtime_rows = reports.task_log_overtime_report(db, first, min(last, today), [e.id for e in emps])
     (py, pm), (ny, nm) = prev_next_month(year, month)
 
@@ -2848,7 +3002,7 @@ def overtime_page(
 
     # Employee picker for the Compensation links quick-link flow above
     # (Ganesh, 2026-08-21) — link_target itself is still looked up against
-    # the full `emps` (this admin's own led_by() scope, or everyone for a
+    # the full `emps` (this admin's own department scope, or everyone for a
     # Super Admin), not link_eligible_emps above, purely so a link already
     # in progress for someone doesn't silently break if their eligibility
     # changes between page loads (e.g. their last shortfall just got fully
@@ -2861,15 +3015,20 @@ def overtime_page(
     link_target = next((e for e in emps if e.id == employee_id), None) if employee_id else None
     # Overtime ↔ Missed Hours match requests (Ganesh, 2026-08-22 — moved
     # here from Leave Management, since these are overtime decisions, not
-    # leave ones; the underlying data/routes are unchanged). Super-admin
-    # only: approve_complink/reject_complink are both require_super_admin
-    # (unlike the OvertimeApproval pending/approved above, which a
-    # department-scoped Team Lead — `scope` non-None here — can act on via
-    # led_by()), so a Lead would just get a 403 clicking Approve/Reject on
-    # one of these. Not shown to them at all rather than shown-but-broken.
+    # leave ones). The FINAL decision (approve_complink/reject_complink)
+    # is still require_super_admin end to end, unchanged — a department-
+    # scoped admin can never approve/reject one of these outright. But
+    # multilevel approval (2026-09-01) gives them a real lead-review action
+    # on these too, so as of now they DO see this card — narrowed to their
+    # own department (via the same `scoped_ids` OvertimeApproval's
+    # pending/approved above already use) and to requests still awaiting
+    # THEIR lead-review stage specifically (already-lead-reviewed ones are
+    # a Super-Admin-only concern from here). With the flag off, a
+    # department-scoped admin sees nothing here at all, same as before this
+    # feature — there'd be no action for them to take on this card.
     pending_matches = []
-    if LEAVE_MANAGEMENT_V2_ENABLED and scope is None:
-        pending_matches = list(
+    if LEAVE_MANAGEMENT_V2_ENABLED and (scope is None or MULTILEVEL_APPROVAL_ENABLED):
+        match_rows = list(
             db.execute(
                 select(m.CompensationLink)
                 .where(
@@ -2879,9 +3038,12 @@ def overtime_page(
                 .order_by(m.CompensationLink.id)
             ).scalars()
         )
+        if scoped_ids is not None:
+            match_rows = [c for c in match_rows if c.employee_id in scoped_ids]
+            match_rows = [c for c in match_rows if c.requires_lead_review and c.lead_decision is None]
         pending_matches = [
             (c, [dt.date.fromisoformat(x) for x in json.loads(c.surplus_dates or "[]")])
-            for c in pending_matches
+            for c in match_rows
         ]
 
     link_shortfalls, link_surpluses = [], []
@@ -2913,7 +3075,8 @@ def overtime_page(
         request, "admin/overtime.html",
         {
             "user": admin, "emps": emps, "link_eligible_emps": link_eligible_emps,
-            "pending": pending, "approved": approved,
+            "pending": pending, "pending_lead": pending_lead, "pending_super": pending_super,
+            "approved": approved,
             "comp_links": comp_links, "overtime_rows": overtime_rows, "pending_matches": pending_matches,
             "link_target": link_target, "link_shortfalls": link_shortfalls, "link_surpluses": link_surpluses,
             "link_shortfall_allocated_by_date": link_shortfall_allocated_by_date,
@@ -2927,12 +3090,64 @@ def overtime_page(
 
 
 def _ot_forbidden_unless_scoped(admin: m.Employee, ot: m.OvertimeApproval, db: Session) -> None:
-    scope = led_by(admin, db)
-    if scope is not None and ot.employee_id not in scope:
-        # Not just a UI filter — block a Lead from approving/rejecting
-        # overtime for someone who isn't their direct report even if they
-        # craft the POST directly, same defense-in-depth as Leave's checks.
+    # Switched from led_by() to admin_department_scope() on 2026-09-01,
+    # same reasoning as overtime_page() above — one consistent reviewer-
+    # scoping rule shared with Leave.
+    scope = admin_department_scope(admin)
+    if scope is None:
+        return
+    emp = db.get(m.Employee, ot.employee_id)
+    if emp is None or (emp.department or "—") != scope:
+        # Not just a UI filter — block a department-scoped admin from
+        # approving/rejecting overtime for someone outside their team even
+        # if they craft the POST directly, same defense-in-depth as
+        # Leave's checks.
         raise Forbidden()
+
+
+@router.post("/overtime/{ot_id}/lead-review")
+def overtime_lead_review(
+    ot_id: int,
+    request: Request,
+    decision: str = Form(...),
+    reason: str = Form(...),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Overtime's equivalent of leave_lead_review() above — same shape,
+    same soft-gate reasoning (a Super Admin's own approve/reject below is
+    never blocked by this), same required reason on both Accept and Deny.
+    See leave_lead_review()'s docstring for the full reasoning; not
+    repeated here to avoid the two drifting apart in wording only."""
+    if not MULTILEVEL_APPROVAL_ENABLED:
+        raise HTTPException(status_code=404)
+    ot = db.get(m.OvertimeApproval, ot_id)
+    if ot is None:
+        return RedirectResponse("/admin/overtime", status_code=303)
+    _ot_forbidden_unless_scoped(admin, ot, db)
+    emp = db.get(m.Employee, ot.employee_id)
+    decision = decision.strip().lower()
+    if decision not in m.LEAD_DECISIONS:
+        flash(request, "Choose Accept or Deny.", "err")
+        return RedirectResponse("/admin/overtime", status_code=303)
+    reason = reason.strip()
+    if not reason:
+        flash(request, "A reason is required to accept or deny a request.", "err")
+        return RedirectResponse("/admin/overtime", status_code=303)
+    ot.lead_decision = decision
+    ot.lead_reason = reason
+    ot.lead_reviewed_by = admin.name
+    ot.lead_reviewed_at = dt.datetime.utcnow()
+    db.commit()
+    audit(db, admin.name, "overtime_lead_review", "OvertimeApproval", ot.id,
+          {"employee": emp.name if emp else ot.employee_id, "decision": decision, "reason": reason})
+    flash(
+        request,
+        f"Recorded your {decision} for {emp.name if emp else ot.employee_id}'s overtime request "
+        "— a Super Admin will make the final decision.",
+        "ok",
+    )
+    return RedirectResponse("/admin/overtime", status_code=303)
 
 
 @router.post("/overtime/{ot_id}/approve")
@@ -3000,8 +3215,13 @@ def overtime_grant(
     emp = db.get(m.Employee, employee_id)
     if emp is None:
         return RedirectResponse("/admin/overtime", status_code=303)
-    scope = led_by(admin, db)
-    if scope is not None and employee_id not in scope:
+    # This route is require_super_admin, so admin_department_scope() is
+    # always None here in practice (same as the old led_by() check it
+    # replaces on 2026-09-01) — kept for defense-in-depth/consistency with
+    # every other scoped check in this file, not because it currently does
+    # anything for this particular route.
+    scope = admin_department_scope(admin)
+    if scope is not None and (emp.department or "—") != scope:
         raise Forbidden()
     try:
         start = parse_date_field(start_date, "Start date")
@@ -3017,6 +3237,7 @@ def overtime_grant(
         requested_by=admin.name,
         status=m.OT_APPROVED,  # lead/admin direct-entry is already-approved by definition
         reviewed_by=admin.name, reviewed_at=dt.datetime.utcnow(),
+        requires_lead_review=False,  # nobody requested it, so there's nothing for a Team Lead to review
     )
     db.add(ot)
     db.commit()

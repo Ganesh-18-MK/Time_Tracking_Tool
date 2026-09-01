@@ -4,7 +4,7 @@ import io
 import json
 import os
 import re
-from typing import Optional
+from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi.responses import StreamingResponse
@@ -352,6 +352,116 @@ def ensure_client_text_backfill(db: Session) -> None:
             any_changed = True
     if any_changed:
         db.commit()
+
+
+def ensure_lead_review_backfill(db: Session) -> None:
+    """Backfill for `LeaveRecord.requires_lead_review` / `OvertimeApproval.
+    requires_lead_review` / `CompensationLink.requires_lead_review`
+    (Multilevel approval, Ganesh, 2026-09-01). Same root cause as every
+    other ensure_*_backfill here: the ORM-level `default=True` only ever
+    applies to a fresh INSERT through SQLAlchemy, so a row that already
+    existed before this column was added keeps NULL forever without this.
+
+    Unlike most of this file's other backfills, NULL here isn't just a
+    display gap — it's the deliberate grandfathering mechanism Ganesh asked
+    for: "requests already pending when this ships keep the old single-
+    step flow." Every pre-existing row (regardless of status — approved,
+    rejected, or still requested) gets `requires_lead_review = False`,
+    meaning any of them that's still sitting in `requested` status when
+    this ships goes straight to a Super Admin's normal approve/reject, the
+    same as before this feature existed. Only a request submitted AFTER
+    this backfill has already run keeps the ORM's own `True` default and
+    is routed to a Team Lead first. A no-op once every row has a real
+    boolean here, safe on every startup."""
+    any_changed = False
+    for model in (m.LeaveRecord, m.OvertimeApproval, m.CompensationLink):
+        rows = list(db.execute(select(model).where(model.requires_lead_review.is_(None))).scalars())
+        for r in rows:
+            r.requires_lead_review = False
+            any_changed = True
+    if any_changed:
+        db.commit()
+
+
+def approval_progress_steps(record, multilevel_enabled: bool) -> List[Dict[str, str]]:
+    """Builds the ordered step list for the multilevel-approval progress
+    tracker shown next to a `LeaveRecord`/`OvertimeApproval`/
+    `CompensationLink` row (Ganesh, 2026-09-02, from a pasted stepper
+    mockup: "it shwould show like this progression of leave approval
+    process"). Works generically off the shared field names all three
+    tables carry (`status`/`requires_lead_review`/`lead_decision`/
+    `lead_reason`/`lead_reviewed_by`/`reviewed_by`/`review_note`) — one
+    copy, not three, since those fields are already deliberately identical
+    across all three tables (see each model's own multilevel-approval
+    column comment) and every status string (`LEAVE_REQUESTED`/
+    `OT_REQUESTED`/etc.) already resolves to the same literal "requested"/
+    "approved"/"rejected" strings.
+
+    "Simple version" per Ganesh's own choice (AskUserQuestion, 2026-09-02)
+    over the mockup's fancier styling: this app's own terms, who acted at
+    each completed step, no elapsed-day counter, no named reviewer at the
+    "current" step. Returns a 2-step list (Submitted -> Super Admin
+    Review/Approved/Rejected) when the Team Lead stage never applied to
+    this row at all — `multilevel_enabled` is False, or
+    `requires_lead_review` is False (admin-direct entry, e.g. `leave_add`/
+    `overtime_grant`/`add_complink`, or a grandfathered pre-feature row,
+    see `ensure_lead_review_backfill()`) — or a 3-step list with "Team Lead
+    Review" inserted when it did. A Super Admin acting before a Team Lead
+    ever reviewed (the soft gate this feature deliberately allows — see
+    `leave_lead_review()`'s own docstring in app/routes/admin.py) shows the
+    skipped Team Lead step as "skipped", not stuck on "current" forever.
+
+    Purely a display helper — reads fields, writes nothing, and lives here
+    rather than in app/engine.py or app/validation.py since it computes no
+    compliance/strike math at all; nothing about `status`'s own meaning to
+    `engine.leave_minutes_on()`/`leave_balance_v2()` changes."""
+    # tone is a separate axis from state purely for CSS coloring (ok/bad/
+    # accent/neutral) — state alone ("done") doesn't say whether "done"
+    # means accepted/approved (green) or denied/rejected (red).
+    steps: List[Dict[str, str]] = [
+        {"key": "submitted", "label": "Submitted", "state": "done", "tone": "ok", "detail": ""}
+    ]
+
+    needs_lead_step = bool(multilevel_enabled and getattr(record, "requires_lead_review", False))
+    status = record.status
+
+    if needs_lead_step:
+        if record.lead_decision:
+            accepted = record.lead_decision == m.LEAD_ACCEPTED
+            verb = "Accepted" if accepted else "Denied"
+            detail = f"{verb} by {record.lead_reviewed_by}"
+            if record.lead_reason:
+                detail += f' — "{record.lead_reason}"'
+            steps.append({
+                "key": "lead", "label": "Team Lead Review", "state": "done",
+                "tone": "ok" if accepted else "bad", "detail": detail,
+            })
+        elif status != m.LEAVE_REQUESTED:
+            steps.append({
+                "key": "lead", "label": "Team Lead Review", "state": "skipped", "tone": "neutral",
+                "detail": "Skipped — Super Admin decided directly",
+            })
+        else:
+            steps.append({
+                "key": "lead", "label": "Team Lead Review", "state": "current", "tone": "accent", "detail": "",
+            })
+
+    if status == m.LEAVE_REQUESTED:
+        steps.append({
+            "key": "final", "label": "Super Admin Review", "state": "current", "tone": "accent", "detail": "",
+        })
+    elif status == m.LEAVE_APPROVED:
+        detail = f"Approved by {record.reviewed_by}" if record.reviewed_by else "Approved"
+        if record.review_note:
+            detail += f' — "{record.review_note}"'
+        steps.append({"key": "final", "label": "Approved", "state": "done", "tone": "ok", "detail": detail})
+    else:
+        detail = f"Rejected by {record.reviewed_by}" if record.reviewed_by else "Rejected"
+        if record.review_note:
+            detail += f' — "{record.review_note}"'
+        steps.append({"key": "final", "label": "Rejected", "state": "done", "tone": "bad", "detail": detail})
+
+    return steps
 
 
 def ensure_task_category_backfill(db: Session) -> None:

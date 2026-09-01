@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as macros %}
 {% set active_nav = 'admin_leave' %}
 {% block title %}Leave · MK Timekeeping{% endblock %}
 {% block content %}
@@ -52,19 +53,58 @@
 </div>
 {% endif %}
 
-{% if pending %}
+{# Multilevel approval (Ganesh, 2026-09-01) — the old single "Pending
+   requests" card is now two: pending_lead (still needs a Team Lead's
+   accept/deny) and pending_super (already lead-reviewed, or never needed
+   review — grandfathered/admin-direct) awaiting the actual final call.
+   With MULTILEVEL_APPROVAL_ENABLED off, pending_lead is always empty and
+   pending_super is every pending request — i.e. exactly today's single-
+   step behavior, byte-for-byte the same table this replaces. #}
+{% if MULTILEVEL_APPROVAL_ENABLED and pending_lead %}
 <div class="card">
-  <div class="card-head"><h2>Pending requests ({{ pending|length }})</h2></div>
+  <div class="card-head"><h2>Awaiting Team Lead review ({{ pending_lead|length }})</h2></div>
+  <p class="small muted" style="margin:-4px 0 10px">First stage of multilevel approval — accept or deny with a
+    reason. A Super Admin makes the actual final decision afterward, either way.</p>
   <table>
-    <thead><tr><th>Employee</th><th>When</th><th>Type</th><th>Hours</th><th>Note</th><th>Decision</th></tr></thead>
+    <thead><tr><th>Employee</th><th>When</th><th>Type</th><th>Hours</th><th>Note</th><th>Progress</th><th>Your decision</th></tr></thead>
     <tbody>
-      {% for lv in pending %}
+      {% for lv in pending_lead %}
       <tr>
         <td><a href="/admin/person/{{ lv.employee_id }}">{{ lv.employee.name }}</a></td>
         <td class="nowrap">{{ lv.start_date|mdy }}{% if lv.end_date != lv.start_date %} → {{ lv.end_date|mdy }}{% endif %}</td>
         <td>{{ lv.type }}{% if lv.relation %} <span class="muted">({{ lv.relation }})</span>{% endif %}</td>
         <td>{{ 'full day' if lv.minutes_per_day is none else lv.minutes_per_day|hm }}</td>
         <td class="small">{{ lv.note }}</td>
+        <td>{{ macros.approval_stepper(lv) }}</td>
+        <td class="nowrap">
+          <form method="post" action="/admin/leave/{{ lv.id }}/lead-review"
+            style="display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap;max-width:280px">
+            <input name="reason" placeholder="Reason (required)" required style="flex:1;min-width:140px">
+            <button class="small" name="decision" value="accepted">Accept</button>
+            <button class="small secondary" name="decision" value="denied">Deny</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if pending_super %}
+<div class="card">
+  <div class="card-head"><h2>Pending requests ({{ pending_super|length }})</h2></div>
+  <table>
+    <thead><tr><th>Employee</th><th>When</th><th>Type</th><th>Hours</th><th>Note</th><th>Progress</th><th>Decision</th></tr></thead>
+    <tbody>
+      {% for lv in pending_super %}
+      <tr>
+        <td><a href="/admin/person/{{ lv.employee_id }}">{{ lv.employee.name }}</a></td>
+        <td class="nowrap">{{ lv.start_date|mdy }}{% if lv.end_date != lv.start_date %} → {{ lv.end_date|mdy }}{% endif %}</td>
+        <td>{{ lv.type }}{% if lv.relation %} <span class="muted">({{ lv.relation }})</span>{% endif %}</td>
+        <td>{{ 'full day' if lv.minutes_per_day is none else lv.minutes_per_day|hm }}</td>
+        <td class="small">{{ lv.note }}</td>
+        <td>{{ macros.approval_stepper(lv) }}</td>
         <td class="nowrap">
           {% if user.is_super_admin %}
           {% if LEAVE_MANAGEMENT_V2_ENABLED %}
@@ -89,9 +129,11 @@
           </form>
           {% endif %}
           {% else %}
-          {# Department-scoped admin: view only (Ganesh, 2026-08-30) — no
-             route left to act on a pending request, so no Approve/Reject
-             controls are shown here. #}
+          {# Department-scoped admin: view only for the FINAL decision
+             (Ganesh, 2026-08-30) — no route left to act on this stage, so
+             no Approve/Reject controls are shown here. They may still have
+             acted at the Team Lead stage above, if this is their own
+             department's request. #}
           <span class="muted small">Awaiting Super Admin</span>
           {% endif %}
         </td>

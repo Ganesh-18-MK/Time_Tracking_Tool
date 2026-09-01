@@ -1,0 +1,20 @@
+{# Shared Jinja macros (Ganesh, 2026-09-02) — first one added: the
+   multilevel-approval progress tracker used on LeaveRecord/OvertimeApproval/
+   CompensationLink rows across both employee-facing "Your requests" tables
+   and admin Pending tables. util.approval_progress_steps() (registered as
+   the `approval_progress_steps` Jinja global in app/templating.py) does all
+   the actual state logic — this macro is pure markup so the same look is
+   guaranteed everywhere it's used rather than hand-copied per template. #}
+{% macro approval_stepper(record) %}
+<div class="approval-steps">
+  {% for s in approval_progress_steps(record, MULTILEVEL_APPROVAL_ENABLED) %}
+  <div class="approval-step tone-{{ s.tone }}">
+    <span class="as-dot"></span>
+    <span class="as-body">
+      <span class="as-label">{{ s.label }}</span>
+      {% if s.detail %}<span class="as-detail">{{ s.detail }}</span>{% endif %}
+    </span>
+  </div>
+  {% endfor %}
+</div>
+{% endmacro %}

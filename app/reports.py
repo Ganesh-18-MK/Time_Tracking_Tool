@@ -8,6 +8,7 @@ existing engine.py primitives (DayStatus.effective_status, strikes_in,
 recompute_all) rather than reimplementing any status/strike logic.
 """
 import datetime as dt
+import re
 from typing import Dict, List, Optional
 
 from sqlalchemy import select
@@ -542,8 +543,10 @@ def task_log_overtime_report(db: Session, start: dt.date, end: dt.date, employee
     punch-minutes. Employees with zero task-log surplus in range are
     excluded (same as the table's previous Punch-based behavior), and
     takes an explicit employee_ids list rather than department/employee_id
-    like attendance_report() does, since Overtime Management scopes by
-    led_by() (per-person "reports to me"), not by department."""
+    like attendance_report() does, since the caller (overtime_page()) has
+    already computed its own scoped employee set — department-based as of
+    2026-09-01 (previously led_by()'s per-person "reports to me"; see that
+    route's own comment) — and this function doesn't need to know which."""
     if not employee_ids:
         return []
     _ensure_fresh(db, start, end)
@@ -784,6 +787,38 @@ def rule_based_day_summary(rows: list) -> List[str]:
     return bullets
 
 
+def _parse_ai_bullets(text: str) -> List[str]:
+    """Turns the raw text stored on DaySubmission.summary_text into a list of
+    bullet strings for rendering (Ganesh, 2026-09-02: "i need it as a point
+    wise just 3-5 points" — the prompt in llm_summary.py's _build_prompt()
+    now explicitly asks Groq for hyphen-prefixed bullet lines, but this
+    parses defensively rather than trusting that instruction was followed
+    exactly, since a model can still wrap a line, add a leading '*'/'•'/
+    number instead of '-', or occasionally ignore the format entirely.
+    Splits on newlines, strips common bullet markers (-, *, •, "1.", "1)")
+    from the front of each line, and drops blank lines. If the model ignored
+    the bullet-format instruction entirely and returned one unbroken
+    paragraph (no newlines at all), that single paragraph is returned as one
+    "bullet" rather than silently showing nothing — still better than an
+    empty summary. Computed at read time from the stored raw text (not
+    re-parsed and saved back), so a future improvement to this parsing logic
+    applies retroactively to already-generated summaries without
+    regenerating them."""
+    if not text:
+        return []
+    bullets = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^[-*•]\s*", "", line)
+        line = re.sub(r"^\d+[.)]\s*", "", line)
+        line = line.strip()
+        if line:
+            bullets.append(line)
+    return bullets
+
+
 def daily_task_log_report(db: Session, start: dt.date, end: dt.date,
                            department: Optional[str] = None, employee_id: Optional[int] = None) -> dict:
     """{"mode": "daily", "employee": Employee, "days": [{"date", "entries":
@@ -847,18 +882,33 @@ def daily_task_log_report(db: Session, start: dt.date, end: dt.date,
             ]
             sub = subs_by_date.get(d)
             if sub and sub.summary_text:
-                summary = {"source": "ai", "text": sub.summary_text, "bullets": None, "error": None}
+                # Ganesh, 2026-09-02: "i need it as a point wise just 3-5
+                # points" — the prompt now asks Groq for bullet lines
+                # (llm_summary.py's _build_prompt()), and _parse_ai_bullets()
+                # turns the stored raw text into a list rendered the same
+                # <ul><li> way as the rule-based fallback, just labeled
+                # "Summary (AI)". Raw text is still what's stored on
+                # DaySubmission.summary_text — only the read-time rendering
+                # changed, so no backfill/migration needed for summaries
+                # already generated before this change.
+                summary = {
+                    "source": "ai", "text": sub.summary_text,
+                    "bullets": _parse_ai_bullets(sub.summary_text), "error": None,
+                }
             else:
                 # Surface WHY there's no AI summary (Ganesh, 2026-08-31,
                 # after seeing a submitted day still show only the
                 # rule-based bullets with no way to tell whether that's
-                # because GEMINI_API_KEY isn't set, the day predates this
-                # feature, or the call actually failed) — sub.summary_error
-                # is set by _generate_day_summary() (app/routes/
-                # employee.py) every time summarize_day() doesn't return
-                # text, including "GEMINI_API_KEY not set" itself, so this
-                # one field answers all three cases without digging into
-                # the database. None (not just falsy) specifically means
+                # because the LLM backend isn't configured (originally
+                # GEMINI_API_KEY, then OLLAMA_BASE_URL, now GROQ_API_KEY —
+                # see app/llm_summary.py's own docstring for the full
+                # backend-swap history), the day predates this feature, or
+                # the call actually failed) — sub.summary_error is set by
+                # _generate_day_summary() (app/routes/employee.py) every
+                # time summarize_day() doesn't return text, including
+                # "GROQ_API_KEY not set" itself, so this one field
+                # answers all three cases without digging into the
+                # database. None (not just falsy) specifically means
                 # "no DaySubmission row for this day at all" — a day from
                 # before this feature existed, or one that was never
                 # actually submitted through submit_day() (e.g. seeded

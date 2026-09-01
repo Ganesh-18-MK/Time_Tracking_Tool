@@ -68,19 +68,21 @@
   </div>
 
   <div class="tasklog-summary">
-    {% if day.summary.source == 'ai' and day.summary.text %}
-    {# AI day summary (Ganesh, 2026-08-31) — Gemini-generated at Submit Day
-       time, stored on DaySubmission.summary_text (see
-       reports.daily_task_log_report()). Admin-only, this report only —
-       Today/My Month still show every raw logged line, unchanged. Falls
-       back to the deterministic rule-based bullets below whenever no
-       stored AI summary exists (not yet submitted, generation failed, or
-       a day from before this feature existed) — see
-       reports.rule_based_day_summary(). #}
-    <div class="small muted">Summary (AI)</div>
-    <p class="small" style="white-space:pre-wrap;margin:2px 0 0">{{ day.summary.text }}</p>
-    {% elif day.summary.bullets %}
-    <div class="small muted">Summary</div>
+    {# AI day summary (Ganesh, 2026-08-31; backend swapped twice more
+       2026-09-02 — Gemini -> self-hosted Ollama -> Groq's hosted API, see
+       app/llm_summary.py) — LLM-generated at Submit Day time, stored on
+       DaySubmission.summary_text (see reports.daily_task_log_report()).
+       Rendered as a bullet list the same way as the rule-based fallback
+       (Ganesh, 2026-09-02: "i need it as a point wise just 3-5 points") —
+       reports._parse_ai_bullets() turns the stored prose/bullet text into
+       a list at read time, so both sources share one <ul> look and only
+       the label differs. Admin-only, this report only — Today/My Month
+       still show every raw logged line, unchanged. Falls back to the
+       deterministic rule-based bullets whenever no stored AI summary
+       exists (not yet submitted, generation failed, or a day from before
+       this feature existed) — see reports.rule_based_day_summary(). #}
+    {% if day.summary.bullets %}
+    <div class="small muted">Summary{% if day.summary.source == 'ai' %} (AI){% endif %}</div>
     <ul>
       {% for b in day.summary.bullets %}<li>{{ b }}</li>{% endfor %}
     </ul>

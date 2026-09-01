@@ -1982,7 +1982,7 @@ def _generate_day_summary(db: Session, sub: m.DaySubmission, user: m.Employee, d
     could run, and llm_summary.summarize_day() has its own short timeout
     specifically so this can't turn a Submit Day click into a long hang.
 
-    Never lets a Gemini failure affect the employee's own submission —
+    Never lets an LLM-backend failure affect the employee's own submission —
     everything past the `total == 0`/`already locked` guards in submit_day()
     has already happened by the time this runs, so the worst case here is
     a missing/errored summary on the admin side, never a failed Submit Day.
