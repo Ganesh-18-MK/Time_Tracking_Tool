@@ -26,7 +26,17 @@
       </select>
     </div>
     {% endif %}
-    <div><label>Department</label><input name="department"></div>
+    <div>
+      <label>Department</label>
+      <!-- Ganesh, 2026-09-02: was a free-text input, now a dropdown of the
+           real managed Department list (see app/models.py's Department
+           docstring) — add a department via Roster -> Bulk upload's new
+           "Departments" card first if it's not in this list yet. -->
+      <select name="department">
+        <option value="">— none —</option>
+        {% for d in departments %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+      </select>
+    </div>
     <div><label>Designation</label><input name="designation"></div>
     <div><label>Target hours/day</label><input name="target_hours" value="8" style="width:70px"></div>
     <div><label>Start date</label><input type="date" name="start_date"></div>

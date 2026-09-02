@@ -12,6 +12,7 @@ from app.util import (
     BUSINESS_TZ,
     clamp_break_end,
     ensure_bootstrap_admins,
+    ensure_departments_backfill,
     ensure_list_status_backfill,
     ensure_task_category_backfill,
     flags_to_role,
@@ -519,3 +520,77 @@ class TestEnsureTaskCategoryBackfill:
         # safe to call on every startup even with zero tasks
         ensure_task_category_backfill(db)
         assert list(db.execute(select(m.TaskType)).scalars()) == []
+
+
+class TestEnsureDepartmentsBackfill:
+    """The new `Department` table (Ganesh, 2026-09-02 — see Department's own
+    docstring in app/models.py). Unlike every other ensure_*_backfill in this
+    file, this one isn't closing a SQLite-ADD-COLUMN-leaves-NULL gap — it's
+    the explicit, user-chosen seeding step that turns whatever free-text
+    department strings already exist on Employee rows into real Department
+    rows on first startup, so the new list starts populated instead of
+    empty (Ganesh's own answer to "what happens to existing employees'
+    current department values?": "Auto-import as the starting list")."""
+
+    @pytest.fixture()
+    def db(self):
+        eng = create_engine("sqlite://")
+        Base.metadata.create_all(eng)
+        s = sessionmaker(bind=eng)()
+        yield s
+        s.close()
+
+    def test_imports_distinct_employee_departments(self, db):
+        db.add_all([
+            m.Employee(name="Alok", department="Operations", employee_code="LOMK001"),
+            m.Employee(name="Priya", department="Operations", employee_code="LOMK002"),
+            m.Employee(name="Sam", department="Docketwise", employee_code="LOMK003"),
+        ])
+        db.commit()
+
+        ensure_departments_backfill(db)
+
+        names = sorted(d.name for d in db.execute(select(m.Department)).scalars())
+        assert names == ["Docketwise", "Operations"]
+
+    def test_blank_and_em_dash_department_never_become_rows(self, db):
+        db.add_all([
+            m.Employee(name="No Dept", department="", employee_code="LOMK001"),
+            m.Employee(name="Null Dept", department=None, employee_code="LOMK002"),
+            m.Employee(name="Dash Dept", department="—", employee_code="LOMK003"),
+        ])
+        db.commit()
+
+        ensure_departments_backfill(db)
+
+        assert list(db.execute(select(m.Department)).scalars()) == []
+
+    def test_does_not_duplicate_or_reset_an_existing_department_row(self, db):
+        # an admin already added/renamed/deactivated "Operations" before this
+        # ever ran (or a prior run already imported it) — re-running must
+        # never touch it, only ever add genuinely new names.
+        existing = m.Department(name="Operations", active=False, created_by="ganesh")
+        db.add(existing)
+        db.add(m.Employee(name="Alok", department="Operations", employee_code="LOMK001"))
+        db.commit()
+
+        ensure_departments_backfill(db)
+
+        rows = list(db.execute(select(m.Department)).scalars())
+        assert len(rows) == 1
+        assert rows[0].active is False  # untouched, not silently reactivated
+
+    def test_noop_when_nothing_to_backfill(self, db):
+        # safe to call on every startup even with zero employees
+        ensure_departments_backfill(db)
+        assert list(db.execute(select(m.Department)).scalars()) == []
+
+    def test_idempotent_on_second_call(self, db):
+        db.add(m.Employee(name="Alok", department="Operations", employee_code="LOMK001"))
+        db.commit()
+
+        ensure_departments_backfill(db)
+        ensure_departments_backfill(db)
+
+        names = [d.name for d in db.execute(select(m.Department)).scalars()]
+        assert names == ["Operations"]

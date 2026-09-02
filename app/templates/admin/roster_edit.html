@@ -26,7 +26,13 @@
         </select>
       </div>
       {% endif %}
-      <div><label>Department</label><input name="department" value="{{ emp.department }}"></div>
+      <div>
+        <label>Department</label>
+        <select name="department">
+          <option value="">— none —</option>
+          {% for d in departments %}<option value="{{ d }}" {{ 'selected' if d == emp.department }}>{{ d }}</option>{% endfor %}
+        </select>
+      </div>
       <div><label>Designation</label><input name="designation" value="{{ emp.designation }}"></div>
       <div><label>Target hours/day</label>
         <input name="target_hours" value="{{ '%.2f'|format(emp.daily_target_minutes / 60) }}" style="width:80px"></div>

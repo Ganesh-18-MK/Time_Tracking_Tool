@@ -327,6 +327,58 @@ LIST_REJECTED = "rejected"
 LIST_STATUSES = (LIST_APPROVED, LIST_PENDING, LIST_REJECTED)
 
 
+class Department(Base):
+    """A real managed list of department names (Ganesh, 2026-09-02: "under
+    bulk upload i need Departments option where we can add departments then
+    while adding employees it will show the existed departments dropdown").
+
+    Before this, "department" was never its own thing anywhere in the app —
+    just a free-text string on Employee.department, and every dropdown that
+    looked like a department picker (Projects & Tasks' "Manage departments"
+    panel, the Reports pages' Department filter, Assign Work's department
+    tree, Roster's own department-pill filter) actually just showed whatever
+    distinct strings happened to already exist on employees
+    (reports.departments_list(), pre-2026-09-02: `sorted({e.department for e
+    in employees})`). That meant there was no way to add a department before
+    someone was assigned to it, and no way to rename one everywhere at once
+    without hand-editing every employee row. This table is deliberately the
+    same simple shape as Project/TaskType (id/name/active/created_by/
+    created_at) rather than a new pattern — `reports.departments_list()` now
+    reads active Department rows instead of scanning Employee data, which is
+    what makes it the single source of truth: every existing caller of that
+    function (Projects & Tasks' Add-a-project/Manage-departments pickers,
+    every Reports page's Department filter, Assign Work's department tree)
+    picks this up for free, no template changes needed anywhere else.
+
+    Management UI lives on Roster -> Bulk upload (Ganesh's own explicit
+    choice, not the more typical "new page like Projects & Tasks" — see
+    admin/roster_bulk_upload.html's "Departments" card and
+    lists_department_add/rename/toggle in app/routes/admin.py), Super-
+    Admin-only, same tier as every other Roster/Bulk-upload action.
+
+    Existing employees' current free-text department values are auto-
+    imported as the starting list on first startup (Ganesh's explicit
+    choice over starting empty) — see util.ensure_departments_backfill(),
+    wired into main.py's startup sequence like every other one-time
+    additive-column backfill in this app.
+
+    Deliberately NOT touched by this feature (a stated scope boundary, not
+    an oversight): the Roster bulk-upload Excel sheet's own Department
+    column stays free text, same as before — it is not validated against
+    this table and does not auto-create new Department rows. Auto-creating
+    departments from a bulk file risked silently multiplying near-duplicate
+    names from typos with no admin review; an admin who wants a bulk-
+    uploaded department to show up in the dropdown still adds it once here
+    first, same as any other new department."""
+
+    __tablename__ = "departments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
 class Project(Base):
     __tablename__ = "projects"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

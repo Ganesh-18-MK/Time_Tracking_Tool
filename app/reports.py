@@ -63,7 +63,26 @@ def _tracked_employees(db: Session) -> List[m.Employee]:
 
 
 def departments_list(db: Session) -> List[str]:
-    return sorted({e.department or "—" for e in _tracked_employees(db)})
+    """The canonical, sorted list of in-use department names.
+
+    Before 2026-09-02 this scanned Employee rows for distinct department
+    strings — there was no real "Department" concept anywhere in the app,
+    just whatever text happened to be typed into Employee.department. Now
+    that Department is a real managed list (Ganesh, 2026-09-02 — see its
+    docstring in app/models.py, and admin/roster_bulk_upload.html's
+    "Departments" card), this reads active Department rows instead — which
+    is what makes every existing caller of this function (Projects & Tasks'
+    Add-a-project/Manage-departments pickers, every Reports page's
+    Department filter, Assign Work's department tree) automatically honor
+    a rename or deactivation done through the new management UI, with zero
+    template changes needed anywhere else. An inactive Department is
+    deliberately excluded here (same "deactivating hides it from new
+    entries" convention Project/TaskType already use) but nothing retroactively
+    changes for an employee still carrying that department string — same as
+    a deactivated Project doesn't un-assign it from past TaskEntry rows."""
+    return sorted(
+        d.name for d in db.execute(select(m.Department).where(m.Department.active.is_(True))).scalars()
+    )
 
 
 def employees_list(db: Session, department: Optional[str] = None) -> List[m.Employee]:

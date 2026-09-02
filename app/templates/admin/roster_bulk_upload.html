@@ -5,37 +5,90 @@
 <h1>Bulk upload employees</h1>
 <p class="muted small"><a href="/admin/roster">← Back to Roster</a></p>
 
+<!-- Left column stacks every upload-related action (Onboard, Update,
+     Upload your sheet); Departments sits alone on the right (Ganesh,
+     2026-09-03, follow-up to the row split above: "update existing section
+     also should be left side") — the left wrapper below is a plain block
+     div, not a .card itself, so the three real .card children just stack
+     with their own normal margin-bottom, while .cols still gives it the
+     same flex:1 1 340px column width Departments gets on the right. -->
 <div class="cols">
-  <div class="card">
-    <div class="card-head"><h2 style="margin-top:0">Onboard new employees</h2></div>
-    <p class="small muted">Full Name, Department, Designation, Target/day and Workdays are required
-    for a new hire — everything else is optional. Leave Employee ID blank; it's assigned
-    automatically (LOMK001, LOMK002, ...).</p>
-    <a class="btn secondary" href="/admin/roster/bulk-upload/sample.xlsx">Download blank template</a>
+  <div style="flex:1 1 340px">
+    <div class="card">
+      <div class="card-head"><h2 style="margin-top:0">Onboard new employees</h2></div>
+      <p class="small muted">Full Name, Department, Designation, Target/day and Workdays are required
+      for a new hire — everything else is optional. Leave Employee ID blank; it's assigned
+      automatically (LOMK001, LOMK002, ...).</p>
+      <a class="btn secondary" href="/admin/roster/bulk-upload/sample.xlsx">Download blank template</a>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2 style="margin-top:0">Update existing employees</h2></div>
+      <p class="small muted">Downloads every active employee with their current details, Employee ID
+      first. Edit only the cells you're changing — e.g. fill in Phone for whoever's missing it — and
+      leave the rest as-is. Blank cells are never applied as changes.</p>
+      <p class="small muted">To offboard someone, put <strong>Deactivate</strong> in their Action
+      column and upload — they're deactivated (history kept, same as Roster → Edit → untick Active),
+      never hard-deleted.</p>
+      <p class="small muted">The last two columns, Current Address and Permanent Address, are
+      included for reference (whatever the employee has filled in on their own Profile page) —
+      they're read-only here and ignored on re-upload, not something you can change from this sheet.</p>
+      <a class="btn secondary" href="/admin/roster/bulk-upload/existing.xlsx">Download existing employees</a>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2 style="margin-top:0">Upload your sheet</h2></div>
+      <p class="small muted">Rows with a blank Employee ID onboard a new hire; rows with an Employee ID
+      update that person. You can mix both in the same file.</p>
+      <form method="post" action="/admin/roster/bulk-upload" enctype="multipart/form-data" class="formrow">
+        <div><input type="file" name="file" accept=".xlsx" required></div>
+        <div><button>Upload</button></div>
+      </form>
+    </div>
   </div>
-  <div class="card">
-    <div class="card-head"><h2 style="margin-top:0">Update existing employees</h2></div>
-    <p class="small muted">Downloads every active employee with their current details, Employee ID
-    first. Edit only the cells you're changing — e.g. fill in Phone for whoever's missing it — and
-    leave the rest as-is. Blank cells are never applied as changes.</p>
-    <p class="small muted">To offboard someone, put <strong>Deactivate</strong> in their Action
-    column and upload — they're deactivated (history kept, same as Roster → Edit → untick Active),
-    never hard-deleted.</p>
-    <p class="small muted">The last two columns, Current Address and Permanent Address, are
-    included for reference (whatever the employee has filled in on their own Profile page) —
-    they're read-only here and ignored on re-upload, not something you can change from this sheet.</p>
-    <a class="btn secondary" href="/admin/roster/bulk-upload/existing.xlsx">Download existing employees</a>
-  </div>
-</div>
 
-<div class="card" style="max-width:640px">
-  <div class="card-head"><h2 style="margin-top:0">Upload your sheet</h2></div>
-  <p class="small muted">Rows with a blank Employee ID onboard a new hire; rows with an Employee ID
-  update that person. You can mix both in the same file.</p>
-  <form method="post" action="/admin/roster/bulk-upload" enctype="multipart/form-data" class="formrow">
-    <div><input type="file" name="file" accept=".xlsx" required></div>
-    <div><button>Upload</button></div>
-  </form>
+  <div class="card">
+    <!-- Departments (Ganesh, 2026-09-02: "under bulk upload i need
+         Departments option where we can add departments then while adding
+         employees it will show the existed departments dropdown") — a real
+         managed list, not the old free-text Department field. See
+         Department's own docstring in app/models.py for the fuller context.
+         This whole page is already require_super_admin-gated (see
+         roster_bulk_upload_page above), so unlike the Lists page's per-action
+         admin-tier guards, nothing extra is needed here. -->
+    <div class="card-head"><h2 style="margin-top:0">Departments</h2></div>
+    <p class="small muted" style="margin-top:-4px">Add a department here so it shows up in the Department
+    dropdown when adding or editing an employee below.</p>
+    <form method="post" action="/admin/departments/add" class="formrow" style="margin-bottom:12px">
+      <div style="flex:1"><input name="name" placeholder="New department name" style="width:100%" required></div>
+      <div><button class="small">Add</button></div>
+    </form>
+    {% if departments %}
+    <table>
+      <thead><tr><th>Name</th><th></th></tr></thead>
+      <tbody>
+        {% for d in departments %}
+        <tr {% if not d.active %}style="opacity:.5"{% endif %}>
+          <td>
+            {{ d.name }}{% if not d.active %} <span class="muted small">(inactive)</span>{% endif %}
+            <form method="post" action="/admin/departments/{{ d.id }}/rename" class="inline-form"
+                  id="dept-rename-{{ d.id }}" hidden style="margin-top:6px">
+              <input name="name" value="{{ d.name }}" required>
+              <button class="small">Save</button>
+            </form>
+          </td>
+          <td class="nowrap">
+            <button type="button" class="lnk" onclick="toggleDeptRename({{ d.id }})">Edit</button>
+            <form method="post" action="/admin/departments/{{ d.id }}/toggle" class="inline">
+              <button type="submit" class="lnk danger">{{ 'Deactivate' if d.active else 'Reactivate' }}</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted small">No departments yet — add one above.</p>
+    {% endif %}
+  </div>
 </div>
 
 {% if result %}
@@ -54,4 +107,11 @@
   {% endif %}
 </div>
 {% endif %}
+
+<script>
+function toggleDeptRename(id) {
+  var f = document.getElementById('dept-rename-' + id);
+  if (f) f.hidden = !f.hidden;
+}
+</script>
 {% endblock %}

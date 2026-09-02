@@ -292,6 +292,44 @@ def ensure_list_status_backfill(db: Session) -> None:
         db.commit()
 
 
+def ensure_departments_backfill(db: Session) -> None:
+    """One-time seed for the new `Department` table (Ganesh, 2026-09-02 —
+    see Department's own docstring in app/models.py for the full feature).
+    Unlike every other ensure_* function in this file, this isn't
+    backfilling a NULL column on an existing table — it's populating a
+    brand-new, empty table from data that already lives somewhere else
+    (every distinct, non-blank string already sitting in
+    Employee.department, across every employee regardless of active/
+    tracked status, so nothing already in use anywhere disappears from
+    scope). Matches Ganesh's explicit choice ("auto-import as the starting
+    list") over starting the Departments list empty and making him re-type
+    ~10 department names by hand.
+
+    Safe to run on every startup forever, same as every other ensure_*
+    function here: only inserts a Department row for a name that doesn't
+    already have one (case-sensitive exact match — "Operations" and
+    "operations" would be treated as two different departments, same as
+    Project/TaskType names elsewhere in this app), so once every in-use
+    name has a row, this is a true no-op. Deliberately does NOT touch any
+    Department row that already exists (e.g. one an admin already renamed
+    or deactivated) — this only ever adds, never edits."""
+    existing = {
+        d.name for d in db.execute(select(m.Department)).scalars()
+    }
+    in_use = {
+        (e.department or "").strip()
+        for e in db.execute(select(m.Employee)).scalars()
+    }
+    in_use.discard("")
+    in_use.discard("—")
+    to_add = in_use - existing
+    if not to_add:
+        return
+    for name in sorted(to_add):
+        db.add(m.Department(name=name, created_by="system"))
+    db.commit()
+
+
 def ensure_location_backfill(db: Session) -> None:
     """Backfill for `Employee.location` and `Holiday.location`, both added
     2026-08-12 (per-country holiday management — the team now has both US

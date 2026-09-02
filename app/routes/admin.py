@@ -1215,6 +1215,16 @@ def roster(
             "user": admin, "emps": emps, "show": show, "dept_counts": dept_counts,
             "all_depts": all_depts, "dept_groups": dept_groups, "lead_choices": lead_choices,
             "locations": m.LOCATIONS, "default_location": m.DEFAULT_LOCATION,
+            # Departments (Ganesh, 2026-09-02) — the real managed list, for
+            # the "Add person" form's Department dropdown. Deliberately NOT
+            # the same as all_depts above: all_depts is derived from
+            # whichever employees are currently listed (feeds the
+            # department-pill FILTER, so it only ever shows departments
+            # someone's already in) — this is the full active Department
+            # list, including a brand-new department nobody's assigned to
+            # yet, which is exactly the case "add it here so it shows up in
+            # the dropdown" needs to work for.
+            "departments": reports.departments_list(db),
         },
         db=db,
     )
@@ -1395,11 +1405,23 @@ def roster_edit_page(
         ).scalars()
     )
     cfg = engine.get_config(db)
+    # Departments (Ganesh, 2026-09-02) — same reasoning as roster_page's own
+    # departments context var: the real managed list, not the "whatever's
+    # currently in use" pill-filter list, so a brand-new department with no
+    # one in it yet still shows up here. An employee's own already-saved
+    # department string (see the <select> below) is included even if it's
+    # since been deactivated in Departments, so editing this person for an
+    # unrelated reason never silently blanks their department out from
+    # under them.
+    dept_options = reports.departments_list(db)
+    if emp.department and emp.department not in dept_options:
+        dept_options = sorted(dept_options + [emp.department])
     return render(
         request, "admin/roster_edit.html",
         {
             "user": admin, "emp": emp, "lead_choices": lead_choices, "locations": m.LOCATIONS,
             "leave_probation_days_default": engine.cfg_int(cfg, "probation_days_default"),
+            "departments": dept_options,
         },
         db=db,
     )
@@ -1469,13 +1491,27 @@ def roster_edit(
 # --------------------------------------------------------------------------
 # Bulk upload (Roster -> Bulk upload) — parsing rules live in app/bulk_upload.py
 # --------------------------------------------------------------------------
+def _all_departments(db: Session):
+    """Every Department row, active and inactive, name-ordered — used by
+    the "Departments" management card on Roster -> Bulk upload (Ganesh,
+    2026-09-02) so an admin can see and reactivate a deactivated one, not
+    just add new ones. Deliberately NOT reports.departments_list() here —
+    that function only returns active names (it's the dropdown-population
+    helper used everywhere else in the app), while this management card
+    needs the full picture including inactive rows."""
+    return list(db.execute(select(m.Department).order_by(m.Department.name)).scalars())
+
+
 @router.get("/roster/bulk-upload")
 def roster_bulk_upload_page(
     request: Request,
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
-    return render(request, "admin/roster_bulk_upload.html", {"user": admin, "result": None}, db=db)
+    return render(
+        request, "admin/roster_bulk_upload.html",
+        {"user": admin, "result": None, "departments": _all_departments(db)}, db=db,
+    )
 
 
 @router.get("/roster/bulk-upload/sample.xlsx")
@@ -1534,7 +1570,99 @@ def roster_bulk_upload(
     if result["skipped"]:
         summary += f" {len(result['skipped'])} row(s) skipped — see details below."
     flash(request, summary, "ok" if (result["added"] or result["updated"]) else "err")
-    return render(request, "admin/roster_bulk_upload.html", {"user": admin, "result": result}, db=db)
+    return render(
+        request, "admin/roster_bulk_upload.html",
+        {"user": admin, "result": result, "departments": _all_departments(db)}, db=db,
+    )
+
+
+# --------------------------------------------------------------------------
+# Departments (Ganesh, 2026-09-02) — a real managed list of department
+# names, living on Roster -> Bulk upload per Ganesh's own explicit choice
+# (see Department's docstring in app/models.py for the fuller context and
+# the "why here, not a new page like Lists" reasoning). Deliberately mirrors
+# lists_add/lists_rename/lists_toggle just below (same three actions, same
+# Super-Admin-only tier), rather than introducing a new pattern — Department
+# is a simpler shape (no status/suggestion workflow, no created_by_employee_id
+# FK) so these three routes are correspondingly smaller.
+# --------------------------------------------------------------------------
+@router.post("/departments/add")
+def department_add(
+    request: Request,
+    name: str = Form(...),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    name = name.strip()
+    if not name:
+        return RedirectResponse("/admin/roster/bulk-upload", status_code=303)
+    exists = db.execute(
+        select(m.Department).where(func.lower(m.Department.name) == name.lower())
+    ).scalar_one_or_none()
+    if exists is not None:
+        flash(request, f"'{exists.name}' already exists.", "err")
+        return RedirectResponse("/admin/roster/bulk-upload", status_code=303)
+    db.add(m.Department(name=name, created_by=admin.name))
+    db.commit()
+    audit(db, admin.name, "add_department", "department", name, {})
+    flash(request, f"'{name}' added.", "ok")
+    return RedirectResponse("/admin/roster/bulk-upload", status_code=303)
+
+
+@router.post("/departments/{dept_id}/rename")
+def department_rename(
+    dept_id: int,
+    request: Request,
+    name: str = Form(...),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    # Renaming is safe on a live value: nothing keys off Department by name
+    # internally either — Employee.department is its own free-text copy
+    # (set from this dropdown, but not re-pointed automatically on a
+    # rename here, same "the picker just showed a string" relationship
+    # Project/TaskType names already have with the rows that reference
+    # them elsewhere in this app). An admin who renames "Docketwise" to
+    # "Docket Team" will see existing employees still reading "Docketwise"
+    # on their own record until each one is re-saved via Roster -> Edit —
+    # a deliberate, documented limitation, not a bug, matching this app's
+    # existing "names are display strings, not the join key" convention.
+    dept = db.get(m.Department, dept_id)
+    if dept is None:
+        return RedirectResponse("/admin/roster/bulk-upload", status_code=303)
+    new_name = name.strip()
+    if not new_name:
+        flash(request, "Enter a name.", "err")
+        return RedirectResponse("/admin/roster/bulk-upload", status_code=303)
+    clash = db.execute(
+        select(m.Department).where(func.lower(m.Department.name) == new_name.lower(), m.Department.id != dept.id)
+    ).scalar_one_or_none()
+    if clash is not None:
+        flash(request, f"'{clash.name}' already exists — pick a different name.", "err")
+        return RedirectResponse("/admin/roster/bulk-upload", status_code=303)
+    old_name = dept.name
+    if old_name != new_name:
+        dept.name = new_name
+        db.commit()
+        audit(db, admin.name, "rename_department", "department", new_name, {"from": old_name})
+    return RedirectResponse("/admin/roster/bulk-upload", status_code=303)
+
+
+@router.post("/departments/{dept_id}/toggle")
+def department_toggle(
+    dept_id: int,
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    dept = db.get(m.Department, dept_id)
+    if dept is not None:
+        # Same "deactivating hides it from new picks without breaking old
+        # rows" convention Project/TaskType already use — an employee
+        # already carrying this department string is untouched either way.
+        dept.active = not dept.active
+        db.commit()
+        audit(db, admin.name, "toggle_department", "department", dept.name, {"active": dept.active})
+    return RedirectResponse("/admin/roster/bulk-upload", status_code=303)
 
 
 # --------------------------------------------------------------------------

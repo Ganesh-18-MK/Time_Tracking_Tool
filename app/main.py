@@ -23,6 +23,7 @@ from app.templating import TICKETING_ENABLED, render, templates  # noqa: F401 (t
 from app.util import (
     ensure_bootstrap_admins,
     ensure_client_text_backfill,
+    ensure_departments_backfill,
     ensure_employee_codes,
     ensure_lead_review_backfill,
     ensure_leave_v2_backfill,
@@ -168,6 +169,7 @@ def _startup() -> None:
         ensure_task_category_backfill(db)
         ensure_client_text_backfill(db)
         ensure_lead_review_backfill(db)
+        ensure_departments_backfill(db)
         ensure_bootstrap_admins(db)
     finally:
         db.close()
