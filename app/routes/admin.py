@@ -1674,6 +1674,8 @@ def lists_add(
     name: str = Form(...),
     project_id: int = Form(0),
     is_case_type: str = Form(""),
+    departments: list = Form([]),
+    other_department: str = Form(""),
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -1703,11 +1705,36 @@ def lists_add(
             # rest of Add); see Project.is_case_type's docstring.
             item.is_case_type = is_case_type == "on"
         db.add(item)
+        db.flush()  # need item.id for the ProjectTask/ProjectDepartment links below
         if kind == "task":
-            db.flush()  # need item.id for the ProjectTask link below
             db.add(m.ProjectTask(project_id=project.id, task_type_id=item.id, created_by=admin.name))
+        dept_count = 0
+        if kind == "project":
+            # Departments at creation time (Ganesh, 2026-09-02: "as of now
+            # if we adding project its directly going to all departments
+            # but i need one more field where we can have a dropdown of
+            # departments list and we can select the multiple departments
+            # as well") — before this, a new project always started
+            # unrestricted (visible to every department) and narrowing it
+            # required a second trip to the project's own "Manage
+            # departments" panel after creation. This reuses the exact
+            # same names-dedup / "empty selection = unrestricted, not
+            # restricted-to-nobody" logic lists_project_departments()
+            # already established, just applied at INSERT time instead of
+            # UPDATE time — one project row, one set of ProjectDepartment
+            # rows, created together rather than in two separate requests.
+            names = {d.strip() for d in departments if d and d.strip()}
+            extra = other_department.strip()
+            if extra:
+                names.add(extra)
+            for dept in names:
+                db.add(m.ProjectDepartment(project_id=item.id, department=dept, created_by=admin.name))
+                dept_count += 1
         db.commit()
-        audit(db, admin.name, f"add_{kind}", kind, name, {"project": project.name if project else None})
+        audit_extra = {"project": project.name if project else None}
+        if kind == "project":
+            audit_extra["department_count"] = dept_count
+        audit(db, admin.name, f"add_{kind}", kind, name, audit_extra)
     else:
         flash(request, f"'{name}' already exists.", "err")
     return RedirectResponse("/admin/lists", status_code=303)

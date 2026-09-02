@@ -122,9 +122,36 @@ available to everyone; see "Manage departments" on a project to narrow it.</p>
     <div style="flex:1"><input name="name" placeholder="Add client / employer" style="width:100%"></div>
     <div><label class="small" style="display:flex;align-items:center;gap:4px;white-space:nowrap">
       <input type="checkbox" name="is_case_type"> Case Type</label></div>
+    <!-- Departments at creation (Ganesh, 2026-09-02: "as of now if we adding
+         project its directly going to all departments but i need one more
+         field where we can have a dropdown of departments list and we can
+         select the multiple departments as well") — before this, a new
+         project always started unrestricted and narrowing it required a
+         second trip to the "Manage departments" panel after creation (see
+         that panel's own deptpill checklist further down this same
+         macro/file). Reuses the shared .msdrop closed-dropdown-with-
+         checklist widget (app/static/msdrop.js, already loaded globally via
+         base.html) in its simple no-search-box form, same as Overtime
+         Management's Surplus day(s) field — a plain <select multiple> was
+         considered and rejected there for the identical reason (permanently
+         open, needs a modifier key to multi-select), so this reuses that
+         same fix rather than reinventing it. Nothing checked/typed here
+         means the same thing it always has: available to every department. -->
+    <div class="msdrop" data-empty-label="Available to all departments" data-noun-plural="department(s)">
+      <button type="button" class="msdrop-toggle">
+        <span class="msdrop-label">Available to all departments</span>
+        <span class="msdrop-caret">▾</span>
+      </button>
+      <div class="msdrop-menu ms-box" hidden>
+        {% for d in all_departments %}
+        <label class="ms-opt msdrop-opt"><input type="checkbox" name="departments" value="{{ d }}">{{ d }}</label>
+        {% endfor %}
+        <input name="other_department" placeholder="Other department not listed above" style="width:100%;margin-top:8px">
+      </div>
+    </div>
     <div><button class="small">Add</button></div>
   </form>
-  <p class="small muted" style="margin:2px 0 0">Case Type — when picked on the Today page, employees get an extra Client field to record who the case is for. New projects start available to every department — use "departments — manage" below to narrow one.</p>
+  <p class="small muted" style="margin:2px 0 0">Case Type — when picked on the Today page, employees get an extra Client field to record who the case is for. Leave the departments dropdown untouched to make this project available to every department, or pick one or more to narrow it now — either way it can still be changed later via "departments — manage" below.</p>
 </div>
 
 <div class="tree-toolbar">

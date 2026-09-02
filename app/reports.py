@@ -757,6 +757,14 @@ def rule_based_day_summary(rows: list) -> List[str]:
     (a 6th+ collapses into one "+N more projects" line) — same top-N-plus-
     other instinct the "By Project" pie chart already uses, so a day spread
     across many small projects doesn't produce an unreadably long list.
+    Bullets are sorted by total minutes descending, most time first, NOT
+    chronological order (Ganesh, 2026-09-02, relaying his manager's ask:
+    "can we quantify it... like most of the time was spent doing this") —
+    the first bullet is always a direct, correct answer to "where did most
+    of today go," with no LLM involved at all. `_build_prompt()` in
+    app/llm_summary.py got the identical most-time-first sort the same day,
+    so the AI path and this deterministic fallback always agree on which
+    project comes first, whether or not Groq is configured.
     Returns [] for a day with no entries (nothing to summarize) rather than
     None — there's no "generation failed" state anymore, so callers/
     templates never need to distinguish "empty" from "errored"."""
@@ -774,6 +782,7 @@ def rule_based_day_summary(rows: list) -> List[str]:
         task_name = r.task_type.name if r.task_type else "—"
         if task_name not in entry["tasks"]:
             entry["tasks"].append(task_name)
+    order.sort(key=lambda pid: by_project[pid]["minutes"], reverse=True)
     bullets = []
     TOP_N = 5
     shown = order[:TOP_N]

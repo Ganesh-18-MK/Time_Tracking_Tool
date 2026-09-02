@@ -12,14 +12,19 @@ once you're done checking the output.
 from app.llm_summary import _build_prompt, summarize_day
 
 entries = [
-    {"project": "Bluepeak Consulting Inc.", "task": "Check credential and post job order",
-     "duration_minutes": 90, "details": "Reviewed H-1B credentials, posted job order to state portal"},
-    {"project": "Bluepeak Consulting Inc.", "task": "Get AD quotes",
-     "duration_minutes": 60, "details": "Requested prevailing wage quotes from 3 attorneys"},
+    # Logged FIRST, but least time — should rank LAST in the summary now.
     {"project": "Northwind Consulting Inc.", "task": "Reply to email",
      "duration_minutes": 45, "details": "Responded to client questions about I-140 timeline"},
     {"project": "Internal", "task": "Team meeting",
      "duration_minutes": 30, "details": ""},
+    # Logged LAST, but most total time (90+60=150min=2:30) — should rank
+    # FIRST, since the 2026-09-02 quantify-it fix sorts by time, not
+    # chronological order. If the printed prompt/result below leads with
+    # Bluepeak despite it being listed last here, the fix is working.
+    {"project": "Bluepeak Consulting Inc.", "task": "Check credential and post job order",
+     "duration_minutes": 90, "details": "Reviewed H-1B credentials, posted job order to state portal"},
+    {"project": "Bluepeak Consulting Inc.", "task": "Get AD quotes",
+     "duration_minutes": 60, "details": "Requested prevailing wage quotes from 3 attorneys"},
 ]
 
 print("=" * 70)

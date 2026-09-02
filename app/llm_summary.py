@@ -43,7 +43,7 @@ a Groq outage can never break Submit Day (see submit_day() in
 app/routes/employee.py, the only caller) or the Task Logs report page.
 """
 import os
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import httpx
 
@@ -71,21 +71,73 @@ REQUEST_TIMEOUT_SECONDS = float(os.environ.get("GROQ_TIMEOUT_SECONDS", "10"))
 MAX_ENTRIES_IN_PROMPT = 40  # a real day almost never has more than this; caps prompt size/cost regardless
 
 
+def _fmt_minutes(minutes: int) -> str:
+    """'2:30'-style formatter, deliberately duplicated from app.util.fmt_hm
+    rather than imported — app.util pulls in fastapi/sqlalchemy/openpyxl,
+    which would defeat this module's whole point of never needing a DB/app
+    environment to import or test (see the module docstring, and
+    test_groq_summary.py, which imports this file standalone)."""
+    minutes = max(0, int(minutes))
+    return f"{minutes // 60}:{minutes % 60:02d}"
+
+
 def _build_prompt(entries: List[dict]) -> str:
-    lines = []
+    # Pre-aggregate by project IN PYTHON, not left to the model (Ganesh,
+    # 2026-09-02: his manager asked "can we quantify it... like most of the
+    # time was spent doing this" about the Task Logs AI summary — a plain
+    # list of bullets doesn't answer "where did the day actually go"). LLMs
+    # are unreliable at arithmetic across several line items, so the totals
+    # and the most-time-first ordering are computed here and handed to the
+    # model already correct; the model's only job is turning already-right
+    # numbers into readable sentences, in the order given, not recomputing
+    # or reordering anything itself. rule_based_day_summary() in
+    # app/reports.py got the identical most-time-first sort the same day,
+    # so the deterministic fallback leads with the same answer whether or
+    # not Groq is configured.
+    order: List[str] = []
+    by_project: Dict[str, dict] = {}
     for e in entries[:MAX_ENTRIES_IN_PROMPT]:
+        proj = e.get("project") or "—"
+        if proj not in by_project:
+            order.append(proj)
+            by_project[proj] = {"minutes": 0, "tasks": [], "details": []}
+        agg = by_project[proj]
+        agg["minutes"] += e.get("duration_minutes", 0) or 0
+        task = (e.get("task") or "").strip()
+        if task and task not in agg["tasks"]:
+            agg["tasks"].append(task)
         details = (e.get("details") or "").strip()
-        line = f"- {e['project']} / {e['task']} ({e['duration_minutes']} min)"
         if details:
-            line += f": {details}"
+            agg["details"].append(details)
+
+    ranked = sorted(order, key=lambda p: by_project[p]["minutes"], reverse=True)
+
+    lines = []
+    for proj in ranked:
+        agg = by_project[proj]
+        line = f"- {proj} — {_fmt_minutes(agg['minutes'])} total. Tasks: {', '.join(agg['tasks'])}."
+        detail_str = " | ".join(agg["details"][:3])
+        if detail_str:
+            line += f" Notes: {detail_str}"
         lines.append(line)
     body = "\n".join(lines)
+
     return (
-        "Summarize this person's workday for their manager as 3 to 5 short bullet points. "
-        "Each bullet must start with a hyphen (-) on its own line. Name the specific "
-        "projects/clients in each bullet. Be factual and concise — no greetings, no filler, "
-        "no headers, no closing remarks, just the bullet lines themselves.\n\n"
-        f"Task log:\n{body}"
+        "Below is a pre-computed breakdown of one person's workday: one line per "
+        "project/client, already totaled and sorted from MOST time spent to LEAST time "
+        "spent — the numbers are already correct, do not recalculate or reorder them.\n\n"
+        "Write exactly one bullet per line below, in the SAME order given (most time "
+        "first). Each bullet MUST both (a) name the project/client with its time in "
+        "parentheses, AND (b) describe what was actually worked on, using the tasks/notes "
+        "given for that line — never output just a name and a number with nothing else. "
+        "Use this exact format for every bullet:\n"
+        "- <Project/client> (<time>): <one short sentence describing the actual work, "
+        "based on the tasks/notes given>\n\n"
+        "Only the FIRST bullet should additionally note that this is where most of the "
+        "day's time went (e.g. end that one bullet with '— most of today's time'); do not "
+        "repeat that phrase on any other bullet. No greetings, no headers, no closing "
+        "remarks — output only the bullet lines.\n\n"
+        f"Breakdown:\n{body}"
     )
 
 
