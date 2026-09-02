@@ -164,6 +164,95 @@ class TestProjectScopedTasks:
         assert "isn't set up for this Project" in errs(s, emp, project_id=5, task_type_id=3)
 
 
+class TestDepartmentScopedProjects:
+    """ProjectDepartment (Ganesh, 2026-08-28, see that model's docstring in
+    app/models.py) — a project with NO department links is unrestricted
+    (every existing fixture Project here has none, which is exactly what
+    keeps every other test class in this file passing unmodified). No
+    pytest coverage existed for this feature before now (see CLAUDE.md's
+    own 2026-08-28 bullet — it shipped verified only by hand-trace); added
+    here alongside the 2026-09-03 closing_existing bugfix below since both
+    touch the exact same check."""
+
+    @pytest.fixture()
+    def db(self, db):
+        s, emp = db
+        emp.department = "Ops"
+        s.add(m.Project(id=6, name="Ops-Only Client"))
+        s.commit()
+        s.add(m.ProjectDepartment(project_id=6, department="Ops", created_by="test"))
+        s.commit()
+        return s, emp
+
+    def test_unrestricted_project_usable_by_any_department(self, db):
+        s, emp = db
+        v(s, emp, project_id=1, task_type_id=1)  # Project id=1 has no department links
+
+    def test_restricted_project_usable_by_its_linked_department(self, db):
+        s, emp = db
+        v(s, emp, project_id=6, task_type_id=1)  # emp.department == "Ops", linked above
+
+    def test_restricted_project_rejected_for_a_different_department(self, db):
+        s, emp = db
+        emp.department = "Front Desk"
+        assert "isn't available to your department" in errs(s, emp, project_id=6, task_type_id=1)
+
+
+class TestClosingExistingBypass:
+    """Bug fix (Ganesh, 2026-09-03) — an employee had a timer already
+    running against a project; an admin then restricted that project to a
+    different department (or unlinked its task) while the timer was still
+    open. Stop/Pause on that timer — and the auto-close that happens
+    before starting anything else — used to fail outright, since they all
+    route through this same validate_entry() check with no way to say
+    "this pairing isn't a new pick, it was already running." permanently
+    stranding the employee: nothing could close the timer, and nothing
+    else could start until it was closed. closing_existing=True is the
+    fix — see _log_timer_as_entry()'s docstring in app/routes/employee.py
+    for the real caller."""
+
+    def test_department_restriction_added_after_the_fact_still_blocks_a_fresh_pick(self, db):
+        s, emp = db
+        emp.department = "Ops"
+        s.add(m.Project(id=6, name="Ops-Only Client"))
+        s.commit()
+        s.add(m.ProjectDepartment(project_id=6, department="Ops", created_by="test"))
+        s.commit()
+        emp.department = "Front Desk"  # admin moved her, or restricted the project after she started
+        assert "isn't available to your department" in errs(s, emp, project_id=6, task_type_id=1)
+
+    def test_closing_existing_bypasses_the_department_restriction(self, db):
+        s, emp = db
+        emp.department = "Ops"
+        s.add(m.Project(id=6, name="Ops-Only Client"))
+        s.commit()
+        s.add(m.ProjectDepartment(project_id=6, department="Ops", created_by="test"))
+        s.commit()
+        emp.department = "Front Desk"
+        v(s, emp, project_id=6, task_type_id=1, closing_existing=True)  # no error raised
+
+    def test_closing_existing_bypasses_the_task_project_restriction(self, db):
+        s, emp = db
+        s.add(m.Project(id=5, name="Second Client, Inc."))
+        s.add(m.TaskType(id=3, name="Client-Specific Task"))
+        s.commit()
+        s.add(m.ProjectTask(project_id=1, task_type_id=3, created_by="test"))
+        s.commit()
+        # task_type_id=3 is only linked to project 1, not project 5 — a
+        # fresh pick of this pair is rejected...
+        assert "isn't set up for this Project" in errs(s, emp, project_id=5, task_type_id=3)
+        # ...but closing out an already-running one against it succeeds.
+        v(s, emp, project_id=5, task_type_id=3, closing_existing=True)
+
+    def test_closing_existing_does_not_bypass_unrelated_checks(self, db):
+        s, emp = db
+        # locked day, overlap, cap, backdate — none of those are about
+        # "is this a fresh pick," so closing_existing must never soften them.
+        assert "after Start" in errs(
+            s, emp, start_minute=600, end_minute=540, closing_existing=True
+        )
+
+
 class TestOverlaps:
     def test_overlap_rejected(self, db):
         s, emp = db

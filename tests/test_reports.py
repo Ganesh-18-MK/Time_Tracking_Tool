@@ -25,6 +25,7 @@ from app.reports import (
     departments_list,
     employees_list,
     feature_usage_report,
+    my_month_project_totals,
     resolve_date_range,
     strikes_report,
     time_by_activity_report,
@@ -378,6 +379,77 @@ class TestTimeByActivityReport:
         result = time_by_activity_report(db, dt.date(2026, 7, 1), dt.date(2026, 7, 31), department="Nobody Here")
         assert result["rows"] == []
         assert result["grand_total"] == 0
+
+
+class TestMyMonthProjectTotals:
+    """The employee-facing "Where your hours went this month" bar chart on
+    My Hours (Ganesh, 2026-09-03: "add a bar graph ... how much they are
+    spending on each project ... simple and employees can able to
+    understand"). Single-employee sibling of TestTimeByActivityReport
+    above's time_by_activity_report() — same TaskEntry source, no
+    DayStatus/recompute involved, so past dates are safe here too."""
+
+    def test_sums_duration_per_project_and_sorts_busiest_first(self, db):
+        _emp(db, 1, "Asha")
+        _project(db, 1, "Website Revamp")
+        _project(db, 2, "Time Compliance App")
+        _task(db, 1, "Coding")
+        db.commit()
+        _entry(db, 1, dt.date(2026, 7, 5), 1, 1, 0, 60)     # 1h -> Website Revamp
+        _entry(db, 1, dt.date(2026, 7, 6), 2, 1, 0, 180)    # 3h -> Time Compliance App
+        _entry(db, 1, dt.date(2026, 7, 10), 1, 1, 0, 90)    # +1.5h -> Website Revamp = 150
+        db.commit()
+        result = my_month_project_totals(db, 1, dt.date(2026, 7, 1), dt.date(2026, 7, 31))
+        assert result["grand_total"] == 330
+        assert result["projects"] == [
+            {"name": "Time Compliance App", "minutes": 180},
+            {"name": "Website Revamp", "minutes": 150},
+        ]
+
+    def test_only_counts_this_employees_entries(self, db):
+        _emp(db, 1, "Asha")
+        _emp(db, 2, "Priya")
+        _project(db, 1, "Website Revamp")
+        _task(db, 1, "Coding")
+        db.commit()
+        _entry(db, 1, dt.date(2026, 7, 5), 1, 1, 0, 60)
+        _entry(db, 2, dt.date(2026, 7, 5), 1, 1, 0, 999)  # someone else's time, must not count
+        db.commit()
+        result = my_month_project_totals(db, 1, dt.date(2026, 7, 1), dt.date(2026, 7, 31))
+        assert result["grand_total"] == 60
+
+    def test_only_counts_entries_inside_the_date_range(self, db):
+        _emp(db, 1, "Asha")
+        _project(db, 1, "Website Revamp")
+        _task(db, 1, "Coding")
+        db.commit()
+        _entry(db, 1, dt.date(2026, 6, 30), 1, 1, 0, 500)  # just before the range
+        _entry(db, 1, dt.date(2026, 7, 1), 1, 1, 0, 60)    # inside
+        _entry(db, 1, dt.date(2026, 8, 1), 1, 1, 0, 500)   # just after
+        db.commit()
+        result = my_month_project_totals(db, 1, dt.date(2026, 7, 1), dt.date(2026, 7, 31))
+        assert result["grand_total"] == 60
+
+    def test_nothing_logged_returns_empty_not_an_error(self, db):
+        _emp(db, 1, "Asha")
+        db.commit()
+        result = my_month_project_totals(db, 1, dt.date(2026, 7, 1), dt.date(2026, 7, 31))
+        assert result == {"projects": [], "grand_total": 0}
+
+    def test_more_than_eight_projects_caps_to_top_eight_plus_other(self, db):
+        _emp(db, 1, "Asha")
+        for i in range(1, 11):  # 10 projects, decreasing totals
+            _project(db, i, f"Project {i}")
+        _task(db, 1, "Coding")
+        db.commit()
+        for i in range(1, 11):
+            _entry(db, 1, dt.date(2026, 7, 1), i, 1, 0, 100 - i)  # totals: 99, 98, ..., 90
+        db.commit()
+        result = my_month_project_totals(db, 1, dt.date(2026, 7, 1), dt.date(2026, 7, 31))
+        assert len(result["projects"]) == 9  # top 8 + "Other"
+        assert result["projects"][-1]["name"] == "Other"
+        assert result["projects"][-1]["minutes"] == 91 + 90  # the two smallest rolled up
+        assert result["grand_total"] == sum(100 - i for i in range(1, 11))
 
 
 class TestTimeFiltersSummary:

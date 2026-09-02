@@ -350,6 +350,65 @@ def time_by_project_report(
     return {"projects": projects, "grand_total": grand_total, "chart_data": chart_data}
 
 
+def my_month_project_totals(db: Session, employee_id: int, start: dt.date, end: dt.date) -> dict:
+    """Per-project total minutes for ONE employee over a date range — feeds
+    the simple bar chart on their own My Hours page (Ganesh, 2026-09-03:
+    "add a bar graph or any chart in employee dashboard in My Hours page
+    which can represent employees their projects working and how much they
+    are spending on each project ... it should be simple and employees can
+    able to understand"). Deliberately a single flat "total per project
+    this month" figure, not a day-by-day breakdown — the simple-bar-chart
+    option was the explicit, "Recommended" AskUserQuestion answer over a
+    stacked-bar-per-day chart, specifically because a day-by-day split
+    gets visually busy once someone works several different projects in
+    a month, and the ask was "simple ... employees can able to understand".
+
+    This is the employee-facing, single-person sibling of
+    time_by_project_report() above (the org-wide admin version) — same
+    "aggregate by project_id first, resolve Project names in one follow-up
+    query" technique, just scoped to exactly one employee_id and a plain
+    date range with no department/project/task filter knobs, since an
+    employee's own My Hours page has nothing to filter by.
+
+    Returns {"projects": [{"name": str, "minutes": int}, ...] sorted
+    busiest-first, capped to the top 8 with a rolled-up "Other" bucket for
+    the rest (same top-N-plus-remainder convention the admin "By Project"
+    pie chart already uses), "grand_total": minutes}. Empty projects list
+    (grand_total 0) when nothing's been logged yet in the range — the
+    template shows a plain "nothing logged yet" message in that case
+    rather than an empty chart."""
+    totals: Dict[int, int] = {}
+    for row in db.execute(
+        select(m.TaskEntry).where(
+            m.TaskEntry.employee_id == employee_id,
+            m.TaskEntry.date.between(start, end),
+        )
+    ).scalars():
+        totals[row.project_id] = totals.get(row.project_id, 0) + row.duration_minutes
+
+    if not totals:
+        return {"projects": [], "grand_total": 0}
+
+    proj_rows = list(db.execute(select(m.Project).where(m.Project.id.in_(totals.keys()))).scalars())
+    names_by_id = {p.id: p.name for p in proj_rows}
+
+    pairs = sorted(
+        ((names_by_id.get(pid, "—"), mins) for pid, mins in totals.items()),
+        key=lambda x: -x[1],
+    )
+    grand_total = sum(mins for _, mins in pairs)
+
+    TOP_N = 8
+    if len(pairs) > TOP_N:
+        other_total = sum(mins for _, mins in pairs[TOP_N:])
+        pairs = pairs[:TOP_N] + [("Other", other_total)]
+
+    return {
+        "projects": [{"name": name, "minutes": mins} for name, mins in pairs],
+        "grand_total": grand_total,
+    }
+
+
 def time_filters_summary(
     db: Session, department: Optional[str], employee_ids: Optional[List[int]],
     project_ids: Optional[List[int]], task_type_ids: Optional[List[int]],

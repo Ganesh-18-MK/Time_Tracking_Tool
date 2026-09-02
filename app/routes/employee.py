@@ -11,7 +11,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import compensation, engine, llm_summary, models as m
+from app import compensation, engine, llm_summary, models as m, reports
 from app.auth import current_user
 from app.db import get_db
 from app.templating import HOLIDAY_MANAGEMENT_ENABLED, LEAVE_MANAGEMENT_V2_ENABLED, flash, render
@@ -1247,7 +1247,19 @@ def _log_timer_as_entry(db: Session, user: m.Employee, timer: m.ActiveTaskTimer,
     second chunk logged in the same request wouldn't see the first one and
     could wrongly validate as non-overlapping, or vice versa). Returns
     (True, None) or (False, message), same shape _finish_task_timer always
-    returned."""
+    returned.
+
+    Passes closing_existing=True (bug fix, Ganesh, 2026-09-03) — an admin
+    narrowing a project's departments (or unlinking a task from a project)
+    while an employee already had a timer running against it used to
+    permanently strand them: Stop/Pause, and the auto-close that happens
+    before starting anything else, all funnel through this one function,
+    so the newly-applied restriction blocked every way out. closing_existing
+    tells validate_entry() this project/task pairing isn't a fresh pick —
+    it was already running under whatever rule was in effect when it
+    started — so it skips project_allowed_for_department()/
+    task_allowed_for_project() for this one call only; every other check
+    (locked day, overlap, 4h cap, backdate window) still fully applies."""
     client_err = _client_required_error(db.get(m.Project, timer.project_id), timer.client)
     if client_err:
         return False, client_err
@@ -1255,6 +1267,7 @@ def _log_timer_as_entry(db: Session, user: m.Employee, timer: m.ActiveTaskTimer,
         validate_entry(
             db, user, timer.date, timer.project_id, timer.task_type_id,
             timer.details, timer.start_minute, end_minute, cfg,
+            closing_existing=True,
         )
     except EntryError as e:
         return False, "; ".join(e.errors)
@@ -2252,6 +2265,11 @@ def my_month(
     balance = ledger[-1]["balance"] if ledger else 0
     weekly_ledger = _weekly_ledger(ledger, comp_erases)
     comp = compensation.monthly_summary(db, user, year, month)
+    # Simple "where did my hours go this month" bar chart (Ganesh,
+    # 2026-09-03) — sits between the KPI tiles and the Hours ledger, see
+    # reports.my_month_project_totals()'s own docstring for why this is a
+    # flat per-project total rather than a day-by-day breakdown.
+    project_totals = reports.my_month_project_totals(db, user.id, first, last)
     (py, pm), (ny, nm) = prev_next_month(year, month)
 
     # read-only lookback (Ganesh, 2026-08-13): employees can't edit a past
@@ -2303,6 +2321,7 @@ def my_month(
             "balance": balance,
             "entries_by_date": entries_by_date,
             "comp": comp,
+            "project_totals": project_totals,
             "prev_ym": f"{py}-{pm:02d}",
             "next_ym": f"{ny}-{nm:02d}",
             "today": today_local(),

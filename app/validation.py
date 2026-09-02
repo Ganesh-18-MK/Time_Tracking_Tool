@@ -129,6 +129,7 @@ def validate_entry(
     cfg: dict,
     entry_id: Optional[int] = None,
     acting_admin: bool = False,
+    closing_existing: bool = False,
 ) -> None:
     errors: List[str] = []
     today = today_local()
@@ -171,14 +172,22 @@ def validate_entry(
         errors.append("That Project/Employer is still awaiting admin approval.")
     elif project is None or not project.active or project.status != m.LIST_APPROVED:
         errors.append("Choose a Project/Employer from the list.")
-    elif not acting_admin and not project_allowed_for_department(db, project_id, emp.department):
+    elif not acting_admin and not closing_existing and not project_allowed_for_department(db, project_id, emp.department):
         # Department-scoped projects (Ganesh, 2026-08-28) — only checked
         # once the project has independently passed the checks above, same
         # "don't mask the more basic pick-something-real errors" ordering
         # task_allowed_for_project()'s own check below uses. acting_admin
         # bypasses this the same way it already bypasses the backdate
         # window above — an admin acting on a day isn't the employee whose
-        # department this is scoping against.
+        # department this is scoping against. closing_existing bypasses it
+        # too (bug fix, Ganesh, 2026-09-03 — see its own docstring note
+        # below): an admin narrowing a project's departments mid-day used
+        # to permanently strand any employee who already had a timer
+        # running against it, since Stop/Pause (and the auto-close that
+        # happens before starting anything else) route through this exact
+        # check — closing out work an employee legitimately started under
+        # whatever rule was in effect at the time should never be blocked
+        # by a rule that changed after the fact.
         errors.append("That Project/Employer isn't available to your department — ask an admin to add it under Lists.")
 
     task = db.get(m.TaskType, task_type_id) if task_type_id else None
@@ -186,11 +195,14 @@ def validate_entry(
         errors.append("That Task is still awaiting admin approval.")
     elif task is None or not task.active or task.status != m.LIST_APPROVED:
         errors.append("Choose a Task from the list.")
-    elif project is not None and not task_allowed_for_project(db, project_id, task_type_id):
+    elif project is not None and not closing_existing and not task_allowed_for_project(db, project_id, task_type_id):
         # Project-scoped tasks (Ganesh, 2026-08-27) — only checked once both
         # project and task independently passed their own checks above, so
         # this never masks the more basic "pick something real" errors with
-        # a confusing pairing message.
+        # a confusing pairing message. closing_existing bypasses this too,
+        # same reasoning as the department check above — an admin unlinking
+        # a task from a project mid-day shouldn't strand an already-running
+        # timer against that combo either.
         errors.append("That Task isn't set up for this Project — choose a different task, or ask an admin to link them under Lists.")
 
     # --- details ----------------------------------------------------------------

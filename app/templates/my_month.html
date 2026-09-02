@@ -30,6 +30,34 @@
   {% endfor %}
 </div>
 
+{# Simple "where did my hours go" bar chart (Ganesh, 2026-09-03: "add a bar
+   graph ... how much they are spending on each project ... simple and
+   employees can able to understand") — one bar per project, total minutes
+   this month, reusing the exact .proj-bar-* CSS the admin's Time by
+   Project/Task "By Project" bars and Dashboard's Projects Progression
+   already use, so no new CSS was needed. Deliberately a flat per-project
+   total, not a day-by-day breakdown — see
+   reports.my_month_project_totals()'s own docstring for why (kept simple
+   on purpose, an explicit AskUserQuestion answer). #}
+<div class="card">
+  <div class="card-head"><h2>Where your hours went this month</h2></div>
+  {% if project_totals.projects %}
+  <p class="small muted" style="margin:-4px 0 10px">Total time logged per project — the longest bar is where most of your time went.</p>
+  {% set max_minutes = project_totals.projects[0].minutes %}
+  <div class="proj-bars">
+    {% for p in project_totals.projects %}
+    <div class="proj-bar-row">
+      <div class="proj-bar-label"><strong>{{ p.name }}</strong></div>
+      <div class="proj-bar-track"><div class="proj-bar-fill" style="width:{{ (p.minutes / max_minutes * 100)|round(1) if max_minutes else 0 }}%"></div></div>
+      <div class="proj-bar-value">{{ p.minutes|hm }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted small">Nothing logged yet this month — once you log some time on My Day, it'll show up here.</p>
+  {% endif %}
+</div>
+
 <div class="card">
   <div class="card-head"><h2>Hours ledger (variance &amp; running balance)</h2></div>
   <p class="small muted" style="margin:-4px 0 10px">Click a week to see its days, then click a day's Entries to see the logged rows.</p>
