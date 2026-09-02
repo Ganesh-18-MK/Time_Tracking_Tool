@@ -665,7 +665,7 @@ details > summary { cursor: pointer; color: var(--accent); }
   cursor: pointer; padding: 3px 4px; font-weight: 600; }
 .tree-toolbar .lnk:hover { text-decoration: underline; }
 .tree { background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
-.tree-dept, .tree-proj, .tree-cat { border-top: 1px solid var(--line); }
+.tree-dept, .tree-proj { border-top: 1px solid var(--line); }
 .tree-dept:first-child { border-top: none; }
 /* Visual polish pass (Ganesh, 2026-08-29, "I want it like [the mockup]") —
    explicit color/weight on every piece of a row rather than relying on
@@ -678,21 +678,15 @@ details > summary { cursor: pointer; color: var(--accent); }
    toggle/departments-save/toggle) — this is layout/color only, no new
    fields, no combined-save endpoint, no Billable/merge tooling (all
    explicitly declined via AskUserQuestion, see CLAUDE.md). */
-.tree-dept > summary, .tree-proj > summary, .tree-cat > summary { list-style: none; cursor: pointer;
+.tree-dept > summary, .tree-proj > summary { list-style: none; cursor: pointer;
   display: flex; align-items: center; gap: 10px; padding: 12px 16px; color: var(--ink); }
-.tree-dept > summary::-webkit-details-marker, .tree-proj > summary::-webkit-details-marker, .tree-cat > summary::-webkit-details-marker { display: none; }
-.tree-dept > summary:hover, .tree-proj > summary:hover, .tree-cat > summary:hover { background: var(--bg); }
+.tree-dept > summary::-webkit-details-marker, .tree-proj > summary::-webkit-details-marker { display: none; }
+.tree-dept > summary:hover, .tree-proj > summary:hover { background: var(--bg); }
 .tree-dept > summary { background: var(--bg); border-bottom: 1px solid var(--line); }
 .tree-dept[open] > summary { border-bottom: 1px solid var(--line); }
 .tree-dept-nm { font-weight: 700; font-size: 15px; color: var(--ink); }
-.tree-proj-nm, .tree-cat-nm { font-weight: 600; font-size: 13.8px; color: var(--ink); }
+.tree-proj-nm { font-weight: 600; font-size: 13.8px; color: var(--ink); }
 .tree-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
-/* Category -> Task hours rollup, "All departments" only (Ganesh, 2026-08-30,
-   from a pasted mockup: "these are common for all departments") — pushed to
-   the far right of the row via margin-left:auto, same trick .tree-row-acts
-   already uses, and reused as-is inside .tree-task-row (also display:flex)
-   for the per-task hrs figure. */
-.tree-hrs { margin-left: auto; color: var(--muted); font-size: 12.5px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
 /* Row-level actions ("+ Task", "Edit", "Deactivate" — Ganesh, 2026-08-29:
    "we can add task also for each project") — plain buttons inside
    <summary>, each stopping click propagation so they don't also toggle the
@@ -717,14 +711,13 @@ details > summary { cursor: pointer; color: var(--accent); }
 .tree-row-acts .lnk:hover { text-decoration: underline; }
 .tree-row-acts .lnk.danger { color: var(--bad); }
 .tree-row-acts form.inline { display: inline; }
-.tree-proj, .tree-cat { margin-left: 26px; border-top: 1px solid #f2f0ec; }
-.tree-proj > summary, .tree-cat > summary { padding: 10px 16px; }
+.tree-proj { margin-left: 26px; border-top: 1px solid #f2f0ec; }
+.tree-proj > summary { padding: 10px 16px; }
 .tree-car { display: inline-block; width: 12px; font-size: 10px; color: var(--muted);
   transition: transform .12s; flex-shrink: 0; }
-.tree-dept[open] > summary .tree-car, .tree-proj[open] > summary .tree-car, .tree-cat[open] > summary .tree-car { transform: rotate(90deg); }
+.tree-dept[open] > summary .tree-car, .tree-proj[open] > summary .tree-car { transform: rotate(90deg); }
 .tree-body { padding: 6px 16px 16px 42px; }
-.tree-proj .tree-body, .tree-cat .tree-body { padding-left: 16px; }
-.tree-cat-list { border-bottom: 1px solid #f2f0ec; padding-bottom: 4px; margin-bottom: 4px; }
+.tree-proj .tree-body { padding-left: 16px; }
 .tree-task-row { display: flex; align-items: center; gap: 8px; padding: 5px 2px; font-size: 13.3px;
   color: var(--ink); border-top: 1px solid #f7f5f2; flex-wrap: wrap; }
 .tree-task-row:first-child { border-top: none; }

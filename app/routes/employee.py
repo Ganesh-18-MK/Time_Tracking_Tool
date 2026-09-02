@@ -2918,10 +2918,17 @@ def support_submit(
 def profile_page(
     request: Request,
     user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
 ):
+    cfg = engine.get_config(db)
     return render(
         request, "profile.html",
-        {"user": user, "pd": user.personal_details, "bd": user.bank_details, "locations": m.LOCATIONS},
+        {
+            "user": user, "pd": user.personal_details, "bd": user.bank_details, "locations": m.LOCATIONS,
+            # Bank & statutory details toggle (Ganesh, 2026-09-03) — see its
+            # own comment in app/models.py's CONFIG_DEFAULTS.
+            "employment_details_enabled": cfg.get("employment_details_enabled") == "1",
+        },
     )
 
 
@@ -3112,7 +3119,16 @@ def personal_details_save(
 def employment_details_page(
     request: Request,
     user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
 ):
+    # Bank & statutory details toggle (Ganesh, 2026-09-03) — "hide ... for
+    # everyone" as of now, default disabled; see CONFIG_DEFAULTS in
+    # app/models.py. 404, not a redirect+flash, matching the exact
+    # convention HOLIDAY_MANAGEMENT_ENABLED's routes already use for a
+    # disabled feature — direct URL access is blocked the same as the (now
+    # also hidden) nav/card entry point.
+    if engine.get_config(db).get("employment_details_enabled") != "1":
+        raise HTTPException(status_code=404)
     return render(request, "profile_employment_details.html", {"user": user, "bd": user.bank_details})
 
 
@@ -3132,6 +3148,10 @@ def employment_details_save(
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
+    # Same gate as the GET route above — blocks a direct form POST while the
+    # section is hidden, not just the page that would normally show the form.
+    if engine.get_config(db).get("employment_details_enabled") != "1":
+        raise HTTPException(status_code=404)
     bd = user.bank_details
     if bd is None:
         bd = m.EmployeeBankDetails(employee_id=user.id)

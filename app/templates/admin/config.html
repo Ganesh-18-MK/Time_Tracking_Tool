@@ -27,6 +27,10 @@ use “Recompute month” on the dashboard to apply retroactively.</p>
         <input type="checkbox" name="comp_erases_strike" value="1" {{ 'checked' if cfg.comp_erases_strike == '1' }}>
         A fully compensated shortfall erases the strike (original status kept in audit)
       </label>
+      <label class="f" title="Ganesh, 2026-09-03 — default disabled">
+        <input type="checkbox" name="employment_details_enabled" value="1" {{ 'checked' if cfg.employment_details_enabled == '1' }}>
+        Show the Employment Details / Bank &amp; statutory details section (Profile self-service and admin Person Detail's read-only view) — hidden from everyone while off
+      </label>
       <label class="f">Live-computation start date (imported history before this date is frozen)</label>
       <input name="live_start_date" value="{{ cfg.live_start_date }}" placeholder="YYYY-MM-DD">
       <div style="margin-top:12px"><button>Save config</button></div>

@@ -1500,4 +1500,22 @@ CONFIG_DEFAULTS = {
     # above — not exposed on /admin/config; see
     # reports.compliance_trend_report()'s docstring for how it's used.
     "compliance_target_pct": "90",
+    # Bank & statutory details toggle (Ganesh, 2026-09-03: "hide employements
+    # details section as of now for everyone and just give an option in
+    # settings where super admin can enable or disable... make it by default
+    # disabled") — unlike every other on/off flag in this app (TICKETING_
+    # ENABLED, HOLIDAY_MANAGEMENT_ENABLED, etc., all read from an env var in
+    # app/templating.py and frozen at process start), this one is deliberately
+    # a Config-table value, exposed as a real checkbox on /admin/config, since
+    # Ganesh explicitly asked for a Super Admin to flip it at runtime without
+    # a redeploy. Gates: profile.html's "Employment Details" card,
+    # employment_details_page()/employment_details_save() in
+    # app/routes/employee.py (404 while off, same convention
+    # HOLIDAY_MANAGEMENT_ENABLED's routes already use), and admin/person.html's
+    # read-only "Bank & statutory details" card — "for everyone" per Ganesh's
+    # own wording, so this hides it from admins' read-only view too, not just
+    # employee self-service. Existing EmployeeBankDetails rows already saved
+    # are untouched either way — this only controls whether the section is
+    # shown, never deletes or blocks what's already on file.
+    "employment_details_enabled": "0",
 }

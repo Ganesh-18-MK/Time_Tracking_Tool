@@ -9,6 +9,7 @@
   <summary>
     <span class="tree-car">▶</span>
     <span class="tree-proj-nm">{{ p.name }}</span>
+    {% if p.status == 'pending' %}<span class="badge b-pending" title="Suggested by an employee — not yet reviewed on the Suggestions page">pending approval</span>{% endif %}
     {% if p.is_case_type %}<span class="badge b-plan-not-started" title="Employees see a Client field for this project">Case Type</span>{% endif %}
     {% if not p.active %}<span class="badge b-missing">Inactive</span>{% endif %}
     <span class="tree-meta">{{ 'every department' if not p_depts else p_depts|join(', ') }} · {{ p_task_ids|length }} task(s) linked</span>
@@ -83,6 +84,7 @@
     {% if t %}
     <div class="tree-task-row" {% if not t.active %}style="opacity:.5"{% endif %}>
       <span>· {{ t.name }}</span>
+      {% if t.status == 'pending' %}<span class="badge b-pending" title="Suggested by an employee — not yet reviewed on the Suggestions page">pending approval</span>{% endif %}
       {% if not t.active %}<span class="muted">(inactive)</span>{% endif %}
       {% if user.is_super_admin %}
       <span class="tree-task-acts">
@@ -169,41 +171,9 @@ available to everyone; see "Manage departments" on a project to narrow it.</p>
       <span class="tree-car">▶</span>
       <span class="tree-dept-nm">All departments</span>
       <span class="badge b-pending">shared · firm-wide</span>
-      <span class="tree-meta">shared firm-wide · {{ shared_projects|length }} project(s) · {{ unrestricted_task_count }} task(s)</span>
+      <span class="tree-meta">shared firm-wide · {{ shared_projects|length }} project(s)</span>
     </summary>
     <div class="tree-body">
-      {# Category -> Task grouping for the truly unrestricted/shared tasks
-         (Ganesh, 2026-08-30, from a pasted mockup: "these are common for
-         all departments") — sits ABOVE the existing shared-projects list
-         below rather than replacing it (AskUserQuestion 2026-08-30: "Keep
-         both"), since a shared project's own settings (Case Type, Manage
-         departments, its own narrowed task list, etc.) still need that
-         list's edit controls. Only ever shown here, never inside a
-         specific department group — see shared_task_categories' own
-         comment in lists_page() (app/routes/admin.py). #}
-      {% if shared_task_categories %}
-      <div class="tree-cat-list">
-        {% for cat in shared_task_categories %}
-        <details class="tree-cat">
-          <summary>
-            <span class="tree-car">▶</span>
-            <span class="tree-cat-nm">{{ cat.name }}</span>
-            <span class="tree-meta">{{ cat.task_count }} task(s)</span>
-            <span class="tree-hrs">{{ cat.hours }} hrs</span>
-          </summary>
-          <div class="tree-body">
-            {% for t in cat.tasks %}
-            <div class="tree-task-row" {% if not t.active %}style="opacity:.5"{% endif %}>
-              <span>· {{ t.name }}</span>
-              {% if not t.active %}<span class="muted">(inactive)</span>{% endif %}
-              <span class="tree-hrs">{{ task_hours.get(t.id, 0) }} hrs</span>
-            </div>
-            {% endfor %}
-          </div>
-        </details>
-        {% endfor %}
-      </div>
-      {% endif %}
       {% if shared_projects %}
       {% for p in shared_projects %}{{ project_node(p) }}{% endfor %}
       {% else %}
@@ -227,6 +197,39 @@ available to everyone; see "Manage departments" on a project to narrow it.</p>
     </div>
   </details>
   {% endfor %}
+</div>
+
+<div class="card" style="margin-top:18px">
+  <div class="card-head"><h2 style="margin-top:0">Tasks not linked to any project</h2></div>
+  <p class="small muted" style="margin:-4px 0 10px">Usable under every project (see "All departments" above) — replaces
+  the 2026-08-30 category/hours breakdown that used to sit there, which Ganesh flagged as confusing (2026-09-03):
+  since only a handful of tasks have ever been linked to a specific project, that breakdown ended up showing nearly
+  every task in the system. This is just a plain list so a task like this stays findable, renameable, and
+  deactivatable — link one to a specific project via that project's "+ Task" above, or a task's own "Manage projects"
+  panel elsewhere in this tree, to narrow it out of here.</p>
+  {% if unrestricted_tasks %}
+  {% for t in unrestricted_tasks %}
+  <div class="tree-task-row" {% if not t.active %}style="opacity:.5"{% endif %}>
+    <span>· {{ t.name }}</span>
+    {% if t.status == 'pending' %}<span class="badge b-pending" title="Suggested by an employee — not yet reviewed on the Suggestions page">pending approval</span>{% endif %}
+    {% if not t.active %}<span class="muted">(inactive)</span>{% endif %}
+    {% if user.is_super_admin %}
+    <span class="tree-task-acts">
+      <button type="button" class="lnk" onclick="treeToggleTaskRename(this)">Edit</button>
+      <form method="post" action="/admin/lists/task/{{ t.id }}/toggle" class="inline">
+        <button type="submit" class="lnk danger">{{ 'Deactivate' if t.active else 'Reactivate' }}</button>
+      </form>
+    </span>
+    <form method="post" action="/admin/lists/task/{{ t.id }}/rename" class="tree-task-rename" hidden>
+      <input name="name" value="{{ t.name }}" required>
+      <button class="small">Save</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% else %}
+  <div class="tree-empty">Every task is currently linked to at least one project.</div>
+  {% endif %}
 </div>
 
 <script>

@@ -418,6 +418,7 @@
     {% endif %}
   </div>
 
+  {% if employment_details_enabled %}
   <div class="card">
     <div class="card-head"><h2>Bank &amp; statutory details</h2></div>
     <p class="small muted" style="margin:-4px 0 10px">Sensitive numbers are masked — the full value is
@@ -443,6 +444,7 @@
     <p class="muted small" style="margin:0">Not added yet — the employee fills this in via Profile → Employment Details.</p>
     {% endif %}
   </div>
+  {% endif %}
 </div>
 <!-- combo.js (Project/Task search picker on "Assign a new task" above,
      TK-04, Ganesh 2026-08-28) — not loaded globally by base.html; this is

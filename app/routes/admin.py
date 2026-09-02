@@ -489,6 +489,11 @@ def person(
             "prev_ym": f"{py}-{pm:02d}",
             "next_ym": f"{ny}-{nm:02d}",
             "today": today,
+            # Bank & statutory details toggle (Ganesh, 2026-09-03, "hide ...
+            # for everyone") — hides this card from the admin's read-only
+            # view too, not just employee self-service. See CONFIG_DEFAULTS
+            # in app/models.py.
+            "employment_details_enabled": cfg.get("employment_details_enabled") == "1",
         },
         db=db,
     )
@@ -1738,39 +1743,33 @@ def lists_page(
     tasks_by_id = {t.id: t for t in tasks}
     unrestricted_task_count = sum(1 for t in tasks if not task_project_ids.get(t.id))
 
-    # "All departments" Category -> Task grouping with an hours rollup
-    # (Ganesh, 2026-08-30, from a pasted mockup: "these are common for all
-    # departments") — scoped ONLY to the truly unrestricted/shared tasks
-    # (task_project_ids empty, the same set unrestricted_task_count above
-    # already counts), per AskUserQuestion 2026-08-30 ("Only 'All
-    # departments'"): a project-scoped task already has a home under its
-    # own project node elsewhere in the tree, so it isn't repeated here.
-    # task_hours is all-time total hours (AskUserQuestion: "All-time
-    # total") logged against EVERY task (not just shared ones) so the
-    # same dict can be reused if a per-project task hours display is ever
-    # wanted later; kept as whole hours (integer floor of total minutes,
-    # never a float — see CLAUDE.md's integer-minutes hard rule) purely
-    # for this display, not a new compliance figure.
-    task_minutes: Dict[int, int] = {}
-    for tid, total in db.execute(
-        select(m.TaskEntry.task_type_id, func.sum(m.TaskEntry.end_minute - m.TaskEntry.start_minute))
-        .group_by(m.TaskEntry.task_type_id)
-    ).all():
-        if tid is not None:
-            task_minutes[tid] = total or 0
-    task_hours: Dict[int, int] = {tid: mins // 60 for tid, mins in task_minutes.items()}
-    shared_tasks = [t for t in tasks if not task_project_ids.get(t.id)]
-    _cat_map: Dict[str, list] = {}
-    for t in shared_tasks:
-        _cat_map.setdefault(t.category or "General", []).append(t)
-    shared_task_categories = []
-    for cat_name in sorted(_cat_map.keys()):
-        cat_tasks = sorted(_cat_map[cat_name], key=lambda t: (not t.active, t.name))
-        cat_minutes = sum(task_minutes.get(t.id, 0) for t in cat_tasks)
-        shared_task_categories.append({
-            "name": cat_name, "tasks": cat_tasks,
-            "task_count": len(cat_tasks), "hours": cat_minutes // 60,
-        })
+    # "Tasks not linked to any project" plain list (Ganesh, 2026-09-03,
+    # replacing the 2026-08-30 Category -> Task hours-rollup grouping under
+    # "All departments" — reported as confusing/wrong for two reasons: (1)
+    # since only a handful of the ~38 tasks have ever been explicitly linked
+    # to a project, the great majority landed in that grouping, which read
+    # as "showing all the tasks of all departments" rather than a genuinely
+    # curated shared set; (2) the all-time hours figure it showed per task
+    # was org-wide, not something Ganesh wanted here at all ("why its
+    # shwoing time"). Confirmed via AskUserQuestion: "under all department
+    # we have projects and tasks under each project" — i.e. "All
+    # departments" should read exactly like every other department group
+    # (a plain project list, each project showing only its own explicitly
+    # linked tasks), with no separate task-level breakdown or hours
+    # anywhere on this page. Per the same answer's second question, a
+    # lightweight (name + status only, no hours, no category grouping)
+    # replacement was kept so a task not yet linked to any project — the
+    # large majority, same set unrestricted_task_count above already counts
+    # — is still findable/renameable/deactivatable from *somewhere* on this
+    # page, since the original flat "All Tasks" table was already removed
+    # 2026-08-30. `TaskType.category` itself is untouched (still a real,
+    # admin-settable column — see the 2026-08-30 bullet on it in
+    # CLAUDE.md) — it's just no longer surfaced anywhere on this page, since
+    # its only display/edit UI was this grouping.
+    unrestricted_tasks = sorted(
+        (t for t in tasks if not task_project_ids.get(t.id)),
+        key=lambda t: (not t.active, t.name),
+    )
 
     # Plain "name, name, name" per project (not a Jinja custom filter) —
     # feeds the tree's client-side search box (data-tasks="...") so typing
@@ -1789,7 +1788,7 @@ def lists_page(
             "shared_projects": shared_projects, "dept_groups": dept_groups,
             "project_task_ids": project_task_ids, "tasks_by_id": tasks_by_id,
             "unrestricted_task_count": unrestricted_task_count, "project_task_names": project_task_names,
-            "shared_task_categories": shared_task_categories, "task_hours": task_hours,
+            "unrestricted_tasks": unrestricted_tasks,
         },
         db=db,
     )
@@ -3444,6 +3443,7 @@ def config_save(
     min_details_chars: str = Form("5"),
     max_break_minutes: str = Form("30"),
     comp_erases_strike: str = Form(""),
+    employment_details_enabled: str = Form(""),
     live_start_date: str = Form(""),
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
@@ -3459,6 +3459,7 @@ def config_save(
             "min_details_chars": str(parse_int_field(min_details_chars, "Minimum details length")),
             "max_break_minutes": str(parse_int_field(max_break_minutes, "Break allowance")),
             "comp_erases_strike": "1" if comp_erases_strike == "1" else "0",
+            "employment_details_enabled": "1" if employment_details_enabled == "1" else "0",
             "live_start_date": live_start_date.strip(),
         }
     except FormError as e:

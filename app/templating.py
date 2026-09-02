@@ -7,8 +7,9 @@ import time
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 from sqlalchemy import func, select
+from sqlalchemy.orm import object_session
 
-from app import models as m
+from app import engine, models as m
 from app.util import (
     STATUS_LABELS,
     STATUS_NAMES,
@@ -358,7 +359,26 @@ def _needs_profile_reminder(request, user) -> bool:
         return False
     if request.session.get("profile_reminder_dismissed"):
         return False
-    return user.personal_details is None or user.bank_details is None
+    if user.personal_details is None:
+        return True
+    # Bank & statutory details toggle (Ganesh, 2026-09-03, default disabled
+    # — see CONFIG_DEFAULTS in app/models.py) — while the section is hidden,
+    # an employee has no way to fill in bank_details at all, so this must
+    # stop requiring it or every employee would get nagged forever with no
+    # way to dismiss the underlying cause. object_session(user) reuses the
+    # same live SQLAlchemy session this function's own docstring already
+    # relies on for personal_details/bank_details lazy-loading, rather than
+    # threading a separate db argument through render()'s many employee-page
+    # call sites (most of which don't currently pass one at all). Falls back
+    # to "don't require it" if no live session is found — the safe default,
+    # and also what CONFIG_DEFAULTS itself defaults to.
+    sess = object_session(user)
+    employment_details_enabled = (
+        engine.get_config(sess).get("employment_details_enabled") == "1" if sess is not None else False
+    )
+    if not employment_details_enabled:
+        return False
+    return user.bank_details is None
 
 
 def render(request, name: str, ctx: dict, db=None, status_code: int = 200):
