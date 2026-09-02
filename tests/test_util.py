@@ -247,6 +247,94 @@ class TestFlagsToRole:
             assert flags_to_role(*role_to_flags(role)) == role
 
 
+class TestEnsureSuperAdminBackfill:
+    """Bug fixed 2026-09-02 (Ganesh: "why super admin tag showing for
+    admins, it should show admin") — see ensure_super_admin_backfill's own
+    docstring in app/util.py for the full root-cause explanation. Short
+    version: the old query filtered on `is_super_admin.isnot(True)`, which
+    in SQL matches both a still-NULL legacy row (correct to promote) AND a
+    row explicitly set to False (a real, deliberately department-scoped
+    Admin — wrong to promote). Since this function runs on every app
+    startup, that silently promoted every department-scoped Admin to
+    Super Admin the next time the app restarted. No test existed for this
+    function before this fix; these two cases are what should have caught
+    it from the start."""
+
+    @pytest.fixture()
+    def db(self):
+        eng = create_engine("sqlite://")
+        Base.metadata.create_all(eng)
+        s = sessionmaker(bind=eng)()
+        yield s
+        s.close()
+
+    def test_null_is_super_admin_gets_promoted(self, db):
+        # Simulates a real pre-2026-07-31 row: is_super_admin didn't exist
+        # yet, so a raw SQLite ADD COLUMN left it NULL. A raw UPDATE
+        # bypasses the ORM's Python-side default (which only ever fires on
+        # INSERT), reliably reproducing that NULL regardless of
+        # SQLAlchemy version — see the identical technique/reasoning in
+        # TestEnsureListStatusBackfill above.
+        emp = m.Employee(name="Legacy Admin", email="legacy@example.com", is_admin=True)
+        db.add(emp)
+        db.commit()
+        db.execute(update(m.Employee).where(m.Employee.id == emp.id).values(is_super_admin=None))
+        db.commit()
+
+        from app.util import ensure_super_admin_backfill
+        ensure_super_admin_backfill(db)
+
+        db.refresh(emp)
+        assert emp.is_super_admin is True
+
+    def test_explicit_false_is_left_alone(self, db):
+        # A normal department-scoped Admin, added through Roster any time
+        # after this column existed — a real INSERT, so is_super_admin is
+        # an actual False (the ORM default), never NULL. This must NOT be
+        # touched: this employee was deliberately made department-scoped,
+        # not accidentally un-migrated.
+        emp = m.Employee(
+            name="New Team Lead", email="lead@example.com", is_admin=True, is_super_admin=False,
+        )
+        db.add(emp)
+        db.commit()
+
+        from app.util import ensure_super_admin_backfill
+        ensure_super_admin_backfill(db)
+
+        db.refresh(emp)
+        assert emp.is_super_admin is False
+
+    def test_non_admin_is_untouched(self, db):
+        # A plain employee should never be promoted regardless of what
+        # is_super_admin happens to hold.
+        emp = m.Employee(name="Plain Employee", email="plain@example.com", is_admin=False)
+        db.add(emp)
+        db.commit()
+        db.execute(update(m.Employee).where(m.Employee.id == emp.id).values(is_super_admin=None))
+        db.commit()
+
+        from app.util import ensure_super_admin_backfill
+        ensure_super_admin_backfill(db)
+
+        db.refresh(emp)
+        assert emp.is_super_admin is None
+
+    def test_no_op_when_nothing_needs_backfilling(self, db):
+        # Safe to run on every startup forever, per the function's own
+        # docstring — confirms a second call changes nothing further.
+        emp = m.Employee(name="Super Admin", email="super@example.com", is_admin=True, is_super_admin=True)
+        db.add(emp)
+        db.commit()
+
+        from app.util import ensure_super_admin_backfill
+        ensure_super_admin_backfill(db)
+        ensure_super_admin_backfill(db)
+
+        db.refresh(emp)
+        assert emp.is_super_admin is True
+
+
 class TestEnsureBootstrapAdmins:
     """The BOOTSTRAP_ADMINS startup step (Ganesh, 2026-07-31) — solves a
     fresh-Postgres-deploy chicken-and-egg problem where /signup can't work

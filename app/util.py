@@ -230,15 +230,35 @@ def ensure_super_admin_backfill(db: Session) -> None:
     existing row NULL, not the ORM-level default — without this, every
     admin who could already see all departments would silently be demoted
     to department-scoped on upgrade. Anyone who was already is_admin=True
-    becomes is_super_admin=True; only NEW admins created after this point
-    default to department-scoped (see Employee.is_super_admin docstring).
-    A no-op once every admin already has the flag set — safe on every
-    startup, same pattern as ensure_employee_codes."""
+    and has never had this column set (still NULL) becomes is_super_admin=
+    True; only NEW admins created after this point default to department-
+    scoped (see Employee.is_super_admin docstring). A no-op once every
+    admin already has the flag explicitly set (True OR False) — safe on
+    every startup, same pattern as ensure_employee_codes.
+
+    Bug fixed 2026-09-02 (Ganesh: "why super admin tag showing for admins,
+    it should show admin"): this used to filter on
+    `is_super_admin.isnot(True)`, which in SQL's three-valued logic matches
+    BOTH still-NULL rows (the real "never migrated" case this function
+    exists for) AND rows explicitly set to False (every legitimately
+    department-scoped Admin created normally through Roster after this
+    column existed, since Employee.is_super_admin's ORM default of False
+    is a real False, not NULL, on every fresh INSERT). Because this
+    function runs on EVERY app startup — not once — that meant any
+    department-scoped Admin got silently promoted to Super Admin the very
+    next time the app restarted (a Cloud Run redeploy, cold start, etc.),
+    every time, forever. Filtering on `is_super_admin.is_(None)` instead
+    only ever matches a genuinely un-migrated legacy row, so a deliberately
+    department-scoped Admin's False now correctly stays False. This does
+    NOT retroactively fix anyone already wrongly promoted by the old query
+    before this fix shipped — check Roster for any Admin who should be
+    department-scoped but currently shows Super Admin, and reset their
+    Role via Roster -> Edit."""
     rows = list(
         db.execute(
             select(m.Employee).where(
                 m.Employee.is_admin.is_(True),
-                m.Employee.is_super_admin.isnot(True),
+                m.Employee.is_super_admin.is_(None),
             )
         ).scalars()
     )
