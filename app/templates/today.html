@@ -264,7 +264,7 @@
        navigating to a past/future day via the picker never moves these. #}
     <div class="week-circles">
       {% for c in week_circles %}
-      <span class="week-circle {{ c.state }}" title="{{ c.date|mdy }}">{{ c.label }}</span>
+      <span class="week-circle {{ c.state }} {{ 'off-day' if c.off_day }}" title="{{ c.date|mdy }}{{ ' — not a working day, but you can still log hours to compensate' if c.off_day }}">{{ c.label }}</span>
       {% endfor %}
     </div>
   </div>

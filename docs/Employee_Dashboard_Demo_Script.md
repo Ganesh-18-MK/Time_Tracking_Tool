@@ -26,7 +26,7 @@
 
 "Before anything else, at the very top you'll see **Punch In**. Click this when you start your workday — think of it as your attendance clock. It runs a countdown/timer so you can see how long you've been punched in."
 
-"Next to it is **Start Break** — use this whenever you step away, lunch or otherwise. Click it again (it'll say **End Break**) when you're back. This is separate from your task log — it doesn't log any Project or Task, it's purely your attendance record, and it's also what feeds the automatic overtime/compensation numbers you'll see later on My Hours."
+"Next to it is **Start Break** — use this whenever you step away, lunch or otherwise. Click it again (it'll say **End Break**) when you're back. This is separate from your task log — it doesn't log any Project or Task, it's purely your attendance record and a personal live countdown for the day. The compensation numbers you'll see later on My Hours come from your logged task rows, not from Punch In/Out."
 
 ### 2. Plan for the Day
 **(Do this)** Point at the **Plan for the Day** card.
@@ -96,7 +96,7 @@
 "You'll see a few boxes:
 - **Strikes this month** — how many days counted against you (missed or short days).
 - **Running hours balance** — are you ahead or behind your target overall this month.
-- **Compensation credit/owed** — this comes specifically from your Punch In/Out clock, separate from your task log balance.
+- **Compensation credit/owed** — this comes from your logged task rows too, same as the Running hours balance next to it, but it resets every month instead of running forever, and lets overtime elsewhere in the month automatically pay down a shortfall day.
 - **Leave days** — how many of each leave type you've used this month."
 
 ### Hours ledger
@@ -182,7 +182,7 @@ Any questions before we wrap up?"
 
 | Section | What it's for |
 |---|---|
-| My Day → Punch In & Break | Your attendance clock — separate from your task log; feeds the compensation numbers on My Hours |
+| My Day → Punch In & Break | Your attendance clock — separate from your task log; a personal live countdown only, doesn't feed the compensation numbers on My Hours (those come from your logged task rows) |
 | My Day → Plan for the Day | Jot down what you're planning to work on, with an optional time estimate |
 | My Day → Today's Plan | Your list of planned items; Start one to begin its timer |
 | My Day → Auto time capture | Live Start/Pause/Stop timer for logging time in real time |

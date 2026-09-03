@@ -482,7 +482,7 @@ def _week_summary(db: Session, emp: m.Employee, cfg, today: dt.date) -> dict:
     }
 
 
-def _week_day_circles(today: dt.date) -> list:
+def _week_day_circles(today: dt.date, work_days) -> list:
     """Mon-Sun circle row next to the Working date picker on Today (Ganesh,
     2026-08-30: "week days in circle... today should be other color
     highlighting and completed day should be greyed out"). Purely a
@@ -494,13 +494,25 @@ def _week_day_circles(today: dt.date) -> list:
     'past' (before today, this week), 'today', 'upcoming' (after today,
     still this week) — deliberately not tied to whether hours were logged
     that day (unlike _week_summary()'s day_badges), since the ask was
-    about calendar position, not compliance."""
+    about calendar position, not compliance.
+
+    Follow-up (Ganesh, 2026-09-03): "i think the weekends should be in
+    other color as they are not working days but some employee will do on
+    that day to compensate." Each circle also carries an `off_day` flag —
+    True when that weekday isn't in the employee's own `work_day_set`
+    (same source `_month_summary()`'s calendar_weekdays and
+    `_plan_ahead_max_date()` already read, so this generalizes to a
+    non-Mon-Fri schedule too, not just a hardcoded Sat/Sun). Deliberately
+    just a color cue, not disabled/hidden/struck-through — the whole point
+    Ganesh raised is that an employee CAN and does log hours on an
+    off-day to compensate, so it still has to look like a normal, usable
+    day, just visually distinct from an ordinary working day."""
     monday = today - dt.timedelta(days=today.weekday())
     circles = []
     for i, label in enumerate(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]):
         d = monday + dt.timedelta(days=i)
         state = "past" if d < today else ("today" if d == today else "upcoming")
-        circles.append({"label": label, "date": d, "state": state})
+        circles.append({"label": label, "date": d, "state": state, "off_day": i not in work_days})
     return circles
 
 
@@ -942,7 +954,7 @@ def today_page(
             "today": today,
             "allowed_dates": _allowed_dates(db, user, cfg),
             "plan_ahead_max_date": _plan_ahead_max_date(today, user.work_day_set),
-            "week_circles": _week_day_circles(today),
+            "week_circles": _week_day_circles(today, user.work_day_set),
             # plain dicts, not ORM objects — the template feeds these straight
             # into the searchable-combo widget via |tojson. Assigned ones
             # (Ganesh, 2026-08-01) sort first and get a ★ — advisory only,
@@ -1174,7 +1186,21 @@ def start_break(
 ):
     """Deliberately always 'today', regardless of what date the Today page
     happens to be viewing — a break is a live, right-now thing, not
-    something you log after the fact."""
+    something you log after the fact.
+
+    Break <-> Auto time capture mutual exclusion (Ganesh, 2026-09-03
+    bugfix, from a live screenshot: a task timer was still shown running
+    *during* an already-logged break, exactly overlapping it — validate_
+    entry() already correctly rejects that overlap for a manual Add Task
+    row, but nothing stopped the two LIVE start routes from disagreeing
+    with each other). Starting a break now auto-finishes whatever task
+    timer is currently running into a real TaskEntry first, via the same
+    _stop_current_timer_if_any() helper start_task_timer/start_plan
+    already use to auto-stop EACH OTHER — this just extends that one
+    "starting something live auto-closes whatever else was running"
+    convention to cover Break too, symmetric with
+    _end_current_break_if_any() below (the reverse direction: starting a
+    timer auto-ends a running break)."""
     today = today_local()
     break_type = break_type if break_type in m.BREAK_TYPES else m.BREAK_PERSONAL
 
@@ -1192,6 +1218,14 @@ def start_break(
         b.break_type == m.BREAK_LUNCH_DINNER for b in todays_breaks
     ):
         flash(request, "Lunch/Dinner break is allowed once per day — you've already taken it today.", "err")
+        return RedirectResponse("/today", status_code=303)
+
+    cfg = engine.get_config(db)
+    ok, error = _stop_current_timer_if_any(db, user, cfg)
+    if not ok:
+        # can't silently drop the running timer's time — make the
+        # employee resolve it (e.g. add Details) before starting a break
+        flash(request, f"Couldn't save the timer already running: {error}", "err")
         return RedirectResponse("/today", status_code=303)
 
     now = now_local()
@@ -1230,6 +1264,33 @@ def end_break(
             "ok",
         )
     return RedirectResponse("/today", status_code=303)
+
+
+def _end_current_break_if_any(db: Session, user: m.Employee) -> None:
+    """Symmetric counterpart to _stop_current_timer_if_any below (Ganesh,
+    2026-09-03 bugfix — see start_break()'s own docstring for the full
+    incident this pair of helpers fixes): whatever Break is currently
+    running for today gets auto-ended, exactly the same clamp_break_end
+    logic end_break() itself uses, right before Auto time capture or a
+    Plan's Start/Resume opens a new task timer — so a timer can never end
+    up running underneath an already-started break again. Deliberately a
+    plain function (not a route) with no return value: unlike a task
+    timer, ending a break can't itself fail validation, so there's no
+    (ok, error) pair to propagate back to the caller. A no-op when no
+    break is currently running."""
+    today = today_local()
+    active = db.execute(
+        select(m.BreakEntry).where(
+            m.BreakEntry.employee_id == user.id, m.BreakEntry.date == today,
+            m.BreakEntry.end_minute.is_(None),
+        )
+    ).scalar_one_or_none()
+    if active is None:
+        return
+    now = now_local()
+    active.end_minute = clamp_break_end(active.start_minute, now.hour * 60 + now.minute)
+    active.ended_at = dt.datetime.utcnow()
+    db.commit()
 
 
 def _log_timer_as_entry(db: Session, user: m.Employee, timer: m.ActiveTaskTimer, end_minute: int, cfg: dict):
@@ -1477,9 +1538,16 @@ def start_task_timer(
     right-now convention as Punch In and Break Start. Single active timer
     per employee (Ganesh, 2026-08-01): starting a new one auto-stops and
     saves whatever was already running as a real TaskEntry first, rather
-    than allowing several to run at once (see ActiveTaskTimer docstring)."""
+    than allowing several to run at once (see ActiveTaskTimer docstring).
+
+    Break <-> Auto time capture mutual exclusion (Ganesh, 2026-09-03
+    bugfix — see start_break()'s docstring for the incident): a running
+    Break is auto-ended first, so the two can never overlap live the way
+    the reported screenshot showed."""
     cfg = engine.get_config(db)
     today = today_local()
+
+    _end_current_break_if_any(db, user)
 
     ok, error = _stop_current_timer_if_any(db, user, cfg)
     if not ok:
@@ -1824,7 +1892,12 @@ def start_plan(
     ad-hoc Auto time capture timer, or a different plan) is auto-finished
     first via _stop_current_timer_if_any, same "starting a new one
     auto-stops the old one" convention Auto time capture already uses —
-    the employee doesn't have to remember to Pause the other one first."""
+    the employee doesn't have to remember to Pause the other one first.
+
+    Break <-> Auto time capture mutual exclusion (Ganesh, 2026-09-03
+    bugfix — see start_break()'s docstring): a running Break is
+    auto-ended first too, same as start_task_timer() does, so Starting a
+    plan can't end up running underneath a break either."""
     cfg = engine.get_config(db)
     plan = db.get(m.PlannedTask, plan_id)
     if plan is None or plan.employee_id != user.id:
@@ -1849,6 +1922,8 @@ def start_plan(
     if project is None or not project.active or task is None or not task.active:
         flash(request, "That plan's Project/Task is no longer active — edit it first.", "err")
         return RedirectResponse("/today", status_code=303)
+
+    _end_current_break_if_any(db, user)
 
     ok, error = _stop_current_timer_if_any(db, user, cfg)
     if not ok:

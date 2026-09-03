@@ -30,12 +30,12 @@
     <div class="n">{{ balance|hm_signed }}</div>
     <div class="l">net hours balance this month</div>
   </div>
-  <div class="kpi {{ 'okk' if comp.balance >= 0 else 'badk' }}" title="From Punch In/Out, automatic — separate from the manual Compensation links below. Overtime beyond what's owed banks as credit for the rest of the month.">
+  <div class="kpi {{ 'okk' if comp.balance >= 0 else 'badk' }}" title="From logged task rows, automatic — separate from the manual Compensation links below. Overtime beyond what's owed banks as credit for the rest of the month. Resets monthly, unlike the net hours balance above which runs forever.">
     <div class="n">{{ comp.balance|hm_signed }}</div>
     <div class="l">
-      {% if comp.balance > 0 %}compensation credit (Punch Clock, auto)
-      {% elif comp.balance < 0 %}compensation owed (Punch Clock, auto)
-      {% else %}compensation (Punch Clock, auto) — none{% endif %}
+      {% if comp.balance > 0 %}compensation credit (auto, this month)
+      {% elif comp.balance < 0 %}compensation owed (auto, this month)
+      {% else %}compensation (auto, this month) — none{% endif %}
     </div>
   </div>
 </div>
@@ -88,17 +88,18 @@
 
 {% if comp.days %}
 <div class="card">
-  <div class="card-head"><h2 style="margin-top:0">Punch Clock compensation (automatic)</h2></div>
+  <div class="card-head"><h2 style="margin-top:0">Task Log compensation (automatic)</h2></div>
   <p class="small muted" style="margin:-4px 0 10px">Separate from the manual Compensation links below —
-  this comes from Punch In/Out shortfall vs. overtime and updates on its own, no admin action needed.</p>
+  this comes from logged task-row shortfall vs. overtime and updates on its own, no admin action needed.
+  Resets every calendar month (switched from Punch In/Out to Task Log time, Ganesh, 2026-09-03).</p>
   <table>
-    <thead><tr><th>Date</th><th>Target</th><th>Punched</th><th>Shortfall</th><th>Overtime</th></tr></thead>
+    <thead><tr><th>Date</th><th>Target</th><th>Logged</th><th>Shortfall</th><th>Overtime</th></tr></thead>
     <tbody>
       {% for d in comp.days|reverse %}
       <tr>
         <td class="nowrap">{{ d.date.strftime('%a') }} {{ d.date|mdy }}</td>
         <td>{{ d.target|hm }}</td>
-        <td>{{ d.punched|hm }}</td>
+        <td>{{ d.logged|hm }}</td>
         <td>{{ d.shortfall|hm if d.shortfall else '—' }}</td>
         <td>{{ d.overtime|hm if d.overtime else '—' }}</td>
       </tr>

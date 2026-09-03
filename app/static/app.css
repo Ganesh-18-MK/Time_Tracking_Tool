@@ -529,6 +529,19 @@ tr.overtime-row td { background: var(--warn-bg); }
 .week-circle.past { background: var(--pending-bg); color: var(--muted); }
 .week-circle.today { background: var(--accent); color: var(--accent-ink); }
 .week-circle.upcoming { background: var(--ok-bg); color: var(--ok); }
+/* Weekend/off-day circles (Ganesh, 2026-09-03: "weekends should be in
+   other color as they are not working days but some employee will do on
+   that day to compensate") — reuses the same --hol-bg/--muted pairing
+   .b-holiday/.b-weekend and .c-holiday/.c-weekend already use elsewhere
+   for "non-working day," rather than inventing a new hue. Two-class
+   selectors so they win over the single-class .past/.upcoming rules
+   above regardless of source order; .today.off-day is spelled out
+   explicitly (even though it matches .today's own values) so a day that
+   happens to be both "today" and an off-day is unambiguously still the
+   highlighted "today" color, not the muted off-day one — this is a color
+   cue only, never disabled, since hours can still be logged on it. */
+.week-circle.past.off-day, .week-circle.upcoming.off-day { background: var(--hol-bg); color: var(--muted); }
+.week-circle.today.off-day { background: var(--accent); color: var(--accent-ink); }
 /* Today page "My Month" card — mini working-days calendar (Ganesh,
    2026-08-29). flex (not a fixed-count CSS grid) so it works regardless
    of how many columns this employee's work_day_set produces (5 for a

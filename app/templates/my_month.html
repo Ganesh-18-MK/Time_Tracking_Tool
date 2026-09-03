@@ -17,7 +17,7 @@
     <div class="n">{{ balance|hm_signed }}</div>
     <div class="l">running hours balance (extra/short)</div>
   </div>
-  <div class="kpi {{ 'okk' if comp.balance >= 0 else 'badk' }}" title="From Punch In/Out, not your logged task rows — separate from the balance above. Overtime beyond what's owed banks as credit for the rest of the month.">
+  <div class="kpi {{ 'okk' if comp.balance >= 0 else 'badk' }}" title="From your logged task rows, same source as the Running hours balance above — resets every calendar month instead of running forever, and lets overtime elsewhere this month automatically pay down a shortfall day. One real difference: hours logged on an off day (weekend/holiday) to compensate count in the balance above but not in this one.">
     <div class="n">{{ comp.balance|hm_signed }}</div>
     <div class="l">
       {% if comp.balance > 0 %}compensation credit this month (ahead of target)
