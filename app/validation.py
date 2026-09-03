@@ -260,6 +260,37 @@ def validate_entry(
                 )
                 break
 
+        # --- no manually logging over a currently-running task timer ---------
+        # Symmetric with the open-break check just above (Ganesh, 2026-09-03
+        # bugfix, from a screenshot: Auto time capture started 11:50 AM; the
+        # employee manually Added Task 11:50 AM-12:20 PM while it was still
+        # running — nothing checked that against the live timer, so it saved
+        # fine, and only Stopping the timer afterward failed, with "Overlaps
+        # existing row 11:50 AM-12:20 PM" once the timer's own real segment
+        # tried to log across that same window). A running timer's true end
+        # time isn't known yet — same reasoning as an open break above — so
+        # it blocks everything from its start to end of day, not just up to
+        # "now": allowing something between "now" and the eventual real Stop
+        # time would just recreate this same failure later, one step
+        # removed. Skipped when closing_existing=True: that flag is only
+        # ever passed by _log_timer_as_entry() finishing THE running timer
+        # itself (one timer per employee, DB-enforced — see
+        # ActiveTaskTimer's own UniqueConstraint), so the timer this check
+        # would find is always this exact entry, not a different one to
+        # protect against.
+        if not closing_existing:
+            active_timer = db.execute(
+                select(m.ActiveTaskTimer).where(
+                    m.ActiveTaskTimer.employee_id == emp.id, m.ActiveTaskTimer.date == date,
+                )
+            ).scalar_one_or_none()
+            if active_timer is not None and active_timer.start_minute < end_minute:
+                errors.append(
+                    f"Auto time capture is currently running (started "
+                    f"{fmt_minute(active_timer.start_minute)}) — pause or stop it "
+                    f"before logging a row that overlaps that time."
+                )
+
     if errors:
         raise EntryError(errors)
 
@@ -310,6 +341,20 @@ def suggest_non_overlapping_start(
         b_end = b.end_minute if b.end_minute is not None else 1440
         if start_minute < b_end and b.start_minute < end_minute:
             conflict_end = max(conflict_end or 0, b_end)
+
+    # A currently-running task timer (Ganesh, 2026-09-03 bugfix) — same
+    # conflict shape validate_entry() now checks above, duplicated here for
+    # the same reason this function already duplicates the break/TaskEntry
+    # conditions rather than calling validate_entry() (see this function's
+    # own docstring): a running timer has no known end yet, so it conflicts
+    # with anything from its start to end of day, same as an open break.
+    active_timer = db.execute(
+        select(m.ActiveTaskTimer).where(
+            m.ActiveTaskTimer.employee_id == emp.id, m.ActiveTaskTimer.date == date
+        )
+    ).scalar_one_or_none()
+    if active_timer is not None and active_timer.start_minute < end_minute:
+        conflict_end = max(conflict_end or 0, 1440)
 
     return conflict_end
 

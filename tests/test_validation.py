@@ -252,6 +252,19 @@ class TestClosingExistingBypass:
             s, emp, start_minute=600, end_minute=540, closing_existing=True
         )
 
+    def test_closing_existing_bypasses_the_new_active_timer_check(self, db):
+        # 2026-09-03, same day as the Add-Task-vs-running-timer bugfix
+        # (TestActiveTimerOverlap below) — _log_timer_as_entry() always
+        # passes closing_existing=True to close out THE one active timer a
+        # given employee can have; that call's own final segment trivially
+        # "overlaps" itself (same start_minute), so this check must not
+        # fire for it, or Stop/Pause could never succeed at all.
+        s, emp = db
+        s.add(m.ActiveTaskTimer(employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                                 start_minute=540, started_at=dt.datetime.utcnow()))
+        s.commit()
+        v(s, emp, start_minute=540, end_minute=600, closing_existing=True)  # no error raised
+
 
 class TestOverlaps:
     def test_overlap_rejected(self, db):
@@ -315,6 +328,54 @@ class TestBreakOverlap:
         assert "break" in errs(s, emp, start_minute=780, end_minute=840)
 
 
+class TestActiveTimerOverlap:
+    """Bug fix (Ganesh, 2026-09-03, from a screenshot): Auto time capture
+    started 11:50 AM; the employee manually Added Task 11:50 AM-12:20 PM
+    while it was still running. Nothing checked that manual row against the
+    live timer, so it saved fine — then Stopping the timer failed with
+    "Overlaps existing row 11:50 AM-12:20 PM" once the timer's own real
+    segment tried to log across that same window, leaving the employee
+    stuck (Pause/Stop both fail the same way; Cancel is the only way out,
+    and it discards the timer's real elapsed time). Fixed by treating a
+    currently-running ActiveTaskTimer exactly like an open/still-running
+    BreakEntry above: it blocks from its start to end of day, since its
+    real end isn't known yet either."""
+
+    def test_entry_overlapping_a_running_timer_is_blocked(self, db):
+        s, emp = db
+        s.add(m.ActiveTaskTimer(employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                                 start_minute=710, started_at=dt.datetime.utcnow()))  # 11:50 AM
+        s.commit()
+        msg = errs(s, emp, start_minute=710, end_minute=750)  # 11:50 AM-12:30 PM
+        assert "Auto time capture is currently running" in msg
+
+    def test_entry_starting_before_and_running_into_the_timer_is_blocked(self, db):
+        s, emp = db
+        s.add(m.ActiveTaskTimer(employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                                 start_minute=710, started_at=dt.datetime.utcnow()))
+        s.commit()
+        assert "Auto time capture is currently running" in errs(s, emp, start_minute=690, end_minute=720)
+
+    def test_entry_entirely_before_the_timer_starts_is_allowed(self, db):
+        s, emp = db
+        s.add(m.ActiveTaskTimer(employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                                 start_minute=710, started_at=dt.datetime.utcnow()))
+        s.commit()
+        v(s, emp, start_minute=600, end_minute=710)  # ends exactly when the timer starts — fine
+
+    def test_entry_on_a_different_day_than_the_timer_is_unaffected(self, db):
+        s, emp = db
+        s.add(m.ActiveTaskTimer(employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                                 start_minute=710, started_at=dt.datetime.utcnow()))
+        s.commit()
+        yesterday = TODAY - dt.timedelta(days=1)
+        v(s, emp, date=yesterday, start_minute=600, end_minute=660)
+
+    def test_no_timer_running_is_unaffected(self, db):
+        s, emp = db
+        v(*db)  # no ActiveTaskTimer row at all — the whole check is a no-op
+
+
 class TestSuggestNonOverlappingStart:
     """Ganesh, 2026-08-14: a failed Add Row used to reset the whole form and
     leave the employee to guess a new time by trial and error.
@@ -366,6 +427,15 @@ class TestSuggestNonOverlappingStart:
                             start_minute=600, end_minute=None))
         s.commit()
         assert suggest_non_overlapping_start(s, emp, TODAY, 610, 650) == 1440
+
+    def test_running_timer_extends_to_end_of_day(self, db):
+        # Ganesh, 2026-09-03 bugfix — same "unknown real end" reasoning as
+        # an open break just above
+        s, emp = db
+        s.add(m.ActiveTaskTimer(employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                                 start_minute=710, started_at=dt.datetime.utcnow()))
+        s.commit()
+        assert suggest_non_overlapping_start(s, emp, TODAY, 700, 750) == 1440
 
     def test_editing_own_row_excludes_itself_via_entry_id(self, db):
         s, emp = db
