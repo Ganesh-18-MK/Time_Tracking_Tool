@@ -740,6 +740,18 @@ details > summary { cursor: pointer; color: var(--accent); }
 .tree-task-acts form.inline { display: inline; }
 .tree-task-rename { display: flex; gap: 6px; flex-basis: 100%; margin-top: 2px; }
 .tree-task-rename input { flex: 1; }
+/* "Manage projects" panel on the "Tasks not linked to any project" list
+   (Ganesh, 2026-09-03: "can these be allocate to particular projects") —
+   drops to its own full-width line like .tree-task-rename above, but holds
+   the block-level .msdrop widget (search + checkbox list of every project)
+   instead of a single inline input, so it isn't itself a flex row. */
+.tree-task-projects { flex-basis: 100%; margin-top: 6px; }
+.tree-task-projects .msdrop { max-width: 320px; }
+/* Deactivated Projects list's "Manage departments" panel (Ganesh, 2026-09-03) —
+   same drop-to-full-width-line convention as .tree-task-rename/.tree-task-projects,
+   reuses the existing .deptpills/.deptpill checkbox chips a project's own
+   in-tree edit panel already uses, just relocated to this standalone row. */
+.tree-proj-depts { flex-basis: 100%; margin-top: 6px; max-width: 420px; }
 
 /* Department -> Employee picker tree on Assign Work (Ganesh, 2026-08-29) —
    an employee row is a plain link (a leaf, unlike .tree-proj which itself

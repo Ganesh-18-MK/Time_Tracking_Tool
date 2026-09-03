@@ -1719,29 +1719,61 @@ def lists_page(
     # project's edit panel more than once; its "Manage departments" panel
     # still lists every department it's actually linked to, unaffected by
     # which one it happens to be filed under here.
-    shared_projects = [p for p in projects if not project_department_names.get(p.id)]
+    # Deactivated projects/tasks come OUT of the tree entirely (Ganesh,
+    # 2026-09-03: "if we deactivated those are still showinf under each
+    # projects but as greay out and as deactivated, i want it to be like
+    # unlinked tasks... i want deactivated list of projects & tasks from
+    # there we can activate again and even we can changes... which
+    # departmet it should belongs" — confirmed via AskUserQuestion: remove
+    # from the tree entirely rather than also keep the old grayed-out inline
+    # display, and use two separate lists (Deactivated Projects/Deactivated
+    # Tasks) further down the page — see inactive_projects/inactive_tasks
+    # below). active_projects is the pickable-target list for every
+    # "which project(s) does this belong to" control on this page (a
+    # project's own "+ Task" quick-add already only ever offered active
+    # projects via its own combo elsewhere; this makes the Manage-projects/
+    # Manage-departments checklists on this page consistent with that —
+    # linking a task to an inactive project, or picking a department for
+    # one, was never meaningful).
+    active_projects = [p for p in projects if p.active]
+    shared_projects = [p for p in active_projects if not project_department_names.get(p.id)]
     dept_groups = []
     for d in all_departments:
         dept_projects = [
-            p for p in projects
+            p for p in active_projects
             if project_department_names.get(p.id) and d == sorted(project_department_names[p.id])[0]
         ]
         dept_groups.append({"name": d, "projects": dept_projects})
+    inactive_projects = sorted((p for p in projects if not p.active), key=lambda p: p.name)
 
     # project_task_ids: project_id -> [task_type_id, ...] EXPLICITLY linked
     # to it (the inverse of task_project_ids above) — what a project's tree
-    # node shows inline. A task with NO links at all (unrestricted, usable
-    # under every project — the large majority right now, see ProjectTask's
-    # docstring) is deliberately NOT duplicated under all ~300 projects;
-    # it only ever shows once, in the "All Tasks" list below the tree,
-    # which is also still the one place to narrow/rename/deactivate any
-    # task regardless of whether it happens to be narrowed to a project.
-    project_task_ids: Dict[int, list] = {p.id: [] for p in projects}
-    for tid, pids in task_project_ids.items():
-        for pid in pids:
-            project_task_ids.setdefault(pid, []).append(tid)
+    # node shows inline. Filtered to ACTIVE tasks only — a deactivated task
+    # now lives exclusively in the "Deactivated Tasks" list below, same
+    # "remove from the tree entirely" rule as deactivated projects above,
+    # rather than still showing grayed-out nested under an (active) project.
+    # A task with NO links at all (unrestricted, usable under every project
+    # — the large majority right now, see ProjectTask's docstring) is
+    # deliberately NOT duplicated under all ~300 projects; it only ever
+    # shows once, in the "Tasks not linked to any project" list below the
+    # tree, which is also still the one place to narrow/rename/deactivate
+    # any active task regardless of whether it happens to be narrowed to a
+    # project.
     tasks_by_id = {t.id: t for t in tasks}
-    unrestricted_task_count = sum(1 for t in tasks if not task_project_ids.get(t.id))
+    active_project_ids = {p.id for p in active_projects}
+    project_task_ids: Dict[int, list] = {p.id: [] for p in active_projects}
+    for tid, pids in task_project_ids.items():
+        t = tasks_by_id.get(tid)
+        if t is None or not t.active:
+            continue
+        for pid in pids:
+            if pid in project_task_ids:
+                project_task_ids[pid].append(tid)
+    unrestricted_task_count = sum(
+        1 for t in tasks
+        if t.active and not (set(task_project_ids.get(t.id, [])) & active_project_ids)
+    )
+    inactive_tasks = sorted((t for t in tasks if not t.active), key=lambda t: t.name)
 
     # "Tasks not linked to any project" plain list (Ganesh, 2026-09-03,
     # replacing the 2026-08-30 Category -> Task hours-rollup grouping under
@@ -1758,17 +1790,29 @@ def lists_page(
     # linked tasks), with no separate task-level breakdown or hours
     # anywhere on this page. Per the same answer's second question, a
     # lightweight (name + status only, no hours, no category grouping)
-    # replacement was kept so a task not yet linked to any project — the
-    # large majority, same set unrestricted_task_count above already counts
-    # — is still findable/renameable/deactivatable from *somewhere* on this
-    # page, since the original flat "All Tasks" table was already removed
-    # 2026-08-30. `TaskType.category` itself is untouched (still a real,
-    # admin-settable column — see the 2026-08-30 bullet on it in
-    # CLAUDE.md) — it's just no longer surfaced anywhere on this page, since
-    # its only display/edit UI was this grouping.
+    # replacement was kept so a task not yet linked to any project is still
+    # findable/renameable/manageable from *somewhere* on this page, since
+    # the original flat "All Tasks" table was already removed 2026-08-30.
+    # `TaskType.category` itself is untouched (still a real, admin-settable
+    # column — see the 2026-08-30 bullet on it in CLAUDE.md) — it's just no
+    # longer surfaced anywhere on this page, since its only display/edit UI
+    # was this grouping.
+    #
+    # Scope narrowed to ACTIVE tasks only, same day (Ganesh, 2026-09-03,
+    # "i want deactivated list of projects & tasks" instead) — a deactivated
+    # task now belongs exclusively in the new "Deactivated Tasks" list
+    # below, not doubled up here too. The "unrestricted" test also changed
+    # from "zero ProjectTask rows at all" to "no ACTIVE project claims it" —
+    # a task linked ONLY to project(s) that have since been deactivated
+    # would otherwise vanish from view entirely once deactivated projects
+    # stop rendering in the tree (a real, if rare, edge case worth guarding
+    # against rather than silently orphaning the task).
     unrestricted_tasks = sorted(
-        (t for t in tasks if not task_project_ids.get(t.id)),
-        key=lambda t: (not t.active, t.name),
+        (
+            t for t in tasks
+            if t.active and not (set(task_project_ids.get(t.id, [])) & active_project_ids)
+        ),
+        key=lambda t: t.name,
     )
 
     # Plain "name, name, name" per project (not a Jinja custom filter) —
@@ -1788,7 +1832,8 @@ def lists_page(
             "shared_projects": shared_projects, "dept_groups": dept_groups,
             "project_task_ids": project_task_ids, "tasks_by_id": tasks_by_id,
             "unrestricted_task_count": unrestricted_task_count, "project_task_names": project_task_names,
-            "unrestricted_tasks": unrestricted_tasks,
+            "unrestricted_tasks": unrestricted_tasks, "active_projects": active_projects,
+            "inactive_projects": inactive_projects, "inactive_tasks": inactive_tasks,
         },
         db=db,
     )
@@ -1862,6 +1907,40 @@ def lists_add(
         if kind == "project":
             audit_extra["department_count"] = dept_count
         audit(db, admin.name, f"add_{kind}", kind, name, audit_extra)
+    elif kind == "task":
+        # Bug fix (Ganesh, 2026-09-03: "when i try to move some of the tasks
+        # not linked to a project to the project it says they have already
+        # been added and leaves them in the unlinked list") — typing an
+        # EXISTING task's exact name into a DIFFERENT project's own "+ Task"
+        # quick-add is the obvious, most-discoverable way someone would try
+        # to move/link an unlinked task into a project (more so than the
+        # "Tasks not linked to any project" list's own "Manage projects"
+        # panel below, which does the same thing but is a level down the
+        # page). Before this fix, that just hit the generic "'X' already
+        # exists" rejection below and left the task's own ProjectTask links
+        # completely untouched — a dead end with no forward path, matching
+        # exactly what Ganesh reported. Now: if the existing task isn't
+        # already linked to THIS project, link it (additive — any other
+        # project(s) it's already scoped to, if any, are left alone; only
+        # the "Manage projects" panel's replace-all form redefines the
+        # whole set at once) instead of failing outright. If it was
+        # previously unrestricted (zero ProjectTask rows), this correctly
+        # narrows it to just this project — that's the whole point of
+        # "moving" it out of the unlinked list, same as the Manage-projects
+        # panel's own effect.
+        already_linked = db.execute(
+            select(m.ProjectTask).where(
+                m.ProjectTask.task_type_id == exists.id,
+                m.ProjectTask.project_id == project.id,
+            )
+        ).scalar_one_or_none()
+        if already_linked is not None:
+            flash(request, f"'{name}' is already linked to {project.name}.", "err")
+        else:
+            db.add(m.ProjectTask(project_id=project.id, task_type_id=exists.id, created_by=admin.name))
+            db.commit()
+            audit(db, admin.name, "task_projects_link", "TaskType", name, {"project": project.name})
+            flash(request, f"'{name}' already existed — linked it to {project.name} as well.", "ok")
     else:
         flash(request, f"'{name}' already exists.", "err")
     return RedirectResponse("/admin/lists", status_code=303)

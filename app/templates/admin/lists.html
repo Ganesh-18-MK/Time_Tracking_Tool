@@ -205,30 +205,155 @@ available to everyone; see "Manage departments" on a project to narrow it.</p>
   the 2026-08-30 category/hours breakdown that used to sit there, which Ganesh flagged as confusing (2026-09-03):
   since only a handful of tasks have ever been linked to a specific project, that breakdown ended up showing nearly
   every task in the system. This is just a plain list so a task like this stays findable, renameable, and
-  deactivatable — link one to a specific project via that project's "+ Task" above, or a task's own "Manage projects"
-  panel elsewhere in this tree, to narrow it out of here.</p>
+  deactivatable — narrow one to a specific project via that project's own "+ Task" above (creates a new task already
+  linked), or right here via "Manage projects" (links this exact task to one or more existing projects — it drops out
+  of this list the moment it's linked to anything). Deactivated tasks live in their own list further down, not here.</p>
   {% if unrestricted_tasks %}
   {% for t in unrestricted_tasks %}
-  <div class="tree-task-row" {% if not t.active %}style="opacity:.5"{% endif %}>
+  <div class="tree-task-row">
     <span>· {{ t.name }}</span>
     {% if t.status == 'pending' %}<span class="badge b-pending" title="Suggested by an employee — not yet reviewed on the Suggestions page">pending approval</span>{% endif %}
-    {% if not t.active %}<span class="muted">(inactive)</span>{% endif %}
     {% if user.is_super_admin %}
     <span class="tree-task-acts">
       <button type="button" class="lnk" onclick="treeToggleTaskRename(this)">Edit</button>
+      <button type="button" class="lnk" onclick="treeToggleTaskProjects(this)">Manage projects</button>
       <form method="post" action="/admin/lists/task/{{ t.id }}/toggle" class="inline">
-        <button type="submit" class="lnk danger">{{ 'Deactivate' if t.active else 'Reactivate' }}</button>
+        <button type="submit" class="lnk danger">Deactivate</button>
       </form>
     </span>
     <form method="post" action="/admin/lists/task/{{ t.id }}/rename" class="tree-task-rename" hidden>
       <input name="name" value="{{ t.name }}" required>
       <button class="small">Save</button>
     </form>
+    <!-- "Manage projects" (Ganesh, 2026-09-03: "can these be allocate to
+         particular projects") — the lists_task_projects() route (2026-08-27)
+         was always there, it just lost its only UI panel when the flat "All
+         Tasks" table was removed 2026-08-30. Reuses the exact .msdrop
+         search+checkbox widget Reports -> Time by Project/Task's own
+         Projects filter already uses for the same "~300 possible options"
+         scale — a plain checkbox list that size would be unusable. Every
+         task here is unrestricted BY DEFINITION (task_project_ids empty),
+         so nothing is ever pre-checked; the first save moves it out of this
+         list entirely, onto its newly-linked project's own tree node. Only
+         ACTIVE projects are offered (active_projects, not the full
+         projects list) — linking a task to a deactivated project was never
+         meaningful, same reasoning as the Deactivated Tasks list below. -->
+    <form method="post" action="/admin/lists/task/{{ t.id }}/projects" class="tree-task-projects" hidden>
+      <div class="msdrop" data-empty-label="Choose project(s)" data-noun-plural="project(s)">
+        <button type="button" class="msdrop-toggle">
+          <span class="msdrop-label">Choose project(s)</span>
+          <span class="msdrop-caret">▾</span>
+        </button>
+        <div class="msdrop-menu msdrop-panel" hidden>
+          <input type="search" class="ms-search" data-filter-checkboxes="ms-taskproj-{{ t.id }}" placeholder="Search projects…">
+          <div class="ms-box" id="ms-taskproj-{{ t.id }}">
+            {% for p in active_projects %}
+            <label class="ms-opt"><input type="checkbox" name="project_ids" value="{{ p.id }}">{{ p.name }}</label>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      <button class="small" style="margin-top:6px">Save</button>
+    </form>
     {% endif %}
   </div>
   {% endfor %}
   {% else %}
-  <div class="tree-empty">Every task is currently linked to at least one project.</div>
+  <div class="tree-empty">Every active task is currently linked to at least one project.</div>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-top:18px">
+  <div class="card-head"><h2 style="margin-top:0">Deactivated Projects</h2></div>
+  <p class="small muted" style="margin:-4px 0 10px">Ganesh, 2026-09-03: "if we deactivated those are still showinf under
+  each projects but as greay out... i want it to be like unlinked tasks... i want deactivated list of projects &amp; tasks
+  from there we can activate again and even we can changes... which departmet it should belongs." A deactivated project no
+  longer shows (even grayed out) under "All departments" or a department group above — it lives only here until
+  reactivated. Reactivating doesn't require picking a department first — its existing department links (if any) are
+  untouched either way, and "Manage departments" works the same whether the project is active or not.</p>
+  {% if inactive_projects %}
+  {% for p in inactive_projects %}
+  <div class="tree-task-row">
+    <span>· {{ p.name }}</span>
+    {% if p.is_case_type %}<span class="badge b-plan-not-started" title="Employees see a Client field for this project">Case Type</span>{% endif %}
+    {% if p.status == 'pending' %}<span class="badge b-pending" title="Suggested by an employee — not yet reviewed on the Suggestions page">pending approval</span>{% endif %}
+    {% if user.is_super_admin %}
+    <span class="tree-task-acts">
+      <button type="button" class="lnk" onclick="treeToggleTaskRename(this)">Edit</button>
+      <button type="button" class="lnk" onclick="treeToggleProjectDepts(this)">Manage departments</button>
+      <form method="post" action="/admin/lists/project/{{ p.id }}/toggle" class="inline">
+        <button type="submit" class="lnk">Reactivate</button>
+      </form>
+    </span>
+    <form method="post" action="/admin/lists/project/{{ p.id }}/rename" class="tree-task-rename" hidden>
+      <input name="name" value="{{ p.name }}" required>
+      <button class="small">Save</button>
+    </form>
+    <div class="tree-proj-depts" hidden>
+      <form method="post" action="/admin/lists/project/{{ p.id }}/departments">
+        <div class="deptpills">
+          {% for d in all_departments %}
+          <label class="deptpill"><input type="checkbox" name="departments" value="{{ d }}" {{ 'checked' if d in project_department_names.get(p.id, []) }}>{{ d }}</label>
+          {% endfor %}
+        </div>
+        <input name="other_department" placeholder="Other department not listed above" style="width:100%;margin-top:8px">
+        <p class="small muted" style="margin:6px 0 0">Nothing checked/filled = available to every department.</p>
+        <button class="small" style="margin-top:8px">Save</button>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% else %}
+  <div class="tree-empty">Nothing is currently deactivated.</div>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-top:18px">
+  <div class="card-head"><h2 style="margin-top:0">Deactivated Tasks</h2></div>
+  <p class="small muted" style="margin:-4px 0 10px">Same as Deactivated Projects above — a deactivated task no longer
+  shows (grayed out or otherwise) nested under any project or in "Tasks not linked to any project"; it lives only here
+  until reactivated. "Manage projects" reflects whatever it was already linked to before being deactivated (if
+  anything), and only offers active projects as new targets.</p>
+  {% if inactive_tasks %}
+  {% for t in inactive_tasks %}
+  <div class="tree-task-row">
+    <span>· {{ t.name }}</span>
+    {% if t.status == 'pending' %}<span class="badge b-pending" title="Suggested by an employee — not yet reviewed on the Suggestions page">pending approval</span>{% endif %}
+    {% if user.is_super_admin %}
+    <span class="tree-task-acts">
+      <button type="button" class="lnk" onclick="treeToggleTaskRename(this)">Edit</button>
+      <button type="button" class="lnk" onclick="treeToggleTaskProjects(this)">Manage projects</button>
+      <form method="post" action="/admin/lists/task/{{ t.id }}/toggle" class="inline">
+        <button type="submit" class="lnk">Reactivate</button>
+      </form>
+    </span>
+    <form method="post" action="/admin/lists/task/{{ t.id }}/rename" class="tree-task-rename" hidden>
+      <input name="name" value="{{ t.name }}" required>
+      <button class="small">Save</button>
+    </form>
+    <form method="post" action="/admin/lists/task/{{ t.id }}/projects" class="tree-task-projects" hidden>
+      <div class="msdrop" data-empty-label="Choose project(s)" data-noun-plural="project(s)">
+        <button type="button" class="msdrop-toggle">
+          <span class="msdrop-label">Choose project(s)</span>
+          <span class="msdrop-caret">▾</span>
+        </button>
+        <div class="msdrop-menu msdrop-panel" hidden>
+          <input type="search" class="ms-search" data-filter-checkboxes="ms-deacttaskproj-{{ t.id }}" placeholder="Search projects…">
+          <div class="ms-box" id="ms-deacttaskproj-{{ t.id }}">
+            {% for p in active_projects %}
+            <label class="ms-opt"><input type="checkbox" name="project_ids" value="{{ p.id }}" {{ 'checked' if p.id in task_project_ids.get(t.id, []) }}>{{ p.name }}</label>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      <button class="small" style="margin-top:6px">Save</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% else %}
+  <div class="tree-empty">Nothing is currently deactivated.</div>
   {% endif %}
 </div>
 
@@ -286,6 +411,22 @@ function treeToggleTaskRename(btn) {
   var form = row && row.querySelector(':scope > .tree-task-rename');
   if (!form) return;
   form.hidden = !form.hidden;
+}
+
+// "Manage projects" toggle on the "Tasks not linked to any project" list
+// (Ganesh, 2026-09-03) — same pattern as treeToggleTaskRename() above, just
+// a different sibling form.
+function treeToggleTaskProjects(btn) {
+  var row = btn.closest('.tree-task-row');
+  var form = row && row.querySelector(':scope > .tree-task-projects');
+  if (!form) return;
+  form.hidden = !form.hidden;
+}
+function treeToggleProjectDepts(btn) {
+  var row = btn.closest('.tree-task-row');
+  var panel = row && row.querySelector(':scope > .tree-proj-depts');
+  if (!panel) return;
+  panel.hidden = !panel.hidden;
 }
 </script>
 {% endblock %}
