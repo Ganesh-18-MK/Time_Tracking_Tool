@@ -24,7 +24,7 @@ from app.util import (
     fmt_date,
     fmt_time,
     normalize_title_case,
-    now_local,
+    now_for_employee,
     overtime_minutes,
     overtime_row_flags,
     parse_date_field,
@@ -1228,7 +1228,11 @@ def start_break(
         flash(request, f"Couldn't save the timer already running: {error}", "err")
         return RedirectResponse("/today", status_code=303)
 
-    now = now_local()
+    # Per-employee clock timezone (Ganesh, 2026-09-04) — the MINUTE stamped
+    # here follows this employee's own clock (see util.now_for_employee()'s
+    # own docstring for exactly what this does and doesn't change); `today`
+    # above is still today_local()/BUSINESS_TZ, unchanged.
+    now = now_for_employee(user)
     db.add(m.BreakEntry(
         employee_id=user.id, date=today, break_type=break_type,
         start_minute=now.hour * 60 + now.minute,
@@ -1253,7 +1257,11 @@ def end_break(
         )
     ).scalar_one_or_none()
     if active is not None:
-        now = now_local()
+        # Per-employee clock timezone (Ganesh, 2026-09-04) — same employee
+        # whose start_minute above was stamped from now_for_employee(), so
+        # the end must come from the same clock or the duration would be
+        # nonsense (see util.now_for_employee()'s own docstring).
+        now = now_for_employee(user)
         active.end_minute = clamp_break_end(active.start_minute, now.hour * 60 + now.minute)
         active.ended_at = dt.datetime.utcnow()
         db.commit()
@@ -1287,7 +1295,7 @@ def _end_current_break_if_any(db: Session, user: m.Employee) -> None:
     ).scalar_one_or_none()
     if active is None:
         return
-    now = now_local()
+    now = now_for_employee(user)  # 2026-09-04 — same clock its own start came from
     active.end_minute = clamp_break_end(active.start_minute, now.hour * 60 + now.minute)
     active.ended_at = dt.datetime.utcnow()
     db.commit()
@@ -1424,6 +1432,17 @@ def _auto_split_timer_if_over_cap(db: Session, user: m.Employee, timer: Optional
     today = today_local()
     changed = False
 
+    # Cross-midnight rollover deliberately stays BUSINESS_TZ-based (Ganesh,
+    # 2026-09-04, per-employee clock timezone): `timer.date` is, and stays,
+    # a today_local()/BUSINESS_TZ calendar-day concept everywhere else in
+    # this app (see start_task_timer()/start_plan()) — only the MINUTE an
+    # employee's own timer reads now follows their own clock (see
+    # util.now_for_employee()'s own docstring for the full split). Rolling
+    # this loop's midnight boundary to the employee's own zone instead
+    # would make `timer.date` disagree with every other date this employee
+    # already has stamped in BUSINESS_TZ terms. This only matters for the
+    # rare "timer left running across a real midnight" case this loop
+    # exists for in the first place — accepted, not solved here.
     guard_days = 0
     while timer.date != today and guard_days < 7:
         while timer.start_minute < 1440:
@@ -1442,7 +1461,13 @@ def _auto_split_timer_if_over_cap(db: Session, user: m.Employee, timer: Optional
         timer.started_at = local_midnight.astimezone(dt.timezone.utc).replace(tzinfo=None)
         guard_days += 1
 
-    now_minute = now_local().hour * 60 + now_local().minute
+    # Same-day chunking DOES follow the employee's own clock (2026-09-04) —
+    # this has to match whatever clock timer.start_minute was itself
+    # stamped from (now_for_employee(), see start_task_timer()/start_plan()
+    # below), or "how much of today has this timer been running" would be
+    # computed by mixing two different clocks and produce nonsense.
+    now_for_emp = now_for_employee(user)
+    now_minute = now_for_emp.hour * 60 + now_for_emp.minute
     for _ in range((1440 // cap) + 2):
         if now_minute - timer.start_minute <= cap:
             break
@@ -1485,7 +1510,11 @@ def _finish_task_timer(db: Session, user: m.Employee, timer: m.ActiveTaskTimer, 
     outright with validate_entry's "longer than 4h — break the work down"
     error instead of logging anything."""
     timer = _auto_split_timer_if_over_cap(db, user, timer, cfg)
-    now = now_local()
+    # Per-employee clock timezone (Ganesh, 2026-09-04) — must match
+    # whatever clock timer.start_minute was itself stamped from (see
+    # start_task_timer()/start_plan() below and util.now_for_employee()'s
+    # own docstring), or the computed duration would mix two clocks.
+    now = now_for_employee(user)
     end_minute = clamp_break_end(timer.start_minute, now.hour * 60 + now.minute)
     ok, error = _log_timer_as_entry(db, user, timer, end_minute, cfg)
     if not ok:
@@ -1534,11 +1563,15 @@ def start_task_timer(
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    """Auto-captures the start time from the system clock — same
-    right-now convention as Punch In and Break Start. Single active timer
-    per employee (Ganesh, 2026-08-01): starting a new one auto-stops and
-    saves whatever was already running as a real TaskEntry first, rather
-    than allowing several to run at once (see ActiveTaskTimer docstring).
+    """Auto-captures the start time from the employee's OWN clock (Ganesh,
+    2026-09-04 — see util.now_for_employee()'s own docstring: before this,
+    every employee's timer was stamped from BUSINESS_TZ/Chicago regardless
+    of where they actually work, so an India-based employee starting work
+    at 2:00 PM their own time got that instant stamped as its ~3:30 AM
+    Chicago-clock equivalent). Single active timer per employee (Ganesh,
+    2026-08-01): starting a new one auto-stops and saves whatever was
+    already running as a real TaskEntry first, rather than allowing
+    several to run at once (see ActiveTaskTimer docstring).
 
     Break <-> Auto time capture mutual exclusion (Ganesh, 2026-09-03
     bugfix — see start_break()'s docstring for the incident): a running
@@ -1572,7 +1605,7 @@ def start_task_timer(
         flash(request, client_err, "err")
         return RedirectResponse("/today", status_code=303)
 
-    now = now_local()
+    now = now_for_employee(user)
     db.add(m.ActiveTaskTimer(
         employee_id=user.id, date=today, project_id=project_id, task_type_id=task_type_id,
         details=details.strip(), client=client.strip(), start_minute=now.hour * 60 + now.minute,
@@ -1904,8 +1937,9 @@ def start_plan(
         return RedirectResponse("/today", status_code=303)
     # Plan-ahead (Ganesh, 2026-08-31): a plan dated after today can exist
     # now (see add_plan()), but there's nothing to Start yet — the live
-    # timer this opens always runs against `now_local()`, which can't be
-    # inside a day that hasn't started. today.html already hides the
+    # timer this opens always runs against "now" (now_for_employee() as of
+    # 2026-09-04), which can't be inside a day that hasn't started. today.html
+    # already hides the
     # Start/Resume button for a future-day item; this is the server-side
     # backstop, same "hidden in the UI, still blocked in the route"
     # precedent every other button-guard in this file already follows.
@@ -1930,7 +1964,7 @@ def start_plan(
         flash(request, f"Couldn't save the timer already running: {error}", "err")
         return RedirectResponse("/today", status_code=303)
 
-    now = now_local()
+    now = now_for_employee(user)  # 2026-09-04 — see start_task_timer()'s docstring
     db.add(m.ActiveTaskTimer(
         employee_id=user.id, date=today_local(), project_id=plan.project_id,
         task_type_id=plan.task_type_id, details=plan.details, client=plan.client,
@@ -2462,6 +2496,7 @@ def request_leave(
     hours: str = Form(""),
     note: str = Form(""),
     relation: str = Form(""),  # V2 only: Bereavement Time
+    wants_compensation: str = Form(""),  # V2 only, Unplanned Time only — checkbox, "1" when checked
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -2568,17 +2603,27 @@ def request_leave(
     effective_type = engine.effective_leave_type(user, type)
     pip_converted = effective_type != type
 
+    # Deferred Unplanned-Time compensation (Ganesh, 2026-09-04) — only
+    # meaningful when the request actually ends up as Unplanned Time; a
+    # PIP conversion to Unpaid Time (above) or any other type ignores the
+    # checkbox entirely, same as the template only ever shows it for
+    # Unplanned Time in the first place (belt-and-suspenders in case
+    # someone crafts the POST directly).
+    wants_comp = bool(wants_compensation) and effective_type == m.LEAVE_UNPLANNED
+
     lv = m.LeaveRecord(
         employee_id=user.id, start_date=start, end_date=end, type=effective_type,
         minutes_per_day=minutes, note=note.strip(), entered_by=user.name,
         relation=relation or None,
         status=m.LEAVE_REQUESTED,
+        wants_compensation=wants_comp,
     )
     db.add(lv)
     db.commit()
     audit(db, user.name, "leave_requested", "LeaveRecord", lv.id,
           {"range": f"{start}..{end}", "type": effective_type, "minutes": minutes,
-           "pip_converted_from": type if pip_converted else None})
+           "pip_converted_from": type if pip_converted else None,
+           "wants_compensation": wants_comp})
     if pip_converted:
         flash(request, "Recorded as Unpaid Time — no paid leave is available while on a Performance Improvement Plan.", "ok")
     else:
@@ -2627,11 +2672,38 @@ def request_compensation_match(
     if not LEAVE_MANAGEMENT_V2_ENABLED:
         flash(request, "Not available.", "err")
         return RedirectResponse("/overtime", status_code=303)
-    try:
-        shortfall = parse_date_field(shortfall_date, "Missed Hours day")
-    except FormError as e:
-        flash(request, e.message, "err")
-        return RedirectResponse("/overtime", status_code=303)
+
+    # Deferred Unplanned-Time compensation (Ganesh, 2026-09-04) — the
+    # "Missed Hours day" dropdown also lists this employee's own
+    # still-pending Sick-leave debts (see my_overtime()'s
+    # match_pending_debts), each carrying a "leave:<id>" sentinel value
+    # instead of a plain ISO date, so this one route/one dropdown can
+    # target either kind of thing without a second form. leave_debt_id is
+    # None for every ordinary shortfall-day request — the whole branch
+    # below is a no-op for that, unchanged from before this feature.
+    leave_debt_id = None
+    lv = None
+    if shortfall_date.startswith("leave:"):
+        try:
+            leave_debt_id = int(shortfall_date[len("leave:"):])
+        except ValueError:
+            flash(request, "That Sick-leave debt could not be found.", "err")
+            return RedirectResponse("/overtime", status_code=303)
+        lv = db.get(m.LeaveRecord, leave_debt_id)
+        if (
+            lv is None or lv.employee_id != user.id or lv.type != m.LEAVE_UNPLANNED
+            or not lv.wants_compensation or lv.compensation_status != m.LEAVE_COMP_PENDING
+        ):
+            flash(request, "That Sick-leave debt is no longer available to match.", "err")
+            return RedirectResponse("/overtime", status_code=303)
+        shortfall = lv.start_date  # for display/history on the link only — see allocate_surplus_minutes()
+    else:
+        try:
+            shortfall = parse_date_field(shortfall_date, "Missed Hours day")
+        except FormError as e:
+            flash(request, e.message, "err")
+            return RedirectResponse("/overtime", status_code=303)
+
     try:
         surplus = sorted({dt.date.fromisoformat(x.strip()).isoformat() for x in surplus_dates if x.strip()})
     except ValueError:
@@ -2647,7 +2719,7 @@ def request_compensation_match(
     # "immediate claim" timing the old whole-day version already had (it
     # never filtered by link status either), just minute-accurate now
     # instead of blocking the whole day.
-    allocation = engine.allocate_surplus_minutes(db, user.id, shortfall, surplus)
+    allocation = engine.allocate_surplus_minutes(db, user.id, shortfall, surplus, leave_debt_id=leave_debt_id)
     if not allocation:
         flash(request, "None of the selected day(s) have any overtime hours left to match — pick a different day.", "err")
         return RedirectResponse("/overtime", status_code=303)
@@ -2657,11 +2729,12 @@ def request_compensation_match(
         surplus_minutes=json.dumps(allocation),
         note=note.strip(), linked_by=user.name,
         status=m.LEAVE_REQUESTED, requested_by_employee=True,
+        pending_leave_id=leave_debt_id,
     )
     db.add(link)
     db.commit()
     audit(db, user.name, "compensation_match_requested", "CompensationLink", link.id,
-          {"shortfall": shortfall_date, "allocation": allocation})
+          {"shortfall": shortfall_date, "allocation": allocation, "pending_leave_id": leave_debt_id})
     flash(request, "Match request submitted — an admin will review it.", "ok")
     return RedirectResponse("/overtime", status_code=303)
 
@@ -2730,6 +2803,28 @@ def my_overtime(
             if (r.variance_minutes or 0) < 0 and r.effective_status(comp_erases) in m.STRIKE_STATUSES
         ]
         match_surpluses = [r for r in recent_statuses if (r.variance_minutes or 0) > 0]
+        # Deferred Unplanned-Time compensation (Ganesh, 2026-09-04) — this
+        # employee's own still-pending Sick-leave debts that ORIGINATED in
+        # the month currently being viewed (same month-scoped convention
+        # every other picker on this page already follows — a debt can
+        # only ever be paid off with a surplus day in that same calendar
+        # month anyway, per engine.compensation_window_ok(), so there's
+        # never a reason to offer one from a different month here).
+        match_pending_debts = [
+            lv for lv in db.execute(
+                select(m.LeaveRecord).where(
+                    m.LeaveRecord.employee_id == user.id,
+                    m.LeaveRecord.type == m.LEAVE_UNPLANNED,
+                    m.LeaveRecord.wants_compensation.is_(True),
+                    m.LeaveRecord.compensation_status == m.LEAVE_COMP_PENDING,
+                    m.LeaveRecord.start_date.between(first, last),
+                )
+            ).scalars()
+        ]
+        ctx["match_pending_debts"] = [
+            (lv, (lv.compensation_minutes_needed or 0) - engine.leave_debt_allocated_minutes(db, lv.id))
+            for lv in match_pending_debts
+        ]
         match_links = list(
             db.execute(
                 select(m.CompensationLink)

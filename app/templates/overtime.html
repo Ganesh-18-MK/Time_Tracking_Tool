@@ -51,13 +51,14 @@
 <div class="card">
   <div class="card-head"><h2>Request an Overtime ↔ Missed Hours match</h2></div>
   <p class="small muted">Missed part of a day but made it up with extra time on another day in the same
-    calendar month? Request a match here — an admin approves or declines it.</p>
+    calendar month? Request a match here — an admin approves or declines it. This also covers a Sick-leave
+    request where you asked to make the hours up instead of using your Sick balance.</p>
   <p class="small muted" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
     <span>Showing {{ month_label(year, month) }}</span>
     <a class="btn secondary small" href="/overtime?ym={{ prev_ym }}">← prev</a>
     <a class="btn secondary small" href="/overtime?ym={{ next_ym }}">next →</a>
   </p>
-  {% if not match_shortfalls %}
+  {% if not match_shortfalls and not match_pending_debts %}
   <p class="small muted">No missed-hours days in {{ month_label(year, month) }} to match.</p>
   {% elif not match_surpluses %}
   <p class="small muted">No overtime/surplus days in {{ month_label(year, month) }} available to match against.</p>
@@ -66,6 +67,13 @@
     <div>
       <label>Missed Hours day</label>
       <select name="shortfall_date">
+        {% for lv, remaining in match_pending_debts %}
+        {% if remaining <= 0 %}
+        <option value="" disabled style="text-decoration:line-through">✓ {{ lv.start_date|mdy }} — Sick leave make-up — fully matched</option>
+        {% else %}
+        <option value="leave:{{ lv.id }}">{{ lv.start_date|mdy }} — Sick leave make-up ({{ remaining|hm }} needed by {{ lv.compensation_deadline|mdy }})</option>
+        {% endif %}
+        {% endfor %}
         {% for r in match_shortfalls %}
         {% set deficit = -(r.variance_minutes or 0) %}
         {% set remaining = deficit - match_shortfall_allocated_by_date.get(r.date, 0) %}
@@ -108,7 +116,7 @@
     <tbody>
       {% for lk, surplus_dates in match_links %}
       <tr>
-        <td class="nowrap">{{ lk.shortfall_date|mdy }}</td>
+        <td class="nowrap">{{ lk.shortfall_date|mdy }}{% if lk.pending_leave_id %} <span class="muted small">(Sick leave make-up)</span>{% endif %}</td>
         <td class="small">{{ surplus_dates|map('mdy')|join(', ') }}</td>
         <td class="small">{{ lk.note }}</td>
         <td>{{ macros.approval_stepper(lk) }}</td>

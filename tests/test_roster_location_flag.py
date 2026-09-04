@@ -7,9 +7,19 @@ behind the flag (see app/templating.py). Both roster forms hide the Country
 roster_edit now pass `None` instead of the submitted value to
 _emp_from_form — this test exists specifically to catch the regression
 that motivated that change: without the None-when-off guard, Form()'s
-unsubmitted-field default (m.DEFAULT_LOCATION, i.e. "India") would silently
-overwrite every employee's location back to India on *any* roster edit,
+unsubmitted-field default (m.DEFAULT_LOCATION) would silently overwrite
+every employee's location back to the default on *any* roster edit,
 including edits that have nothing to do with location at all.
+
+m.DEFAULT_LOCATION itself flipped from "India" to "US" on 2026-09-04 (see
+its own comment in app/models.py — per-employee clock timezone, Ganesh
+wanted new hires to default to US/CST going forward) — this file's own
+tests deliberately reference the m.DEFAULT_LOCATION/m.LOCATION_* symbols
+rather than hardcoding "India"/"US" strings wherever the behavior being
+tested is "whatever the current default is", so they keep passing
+correctly through a future default change like this one without needing
+an edit; only the one test explicitly about *which* value is the current
+default needed updating.
 """
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -71,7 +81,12 @@ class TestLocationFlagGuard:
 
         assert emp.location == m.LOCATION_INDIA
 
-    def test_new_employee_defaults_to_india_when_flag_off(self):
+    def test_new_employee_defaults_to_the_current_default_location_when_flag_off(self):
+        # 2026-09-04: m.DEFAULT_LOCATION flipped from India to US (see its
+        # own comment in app/models.py) — this test intentionally checks
+        # against the symbol, not a hardcoded string, so it keeps meaning
+        # "a brand-new employee gets whatever the current default is"
+        # regardless of which country that happens to be.
         db = make_db()
         emp = m.Employee(name="New Hire")
         db.add(emp)
@@ -79,4 +94,4 @@ class TestLocationFlagGuard:
 
         edit(db, emp, location=None)  # roster_add() with the flag off
 
-        assert emp.location == m.DEFAULT_LOCATION == m.LOCATION_INDIA
+        assert emp.location == m.DEFAULT_LOCATION == m.LOCATION_US

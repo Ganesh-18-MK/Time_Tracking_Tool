@@ -11,6 +11,7 @@ from app.db import Base
 from app.util import (
     BUSINESS_TZ,
     clamp_break_end,
+    employee_clock_tz,
     ensure_bootstrap_admins,
     ensure_departments_backfill,
     ensure_list_status_backfill,
@@ -18,6 +19,7 @@ from app.util import (
     flags_to_role,
     mask_tail,
     normalize_title_case,
+    now_for_employee,
     now_local,
     overtime_minutes,
     punch_out_error,
@@ -68,6 +70,63 @@ class TestBusinessTimezone:
         converted = ist_instant.astimezone(BUSINESS_TZ)
         assert (converted.hour, converted.minute) == (9, 30)
         assert converted.tzname() == "CDT"
+
+
+class TestEmployeeClockTimezone:
+    """employee_clock_tz()/now_for_employee() (Ganesh, 2026-09-04) — a
+    narrow, deliberate exception to the one-fixed-reference-timezone rule
+    above: only a LIVE action's start/end minute (Auto time capture, Plan
+    Start/Pause/Resume/Stop, Break Start/End) now follows the employee's
+    OWN clock (per Employee.location); "today"/date/day-boundary logic
+    stays BUSINESS_TZ-based everywhere else, unchanged. See both
+    functions' own docstrings in app/util.py for the full reasoning."""
+
+    def test_india_location_maps_to_asia_kolkata(self):
+        emp = m.Employee(name="Priya", location=m.LOCATION_INDIA)
+        assert employee_clock_tz(emp) == ZoneInfo("Asia/Kolkata")
+
+    def test_us_location_maps_to_business_tz(self):
+        emp = m.Employee(name="Sam", location=m.LOCATION_US)
+        assert employee_clock_tz(emp) == BUSINESS_TZ
+
+    def test_unrecognized_location_falls_back_to_business_tz(self):
+        emp = m.Employee(name="Mystery", location="Mars")
+        assert employee_clock_tz(emp) == BUSINESS_TZ
+
+    def test_blank_location_falls_back_to_business_tz(self):
+        emp = m.Employee(name="Blank", location=None)
+        assert employee_clock_tz(emp) == BUSINESS_TZ
+
+    def test_now_for_employee_is_timezone_aware_in_the_right_zone(self):
+        india_emp = m.Employee(name="Priya", location=m.LOCATION_INDIA)
+        us_emp = m.Employee(name="Sam", location=m.LOCATION_US)
+        india_now = now_for_employee(india_emp)
+        us_now = now_for_employee(us_emp)
+        assert india_now.tzinfo is not None and us_now.tzinfo is not None
+        # Same real instant, two different wall-clock readings — IST is
+        # always at least 10.5h ahead of CST/CDT, so these can never
+        # collide regardless of what time this test happens to run.
+        assert abs((india_now.replace(tzinfo=None) - us_now.replace(tzinfo=None))) \
+            >= dt.timedelta(hours=10, minutes=25)
+
+    def test_ist_afternoon_shift_stays_on_the_same_business_tz_calendar_date(self):
+        # The exact worked example from Ganesh, 2026-09-04: a normal
+        # 1 PM-9 PM IST shift must not straddle a BUSINESS_TZ midnight,
+        # i.e. "today" (still BUSINESS_TZ-based) doesn't flip mid-shift.
+        ist = ZoneInfo("Asia/Kolkata")
+        start = dt.datetime(2026, 9, 10, 13, 0, tzinfo=ist)
+        end = dt.datetime(2026, 9, 10, 21, 0, tzinfo=ist)
+        assert start.astimezone(BUSINESS_TZ).date() == end.astimezone(BUSINESS_TZ).date()
+
+    def test_known_early_morning_ist_edge_case_is_reproduced_not_silently_fixed(self):
+        # Documented, accepted limitation (see now_for_employee()'s own
+        # module comment): a very-early-morning IST shift can land on the
+        # BUSINESS_TZ calendar day that's still "yesterday" at that
+        # moment. This test exists so a future change that silently
+        # "fixes" this gets caught and reconsidered, not applauded.
+        ist = ZoneInfo("Asia/Kolkata")
+        early = dt.datetime(2026, 9, 10, 2, 0, tzinfo=ist)
+        assert early.astimezone(BUSINESS_TZ).date() == dt.date(2026, 9, 9)
 
 
 class TestClampBreakEnd:

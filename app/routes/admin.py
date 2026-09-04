@@ -2671,6 +2671,24 @@ def leave_page(
         cfg = engine.get_config(db)
         today = today_local()
         balances_v2 = {e.id: engine.leave_balance_v2(db, e, today, cfg) for e in emps}
+        # Deferred Unplanned-Time compensation (Ganesh, 2026-09-04) — every
+        # still-pending Sick-leave debt, Super-Admin visible org-wide,
+        # department-scoped admin visible for their own team only (same
+        # scoped_ids convention as pending/approved above). Shown
+        # regardless of whether its deadline has passed — the template
+        # only shows the two resolve buttons once it actually has, so an
+        # admin can see one coming without being able to jump the gun and
+        # resolve it early.
+        pending_comp_q = select(m.LeaveRecord).where(
+            m.LeaveRecord.compensation_status == m.LEAVE_COMP_PENDING
+        ).order_by(m.LeaveRecord.compensation_deadline)
+        pending_compensation = list(db.execute(pending_comp_q).scalars())
+        if scoped_ids is not None:
+            pending_compensation = [lv for lv in pending_compensation if lv.employee_id in scoped_ids]
+        pending_compensation = [
+            (lv, engine.leave_debt_allocated_minutes(db, lv.id), lv.compensation_deadline < today)
+            for lv in pending_compensation
+        ]
         # Overtime ↔ Missed Hours match requests moved to Overtime
         # Management (Ganesh, 2026-08-22 — see overtime_page()'s
         # pending_matches) since they're overtime decisions, not leave
@@ -2681,6 +2699,7 @@ def leave_page(
                 "user": admin, "emps": emps, "pending": pending,
                 "pending_lead": pending_lead, "pending_super": pending_super, "approved": approved,
                 "leave_types": m.LEAVE_TYPES_V2, "balances_v2": balances_v2,
+                "pending_compensation": pending_compensation,
             },
             db=db,
         )
@@ -2871,6 +2890,22 @@ def leave_approve(
             flash(request, "Approving fewer hours than requested needs a note explaining why.", "err")
             return RedirectResponse("/admin/leave", status_code=303)
         lv.approved_minutes_per_day = approved_minutes
+        # Deferred Unplanned-Time compensation (Ganesh, 2026-09-04) — set
+        # once, right here at approval time, not at request time: an
+        # admin may partially approve fewer hours than asked, and the
+        # debt owed should reflect what was actually approved.
+        # compensation_deadline is the end of the calendar month the
+        # leave itself falls in — the same same-calendar-month boundary
+        # engine.compensation_window_ok() already enforces on the match
+        # side, so a debt can never be "paid off" with a surplus day
+        # outside that window anyway; storing the date explicitly here is
+        # just so the admin resolution queue can list/sort by it without
+        # recomputing per row.
+        if lv.type == m.LEAVE_UNPLANNED and lv.wants_compensation:
+            lv.compensation_status = m.LEAVE_COMP_PENDING
+            lv.compensation_minutes_needed = approved_minutes
+            _, month_end = engine.month_range(lv.start_date.year, lv.start_date.month)
+            lv.compensation_deadline = month_end
     lv.status = m.LEAVE_APPROVED
     lv.reviewed_by = admin.name
     lv.reviewed_at = dt.datetime.utcnow()
@@ -2878,10 +2913,16 @@ def leave_approve(
     db.commit()
     audit(db, admin.name, "leave_approve", "LeaveRecord", lv.id,
           {"employee": emp.name if emp else lv.employee_id, "range": f"{lv.start_date}..{lv.end_date}",
-           "approved_minutes_per_day": approved_minutes})
+           "approved_minutes_per_day": approved_minutes,
+           "compensation_status": lv.compensation_status, "compensation_deadline":
+           lv.compensation_deadline.isoformat() if lv.compensation_deadline else None})
     if emp is not None:
         engine.recompute_employee(db, emp, lv.start_date, min(lv.end_date, today_local()))
-    flash(request, f"Approved leave for {emp.name if emp else lv.employee_id}.", "ok")
+    detail = ""
+    if lv.compensation_status == m.LEAVE_COMP_PENDING:
+        detail = (f" — excused, but {fmt_hm(lv.compensation_minutes_needed or 0)} won't be debited from their "
+                  f"Sick balance unless it's still unmatched by {lv.compensation_deadline.strftime('%m/%d/%Y')}.")
+    flash(request, f"Approved leave for {emp.name if emp else lv.employee_id}." + detail, "ok")
     return RedirectResponse("/admin/leave", status_code=303)
 
 
@@ -2910,6 +2951,67 @@ def leave_reject(
     if emp is not None:
         engine.recompute_employee(db, emp, lv.start_date, min(lv.end_date, today_local()))
     flash(request, f"Rejected leave request for {emp.name if emp else lv.employee_id}.", "ok")
+    return RedirectResponse("/admin/leave", status_code=303)
+
+
+@router.post("/leave/{leave_id}/resolve-compensation")
+def resolve_leave_compensation(
+    leave_id: int,
+    request: Request,
+    disposition: str = Form(...),  # "unplanned" or "unpaid"
+    note: str = Form(""),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Deferred Unplanned-Time compensation (Ganesh, 2026-09-04) — the
+    Super Admin's manual call on a Sick-leave debt that's still
+    LEAVE_COMP_PENDING once its compensation_deadline has passed with no
+    match (see leave_page()'s pending_compensation). Super-Admin-only,
+    same tier as the final Approve/Reject decision this debt already went
+    through once — a Team Lead never gets a say here, this isn't a new
+    approval, just closing out an already-approved leave's deferred debit.
+
+    Deliberately does NOT re-check the deadline server-side beyond
+    requiring the row to still be 'pending' — a Super Admin might
+    reasonably want to resolve one early (e.g. the employee said outright
+    they won't be matching it), and the template's own gating (only
+    showing these two buttons once the deadline has passed) is a UI
+    nudge toward the right time, not a hard rule worth blocking on.
+
+    'unplanned': counts normally from here on — leave_balance_v2()'s
+    used-hours loop only skips a row while compensation_status is
+    'pending'/'matched', so flipping to 'resolved_unplanned' is all that's
+    needed. 'unpaid': also flips `lv.type` itself to LEAVE_UNPAID, so it's
+    counted under Unpaid's own bucket instead, with no extra logic needed
+    in leave_balance_v2() at all. Neither touches DayStatus/engine
+    recompute — the day was already excused at approval time and stays
+    excused; only which pool the hours are ultimately charged against
+    changes."""
+    lv = db.get(m.LeaveRecord, leave_id)
+    if lv is None or lv.compensation_status != m.LEAVE_COMP_PENDING:
+        flash(request, "That Sick-leave debt is no longer pending.", "err")
+        return RedirectResponse("/admin/leave", status_code=303)
+    if disposition not in ("unplanned", "unpaid"):
+        flash(request, "Choose Unplanned Time or Unpaid Time.", "err")
+        return RedirectResponse("/admin/leave", status_code=303)
+    emp = db.get(m.Employee, lv.employee_id)
+    if disposition == "unpaid":
+        lv.type = m.LEAVE_UNPAID
+        lv.compensation_status = m.LEAVE_COMP_RESOLVED_UNPAID
+    else:
+        lv.compensation_status = m.LEAVE_COMP_RESOLVED_UNPLANNED
+    lv.compensation_resolved_by = admin.name
+    lv.compensation_resolved_at = dt.datetime.utcnow()
+    lv.compensation_note = note.strip()
+    db.commit()
+    audit(db, admin.name, "resolve_leave_compensation", "LeaveRecord", lv.id,
+          {"employee": emp.name if emp else lv.employee_id, "disposition": disposition, "note": note.strip()})
+    flash(
+        request,
+        f"Resolved as {'Unpaid Time' if disposition == 'unpaid' else 'Unplanned (Sick) Time'} for "
+        f"{emp.name if emp else lv.employee_id}.",
+        "ok",
+    )
     return RedirectResponse("/admin/leave", status_code=303)
 
 

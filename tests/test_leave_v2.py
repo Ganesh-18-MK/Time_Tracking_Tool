@@ -124,6 +124,70 @@ class TestPlannedTimeAccrual:
         assert engine.planned_time_accrued_minutes(db, emp, CFG, as_of) > 0
 
 
+# ---- Unplanned Time proration (Ganesh, 2026-09-04) ----------------------------
+class TestUnplannedTimeProration:
+    def test_zero_on_january_first(self):
+        # No full calendar month has elapsed yet -> the known, accepted
+        # 0-entitlement-in-January consequence documented on the function.
+        assert engine.unplanned_time_prorated_entitlement_minutes(CFG, dt.date(2026, 1, 1)) == 0
+
+    def test_zero_through_the_second_to_last_day_of_january(self):
+        assert engine.unplanned_time_prorated_entitlement_minutes(CFG, dt.date(2026, 1, 30)) == 0
+
+    def test_one_twelfth_the_moment_january_fully_elapses_on_its_last_day(self):
+        # Same "a month counts once its last day has passed" rule
+        # full_months_elapsed() already applies elsewhere (Planned Time's
+        # own accrual for a hire on the 1st) -> Jan 31 itself, not Feb 1,
+        # is when the jump to one full month's worth (2400/12 = 200
+        # minutes) happens.
+        assert engine.unplanned_time_prorated_entitlement_minutes(CFG, dt.date(2026, 1, 31)) == 200
+        assert engine.unplanned_time_prorated_entitlement_minutes(CFG, dt.date(2026, 2, 1)) == 200
+
+    def test_five_months_by_mid_june(self):
+        # Matches TestLeaveBalanceV2.test_unplanned_type_entitlement_is_prorated_not_flat
+        assert engine.unplanned_time_prorated_entitlement_minutes(CFG, dt.date(2026, 6, 15)) == 1000
+
+    def test_full_cap_only_on_the_last_day_of_the_year(self):
+        assert engine.unplanned_time_prorated_entitlement_minutes(CFG, dt.date(2026, 12, 30)) == 2200  # 11 months
+        assert engine.unplanned_time_prorated_entitlement_minutes(CFG, dt.date(2026, 12, 31)) == 2400  # 12 months
+
+    def test_new_hire_never_inherits_months_before_their_own_start_date(self):
+        # Hired 2026-07-01 (a start-of-month hire, so July itself is
+        # eligible once it ends): only July and August have fully elapsed
+        # by 2026-09-04 -> 2 months, not the 8 months that have elapsed
+        # since Jan 1 org-wide.
+        assert engine.unplanned_time_prorated_entitlement_minutes(
+            CFG, dt.date(2026, 9, 4), hire_date=dt.date(2026, 7, 1)
+        ) == 400
+
+    def test_new_hire_hired_before_january_uses_calendar_year_floor_not_hire_date(self):
+        # A long-tenured employee's hire_date is irrelevant once it's
+        # earlier than Jan 1 of as_of's year -> falls back to the plain
+        # calendar-year calculation, same as passing hire_date=None.
+        with_hire = engine.unplanned_time_prorated_entitlement_minutes(
+            CFG, dt.date(2026, 6, 15), hire_date=dt.date(2020, 1, 1)
+        )
+        without_hire = engine.unplanned_time_prorated_entitlement_minutes(CFG, dt.date(2026, 6, 15))
+        assert with_hire == without_hire == 1000
+
+    def test_mid_month_hire_skips_the_partial_first_month(self):
+        # Hired 2026-01-15: January is never a full month for this
+        # employee (same "no partial first month" rule Planned Time's own
+        # accrual uses) -> February is their first candidate month.
+        assert engine.unplanned_time_prorated_entitlement_minutes(
+            CFG, dt.date(2026, 2, 15), hire_date=dt.date(2026, 1, 15)
+        ) == 0
+        assert engine.unplanned_time_prorated_entitlement_minutes(
+            CFG, dt.date(2026, 2, 28), hire_date=dt.date(2026, 1, 15)
+        ) == 200
+
+    def test_respects_a_non_default_configured_cap(self):
+        cfg = dict(CFG, unplanned_hours_year_cap="24")
+        # 24h = 1440 minutes / 12 = 120 minutes/month; 6 full months
+        # (Jan-Jun) have elapsed by Jun 30 itself -> 6 * 120 = 720
+        assert engine.unplanned_time_prorated_entitlement_minutes(cfg, dt.date(2026, 6, 30)) == 720
+
+
 # ---- probation gate ----------------------------------------------------------
 class TestProbation:
     def test_active_during_window(self, emp):
@@ -220,10 +284,16 @@ class TestLeaveBalanceV2:
         assert bal[m.LEAVE_PLANNED]["used"] == 240  # not 480
         assert bal[m.LEAVE_PLANNED]["pending"] == 0
 
-    def test_unplanned_type_has_no_capped_entitlement(self, db, emp):
+    def test_unplanned_type_entitlement_is_prorated_not_flat(self, db, emp):
+        # emp.start_date is 2020-01-01 (well before as_of), so this is
+        # purely calendar-based: 5 full months elapsed since 2026-01-01
+        # by 2026-06-15 (Jan-May; June itself hasn't ended yet) -> 5/12 of
+        # the default 40-hour (2400-minute) annual cap = 1000 minutes,
+        # not the old flat 2400. See unplanned_time_prorated_entitlement_
+        # minutes() for the exact rule (Ganesh, 2026-09-04).
         bal = engine.leave_balance_v2(db, emp, as_of=dt.date(2026, 6, 15), cfg=CFG)
-        assert bal[m.LEAVE_UNPLANNED]["entitlement"] is None
-        assert bal[m.LEAVE_UNPLANNED]["remaining"] is None
+        assert bal[m.LEAVE_UNPLANNED]["entitlement"] == 1000
+        assert bal[m.LEAVE_UNPLANNED]["remaining"] == 1000
 
     def test_special_paid_entitlement_sums_grants(self, db, emp):
         db.add(m.SpecialPaidGrant(employee_id=emp.id, minutes=240, reason="Recognition award", granted_by="Admin"))
@@ -231,6 +301,192 @@ class TestLeaveBalanceV2:
         db.commit()
         bal = engine.leave_balance_v2(db, emp, as_of=dt.date(2026, 6, 15), cfg=CFG)
         assert bal[m.LEAVE_SPECIAL_PAID]["entitlement"] == 360
+
+    # ---- Deferred Unplanned-Time compensation (Ganesh, 2026-09-04) ---------
+    def test_pending_compensation_is_excluded_from_used(self, db, emp):
+        db.add(m.LeaveRecord(
+            employee_id=emp.id, start_date=dt.date(2026, 6, 1), end_date=dt.date(2026, 6, 1),
+            type=m.LEAVE_UNPLANNED, minutes_per_day=480, approved_minutes_per_day=480,
+            status=m.LEAVE_APPROVED, wants_compensation=True,
+            compensation_status=m.LEAVE_COMP_PENDING, compensation_minutes_needed=480,
+            compensation_deadline=dt.date(2026, 6, 30),
+        ))
+        db.commit()
+        bal = engine.leave_balance_v2(db, emp, as_of=dt.date(2026, 6, 15), cfg=CFG)
+        assert bal[m.LEAVE_UNPLANNED]["used"] == 0
+
+    def test_matched_compensation_is_excluded_from_used(self, db, emp):
+        db.add(m.LeaveRecord(
+            employee_id=emp.id, start_date=dt.date(2026, 6, 1), end_date=dt.date(2026, 6, 1),
+            type=m.LEAVE_UNPLANNED, minutes_per_day=480, approved_minutes_per_day=480,
+            status=m.LEAVE_APPROVED, wants_compensation=True,
+            compensation_status=m.LEAVE_COMP_MATCHED, compensation_minutes_needed=480,
+            compensation_deadline=dt.date(2026, 6, 30),
+        ))
+        db.commit()
+        bal = engine.leave_balance_v2(db, emp, as_of=dt.date(2026, 6, 15), cfg=CFG)
+        assert bal[m.LEAVE_UNPLANNED]["used"] == 0
+
+    def test_resolved_unplanned_counts_normally(self, db, emp):
+        db.add(m.LeaveRecord(
+            employee_id=emp.id, start_date=dt.date(2026, 6, 1), end_date=dt.date(2026, 6, 1),
+            type=m.LEAVE_UNPLANNED, minutes_per_day=480, approved_minutes_per_day=480,
+            status=m.LEAVE_APPROVED, wants_compensation=True,
+            compensation_status=m.LEAVE_COMP_RESOLVED_UNPLANNED, compensation_minutes_needed=480,
+            compensation_deadline=dt.date(2026, 6, 30),
+        ))
+        db.commit()
+        bal = engine.leave_balance_v2(db, emp, as_of=dt.date(2026, 6, 15), cfg=CFG)
+        assert bal[m.LEAVE_UNPLANNED]["used"] == 480
+
+    def test_resolved_unpaid_counts_under_unpaid_not_unplanned(self, db, emp):
+        # resolve_leave_compensation() flips lv.type to LEAVE_UNPAID at
+        # resolution time — this row is Unpaid Time from leave_balance_v2's
+        # point of view with no special-casing needed for that branch.
+        db.add(m.LeaveRecord(
+            employee_id=emp.id, start_date=dt.date(2026, 6, 1), end_date=dt.date(2026, 6, 1),
+            type=m.LEAVE_UNPAID, minutes_per_day=480, approved_minutes_per_day=480,
+            status=m.LEAVE_APPROVED, wants_compensation=True,
+            compensation_status=m.LEAVE_COMP_RESOLVED_UNPAID, compensation_minutes_needed=480,
+            compensation_deadline=dt.date(2026, 6, 30),
+        ))
+        db.commit()
+        bal = engine.leave_balance_v2(db, emp, as_of=dt.date(2026, 6, 15), cfg=CFG)
+        assert bal[m.LEAVE_UNPLANNED]["used"] == 0
+        assert bal[m.LEAVE_UNPAID]["used"] == 480
+
+    def test_plain_unplanned_leave_without_compensation_is_unaffected(self, db, emp):
+        # No regression: an ordinary Unplanned row that never opted into
+        # deferral (compensation_status is None) counts exactly as before.
+        db.add(m.LeaveRecord(
+            employee_id=emp.id, start_date=dt.date(2026, 6, 1), end_date=dt.date(2026, 6, 1),
+            type=m.LEAVE_UNPLANNED, minutes_per_day=480, approved_minutes_per_day=480,
+            status=m.LEAVE_APPROVED,
+        ))
+        db.commit()
+        bal = engine.leave_balance_v2(db, emp, as_of=dt.date(2026, 6, 15), cfg=CFG)
+        assert bal[m.LEAVE_UNPLANNED]["used"] == 480
+
+
+# ---- Deferred Unplanned-Time compensation match/allocation (Ganesh, 2026-09-04) ----
+class TestDeferredCompensationMatch:
+    """Ganesh's own worked example (see the AskUserQuestion explanation this
+    feature was built from): an 8h Unplanned (Sick) day, approved with
+    wants_compensation=True — the debt should not count against the 40-hour
+    pool until/unless it goes unmatched past its deadline."""
+
+    def _pending_leave(self, db, emp, needed_minutes=480, deadline=dt.date(2026, 6, 30)):
+        lv = m.LeaveRecord(
+            employee_id=emp.id, start_date=dt.date(2026, 6, 1), end_date=dt.date(2026, 6, 1),
+            type=m.LEAVE_UNPLANNED, minutes_per_day=needed_minutes, approved_minutes_per_day=needed_minutes,
+            status=m.LEAVE_APPROVED, wants_compensation=True,
+            compensation_status=m.LEAVE_COMP_PENDING, compensation_minutes_needed=needed_minutes,
+            compensation_deadline=deadline,
+        )
+        db.add(lv)
+        db.commit()
+        return lv
+
+    def _surplus_day(self, db, emp, d, variance):
+        db.add(m.DayStatus(employee_id=emp.id, date=d, status=m.COMPLETE,
+                            target_minutes=480, variance_minutes=variance, source="computed"))
+        db.commit()
+
+    def test_allocate_surplus_minutes_sources_deficit_from_the_leave_debt_not_daystatus(self, db, emp):
+        lv = self._pending_leave(db, emp, needed_minutes=480)
+        # deliberately no DayStatus row at all on lv.start_date — a leave
+        # day has no shortfall variance, since the approved leave already
+        # zeroed its target; the deficit must come from the debt itself.
+        self._surplus_day(db, emp, dt.date(2026, 6, 10), 600)  # 10h surplus
+        allocation = engine.allocate_surplus_minutes(
+            db, emp.id, lv.start_date, [dt.date(2026, 6, 10).isoformat()], leave_debt_id=lv.id,
+        )
+        assert allocation == {"2026-06-10": 480}  # takes only what's owed, not the full 10h
+
+    def test_two_partial_links_together_fully_match_the_debt(self, db, emp):
+        lv = self._pending_leave(db, emp, needed_minutes=480)  # 8h owed
+        self._surplus_day(db, emp, dt.date(2026, 6, 5), 120)   # 2h
+        self._surplus_day(db, emp, dt.date(2026, 6, 12), 360)  # 6h
+
+        alloc1 = engine.allocate_surplus_minutes(db, emp.id, lv.start_date, [dt.date(2026, 6, 5).isoformat()], leave_debt_id=lv.id)
+        link1 = m.CompensationLink(
+            employee_id=emp.id, shortfall_date=lv.start_date, pending_leave_id=lv.id,
+            surplus_dates="[]", surplus_minutes="{}",
+        )
+        import json as _json
+        link1.surplus_dates = _json.dumps(sorted(alloc1.keys()))
+        link1.surplus_minutes = _json.dumps(alloc1)
+        db.add(link1)
+        db.commit()
+        engine.evaluate_link(db, link1)
+        assert link1.fully_compensated is False  # only 2h of 8h so far
+        assert lv.compensation_status == m.LEAVE_COMP_PENDING  # not matched yet
+
+        alloc2 = engine.allocate_surplus_minutes(db, emp.id, lv.start_date, [dt.date(2026, 6, 12).isoformat()], leave_debt_id=lv.id)
+        assert alloc2 == {"2026-06-12": 360}  # remaining 6h, not the day's full surplus (which happens to equal it here)
+        link2 = m.CompensationLink(
+            employee_id=emp.id, shortfall_date=lv.start_date, pending_leave_id=lv.id,
+            surplus_dates=_json.dumps(sorted(alloc2.keys())), surplus_minutes=_json.dumps(alloc2),
+        )
+        db.add(link2)
+        db.commit()
+        engine.evaluate_link(db, link2)
+        # this second, later link finishes off the debt two partial
+        # links started — mirrors the exact aggregate-across-links
+        # behavior compensated_dates()/evaluate_link() already guarantee
+        # for an ordinary shortfall day.
+        assert lv.compensation_status == m.LEAVE_COMP_MATCHED
+
+    def test_leave_debt_and_ordinary_shortfall_cannot_double_spend_the_same_surplus_day(self, db, emp):
+        # The exact double-spend risk flagged when this feature was
+        # proposed: one surplus day can't pay off both an ordinary
+        # shortfall day AND a deferred leave debt beyond its own total
+        # variance, since surplus_minutes_used_by_date() sums across every
+        # link for the employee regardless of what each one targets.
+        lv = self._pending_leave(db, emp, needed_minutes=480)  # 8h owed
+        self._surplus_day(db, emp, dt.date(2026, 6, 10), 480)  # exactly 8h surplus
+        # An ordinary shortfall day the same employee also has, same month.
+        db.add(m.DayStatus(employee_id=emp.id, date=dt.date(2026, 6, 3), status=m.PARTIAL,
+                            target_minutes=480, variance_minutes=-240, source="computed"))
+        db.commit()
+
+        # First: link the entire 8h surplus day to the ordinary shortfall.
+        alloc_shortfall = engine.allocate_surplus_minutes(
+            db, emp.id, dt.date(2026, 6, 3), [dt.date(2026, 6, 10).isoformat()],
+        )
+        assert alloc_shortfall == {"2026-06-10": 240}  # only what that shortfall needs (4h), not the full 8h
+        import json as _json
+        link_shortfall = m.CompensationLink(
+            employee_id=emp.id, shortfall_date=dt.date(2026, 6, 3),
+            surplus_dates=_json.dumps(sorted(alloc_shortfall.keys())), surplus_minutes=_json.dumps(alloc_shortfall),
+        )
+        db.add(link_shortfall)
+        db.commit()
+
+        # Now the leave debt can only draw on what's LEFT of that same day (4h), not the original 8h.
+        alloc_leave = engine.allocate_surplus_minutes(
+            db, emp.id, lv.start_date, [dt.date(2026, 6, 10).isoformat()], leave_debt_id=lv.id,
+        )
+        assert alloc_leave == {"2026-06-10": 240}  # only the remaining 4h — the debt itself needs 8h, so this is partial
+
+    def test_leave_debt_allocated_minutes_sums_across_every_link_for_that_debt(self, db, emp):
+        lv = self._pending_leave(db, emp, needed_minutes=480)
+        import json as _json
+        db.add(m.CompensationLink(
+            employee_id=emp.id, shortfall_date=lv.start_date, pending_leave_id=lv.id,
+            surplus_dates=_json.dumps(["2026-06-05"]), surplus_minutes=_json.dumps({"2026-06-05": 120}),
+        ))
+        db.add(m.CompensationLink(
+            employee_id=emp.id, shortfall_date=lv.start_date, pending_leave_id=lv.id,
+            surplus_dates=_json.dumps(["2026-06-12"]), surplus_minutes=_json.dumps({"2026-06-12": 200}),
+        ))
+        # A different employee's/leave's link must never bleed into this total.
+        db.add(m.CompensationLink(
+            employee_id=emp.id, shortfall_date=dt.date(2026, 7, 1), pending_leave_id=None,
+            surplus_dates=_json.dumps(["2026-07-05"]), surplus_minutes=_json.dumps({"2026-07-05": 999}),
+        ))
+        db.commit()
+        assert engine.leave_debt_allocated_minutes(db, lv.id) == 320
 
 
 # ---- Overtime-for-Missed-Hours match window (requirement 9) -----------------

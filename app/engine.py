@@ -292,6 +292,56 @@ def planned_time_accrued_minutes(
     return planned_time_accrued_minutes_pure(emp.start_date, probation_days, emp.daily_target_minutes, cfg, as_of)
 
 
+def unplanned_time_prorated_entitlement_minutes(
+    cfg: Dict[str, str], as_of: dt.date, hire_date: Optional[dt.date] = None
+) -> int:
+    """Unplanned (Sick) Time's annual cap accrues month by month through
+    the calendar year, rather than being available in full on January 1st
+    (Ganesh, 2026-09-04 — reverses the 2026-08-27 policy call that made it
+    a flat full-year pool from day one, after every employee showed the
+    complete 40 hours available in September with a third of the year
+    still to go). One full calendar month elapsed since Jan 1 of as_of's
+    year earns 1/12 of the annual cap, via the same "only full completed
+    months count" convention planned_time_accrued_minutes_pure() already
+    uses through full_months_elapsed() — the current, still-in-progress
+    month earns nothing yet.
+
+    A brand-new hire's own start_date floors the count so they never
+    inherit months that elapsed before they joined — without this, an
+    employee hired in November would show up with ~10/12 of the annual
+    Sick pool already "earned" on their very first day, which defeats the
+    point of prorating at all. Unplanned Time stays available *during*
+    probation (only Planned Time is blocked then, per
+    LEAVE_TYPES_NO_PROBATION_BLOCK in models.py), so hire_date alone is
+    the right floor here — not hire_date + probation_days, the way
+    Planned Time's own accrual start is computed.
+
+    Deliberately forward-only (AskUserQuestion, 2026-09-04): this changes
+    only the entitlement figure computed here, going forward. Any
+    LeaveRecord already approved/used against the old flat entitlement
+    earlier this year is untouched history — "remaining" can go negative
+    for someone who's already used more than their new prorated
+    entitlement allows, same as Planned Time's own entitlement already
+    could.
+
+    Known, accepted consequence of this design, not silently hidden:
+    entitlement is 0 for every day of the year's first calendar month
+    except its very last day (Jan 30 reads 0; Jan 31 jumps straight to a
+    full month's worth) — same "a month counts once its last day has
+    passed" rule full_months_elapsed() already applies to Planned Time's
+    own accrual for a hire on the 1st. A brand-new hire's own first
+    calendar month behaves the same way relative to their start_date.
+    This is the real tradeoff of "prorate it" against the flat pool's
+    original "sick time can happen any day, especially early in the
+    year/right after joining" reasoning — worth revisiting if this proves
+    too strict in practice."""
+    jan_1 = dt.date(as_of.year, 1, 1)
+    floor_date = max(jan_1, hire_date) if hire_date is not None else jan_1
+    months = full_months_elapsed(floor_date, as_of)
+    cap_minutes = cfg_int(cfg, "unplanned_hours_year_cap") * 60
+    return int(round(cap_minutes * months / 12))
+
+
 def is_probation_active(emp: m.Employee, as_of: dt.date, cfg: Dict[str, str]) -> bool:
     """Requirement: block Planned Time during the waiting period (other
     types stay available — see LEAVE_TYPES_NO_PROBATION_BLOCK in
@@ -362,19 +412,33 @@ def leave_balance_v2(
     fabricated number. Used/Pending are still tracked for all five so an
     employee can see what they've taken.
 
-    Unplanned Time's cap (Config.unplanned_hours_year_cap, hours/year) is
-    deliberately NOT accrued like Planned Time — it's the full year's
-    amount available from day one and resets every January 1st, so its
-    "used"/"pending" below are scoped to leave whose start_date falls in
-    the same calendar year as `as_of`, unlike every other type here whose
-    used/pending are an all-time running sum (correct for them, since
-    Planned Time's entitlement is itself already a cumulative tenure
-    total with no yearly reset, and Unpaid/Bereavement/Special Paid have
-    no cap for a reset to apply to). Once exhausted, the PDF/manager
-    guidance is that the employee requests Unpaid Time (or, rarely,
-    Special Paid Time via a management grant) instead — there's no
-    "borrow from next year" mechanism, so this function does not clamp or
-    carry over a negative remaining balance across the year boundary.
+    Unplanned Time's cap (Config.unplanned_hours_year_cap, hours/year)
+    resets every January 1st, so its "used"/"pending" below are scoped to
+    leave whose start_date falls in the same calendar year as `as_of`,
+    unlike every other type here whose used/pending are an all-time
+    running sum (correct for them, since Planned Time's entitlement is
+    itself already a cumulative tenure total with no yearly reset, and
+    Unpaid/Bereavement/Special Paid have no cap for a reset to apply to).
+    Once exhausted, the PDF/manager guidance is that the employee requests
+    Unpaid Time (or, rarely, Special Paid Time via a management grant)
+    instead — there's no "borrow from next year" mechanism, so this
+    function does not clamp or carry over a negative remaining balance
+    across the year boundary.
+
+    As of 2026-08-27 through 2026-09-03, the cap's *entitlement* was the
+    full year's amount available from day one (deliberately not accrued
+    like Planned Time). As of 2026-09-04 that changed: the entitlement
+    itself now accrues month by month through the year too, via
+    unplanned_time_prorated_entitlement_minutes() below — reversing the
+    "full pool from day one" call after everyone showed the complete
+    40 hours available partway through the year with months still to go.
+    See that function's own docstring for the exact rule (full completed
+    calendar months since Jan 1, floored by the employee's own hire date)
+    and its known consequence (0 entitlement for the year's/an employee's
+    own first calendar month until that month's very last day). This is
+    deliberately forward-only — it does not retroactively touch any
+    LeaveRecord approved earlier this year against the old flat
+    entitlement.
 
     "Used" sums approved_minutes_per_day (falling back to the originally
     requested minutes_per_day only if a decision was made without setting
@@ -385,13 +449,27 @@ def leave_balance_v2(
     still-requested rows at their originally requested amount — held out
     of "remaining" the moment they're requested, matching the "used and
     pending shown separately" requirement, not hidden inside a single
-    balance number."""
+    balance number.
+
+    Deferred Unplanned-Time compensation (Ganesh, 2026-09-04) — an
+    approved Unplanned row can ask, at request time, to defer its debit
+    instead of counting immediately: LeaveRecord.compensation_status ==
+    'pending' (still within its window, or awaiting a match) or 'matched'
+    (fully paid off with overtime, see CompensationLink.pending_leave_id)
+    is skipped entirely here, never counted as "used" — the day itself is
+    still excused (leave_minutes_on() above zeroes its target regardless
+    of compensation_status, unchanged), only the DEBIT is held back. Only
+    once a Super Admin resolves an unmatched debt back to
+    'resolved_unplanned' does it start counting here like any other
+    approved Unplanned row; 'resolved_unpaid' flips the row's own `type`
+    to LEAVE_UNPAID at resolution time, so it's counted under Unpaid's
+    bucket instead with no extra logic needed in this function at all."""
     cfg = cfg or get_config(db)
     as_of = as_of or today_local()
 
     entitlement: Dict[str, Optional[int]] = {t: None for t in m.LEAVE_TYPES_V2}
     entitlement[m.LEAVE_PLANNED] = planned_time_accrued_minutes(db, emp, cfg, as_of)
-    entitlement[m.LEAVE_UNPLANNED] = cfg_int(cfg, "unplanned_hours_year_cap") * 60
+    entitlement[m.LEAVE_UNPLANNED] = unplanned_time_prorated_entitlement_minutes(cfg, as_of, emp.start_date)
     granted = db.execute(
         select(func.sum(m.SpecialPaidGrant.minutes)).where(m.SpecialPaidGrant.employee_id == emp.id)
     ).scalar() or 0
@@ -412,6 +490,21 @@ def leave_balance_v2(
             continue
         days = (lv.end_date - lv.start_date).days + 1
         if lv.status == m.LEAVE_APPROVED:
+            # Deferred Unplanned-Time compensation (Ganesh, 2026-09-04) —
+            # a row still LEAVE_COMP_PENDING (awaiting a match, still
+            # within its compensation_deadline) or LEAVE_COMP_MATCHED
+            # (already paid off with overtime) must NOT count against the
+            # 40-hour pool at all — that's the whole point of deferring
+            # it. Only once a Super Admin resolves it back to
+            # LEAVE_COMP_RESOLVED_UNPLANNED (no match happened by the
+            # deadline) does it count normally, same as any other
+            # approved Unplanned row. A resolved-as-Unpaid row never
+            # reaches this branch at all by then — resolve_leave_
+            # compensation() flips lv.type to LEAVE_UNPAID at the same
+            # time, so it's counted under Unpaid's own bucket below
+            # instead, with no special-casing needed here.
+            if lv.compensation_status in (m.LEAVE_COMP_PENDING, m.LEAVE_COMP_MATCHED):
+                continue
             if lv.approved_minutes_per_day is not None:
                 per_day = lv.approved_minutes_per_day
             elif lv.minutes_per_day is not None:
@@ -664,8 +757,25 @@ def shortfall_allocated_minutes(db: Session, employee_id: int, shortfall_date: d
     return total
 
 
+def leave_debt_allocated_minutes(db: Session, leave_id: int) -> int:
+    """Deferred Unplanned-Time compensation (Ganesh, 2026-09-04) — total
+    minutes already linked toward LeaveRecord `leave_id`'s deferred debt,
+    across EVERY CompensationLink that targets it (a debt can be paid off
+    by more than one link over time, same "link what you have now, link
+    the rest later" precedent shortfall_allocated_minutes() already set
+    for an ordinary shortfall day). Mirrors that function exactly, just
+    keyed by pending_leave_id instead of (employee_id, shortfall_date)."""
+    total = 0
+    for link in db.execute(
+        select(m.CompensationLink).where(m.CompensationLink.pending_leave_id == leave_id)
+    ).scalars():
+        total += _link_allocated_minutes(db, link)
+    return total
+
+
 def allocate_surplus_minutes(
-    db: Session, employee_id: int, shortfall_date: dt.date, surplus_dates: List[str]
+    db: Session, employee_id: int, shortfall_date: dt.date, surplus_dates: List[str],
+    leave_debt_id: Optional[int] = None,
 ) -> Dict[str, int]:
     """Given a shortfall day and a date-sorted list of ISO surplus dates an
     admin/employee ticked, greedily allocate minutes from each day's
@@ -679,12 +789,29 @@ def allocate_surplus_minutes(
     partial result means (see app/routes/admin.py's add_complink() and
     app/routes/employee.py's request_compensation_match(), which both call
     this so the admin-direct and employee-self-service flows can't drift
-    apart — Ganesh, 2026-08-25)."""
-    short_row = db.execute(
-        select(m.DayStatus).where(m.DayStatus.employee_id == employee_id, m.DayStatus.date == shortfall_date)
-    ).scalar_one_or_none()
-    full_deficit = -(short_row.variance_minutes or 0) if short_row is not None and (short_row.variance_minutes or 0) < 0 else 0
-    deficit_remaining = full_deficit - shortfall_allocated_minutes(db, employee_id, shortfall_date)
+    apart — Ganesh, 2026-08-25).
+
+    leave_debt_id (Ganesh, 2026-09-04, deferred Unplanned-Time
+    compensation): when given, `shortfall_date` is only used for the
+    day-sort/display convention shared with an ordinary link — the actual
+    deficit being paid off comes from LeaveRecord.compensation_minutes_
+    needed instead of that date's DayStatus.variance_minutes (a leave day
+    has none, since the approved leave already zeroed its target). Reuses
+    the exact same surplus_minutes_used_by_date() ledger either way — an
+    overtime day already partly claimed by an ordinary shortfall link
+    can't ALSO be double-spent paying off a deferred leave debt, and vice
+    versa, since that ledger sums across every link for this employee
+    regardless of what it targets."""
+    if leave_debt_id is not None:
+        lv = db.get(m.LeaveRecord, leave_debt_id)
+        full_deficit = (lv.compensation_minutes_needed or 0) if lv is not None else 0
+        deficit_remaining = full_deficit - leave_debt_allocated_minutes(db, leave_debt_id)
+    else:
+        short_row = db.execute(
+            select(m.DayStatus).where(m.DayStatus.employee_id == employee_id, m.DayStatus.date == shortfall_date)
+        ).scalar_one_or_none()
+        full_deficit = -(short_row.variance_minutes or 0) if short_row is not None and (short_row.variance_minutes or 0) < 0 else 0
+        deficit_remaining = full_deficit - shortfall_allocated_minutes(db, employee_id, shortfall_date)
     if deficit_remaining <= 0:
         return {}
     used_by_date = surplus_minutes_used_by_date(db, employee_id)
@@ -761,7 +888,30 @@ def evaluate_link(db: Session, link: m.CompensationLink) -> None:
     links started, the day correctly flips to compensated without needing
     its own fully_compensated to be True). Before this rewrite there was
     only ever one link per shortfall day in practice, so these two were
-    always the same number — now they can differ."""
+    always the same number — now they can differ.
+
+    Deferred Unplanned-Time compensation (Ganesh, 2026-09-04): when
+    `link.pending_leave_id` is set, this link is paying off a LeaveRecord's
+    deferred debt rather than an ordinary shortfall day — deficit and the
+    aggregate come from that debt (compensation_minutes_needed /
+    leave_debt_allocated_minutes) instead of DayStatus, and the AGGREGATE
+    outcome flips LeaveRecord.compensation_status to 'matched' (mirroring
+    exactly what DayStatus.compensated does for an ordinary shortfall day)
+    rather than touching DayStatus.compensated at all — a leave day was
+    never a shortfall day to begin with, so there's no DayStatus flag on
+    it to flip."""
+    if link.pending_leave_id is not None:
+        lv = db.get(m.LeaveRecord, link.pending_leave_id)
+        deficit = (lv.compensation_minutes_needed or 0) if lv is not None else 0
+        own_surplus = _link_allocated_minutes(db, link)
+        link.fully_compensated = deficit > 0 and own_surplus >= deficit
+        if lv is not None:
+            total = leave_debt_allocated_minutes(db, link.pending_leave_id)
+            if deficit > 0 and total >= deficit and lv.compensation_status == m.LEAVE_COMP_PENDING:
+                lv.compensation_status = m.LEAVE_COMP_MATCHED
+        db.commit()
+        return
+
     short_row = db.execute(
         select(m.DayStatus).where(
             m.DayStatus.employee_id == link.employee_id,

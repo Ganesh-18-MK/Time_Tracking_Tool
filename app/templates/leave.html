@@ -53,6 +53,12 @@
       <label>Relationship</label>
       <select name="relation">{% for r in BEREAVEMENT_RELATIONS %}<option>{{ r }}</option>{% endfor %}</select>
     </div>
+    <div id="leave-compensation-field" style="display:none;align-items:center">
+      <label style="display:flex;align-items:center;gap:6px;font-weight:normal;white-space:nowrap;margin-top:22px">
+        <input type="checkbox" name="wants_compensation" value="1">
+        Make these hours up with overtime instead of using my Sick balance
+      </label>
+    </div>
     <div>
       <label>Duration</label>
       <select name="duration" id="leave-duration-select">
@@ -70,16 +76,22 @@
   </form>
   <p class="small muted">Your admin reviews every request before it counts — approved leave reduces
     that day's target automatically; pending requests don't affect your status yet. Planned Time requests
-    need advance notice (longer for longer requests) and aren't available during your waiting period.</p>
+    need advance notice (longer for longer requests) and aren't available during your waiting period.
+    Checking the Unplanned (Sick) make-up box doesn't change whether the day is excused — it only holds off
+    debiting your Sick balance until the end of that month, in case you make the hours up with overtime instead
+    (via the Overtime page). If nothing's matched by then, a Super Admin decides whether it counts as Sick time
+    or Unpaid Time.</p>
 </div>
 <script>
 (function() {
   var typeSel = document.getElementById('leave-type-select');
   var relField = document.getElementById('leave-relation-field');
+  var compField = document.getElementById('leave-compensation-field');
   var durSel = document.getElementById('leave-duration-select');
   var hoursField = document.getElementById('leave-hours-field');
   function sync() {
     relField.style.display = (typeSel.value === 'Bereavement Time') ? '' : 'none';
+    compField.style.display = (typeSel.value === 'Unplanned Time') ? 'flex' : 'none';
     hoursField.style.display = (durSel.value === 'custom') ? '' : 'none';
   }
   typeSel.addEventListener('change', sync);
@@ -132,6 +144,16 @@
         <td class="small">{{ lv.note }}
           {% if lv.status == 'approved' and lv.approved_minutes_per_day is not none and lv.approved_minutes_per_day != lv.minutes_per_day %}
           <div class="muted">Approved for {{ lv.approved_minutes_per_day|hm }}/day (partial).</div>
+          {% endif %}
+          {% if lv.compensation_status == 'pending' %}
+          <div class="muted">Sick balance not yet debited — make up {{ lv.compensation_minutes_needed|hm }} with
+            overtime by {{ lv.compensation_deadline|mdy }}, or a Super Admin will decide.</div>
+          {% elif lv.compensation_status == 'matched' %}
+          <div class="muted">Made up with overtime — never counted against your Sick balance.</div>
+          {% elif lv.compensation_status == 'resolved_unplanned' %}
+          <div class="muted">No match by the deadline — counted against your Sick balance.</div>
+          {% elif lv.compensation_status == 'resolved_unpaid' %}
+          <div class="muted">No match by the deadline — converted to Unpaid Time.</div>
           {% endif %}
         </td>
         <td>{{ macros.approval_stepper(lv) }}</td>

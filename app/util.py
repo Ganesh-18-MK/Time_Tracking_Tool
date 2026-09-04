@@ -45,6 +45,67 @@ def today_local() -> dt.date:
     return now_local().date()
 
 
+# Per-employee clock-face timezone (Ganesh, 2026-09-04) — a narrow,
+# deliberate exception to the "one fixed reference timezone" rule above,
+# not a reversal of it. The rule above still fully applies to "today"/day
+# boundaries: which calendar day an entry/submission/punch belongs to,
+# Submit Day locking, the backdate window, holiday matching, and the
+# strike/compliance day boundary all still come from today_local()/
+# BUSINESS_TZ, completely unchanged — every employee still shares one
+# calendar day. What changes is narrower: which real-world clock a LIVE
+# action (Auto time capture, Plan Start/Pause/Resume/Stop, Break Start/
+# End) reads its start/end minute-of-day FROM. Before this, an India-based
+# employee starting work at 2:00 PM their own time got that instant
+# stamped as ~3:30 AM (its Chicago-clock equivalent) — a nonsensical
+# clock-face number on their own task log. Reuses the existing
+# Employee.location field (Profile's Country picker, added 2026-08-12 for
+# Holiday Management and otherwise inert — see that column's own
+# docstring in app/models.py) rather than adding a new column: location
+# already fully answers "which clock should this employee's own buttons
+# read from," so a second field just risks the two silently disagreeing.
+#
+# Known, accepted limitation: because "today" stays BUSINESS_TZ-based
+# while the MINUTE now follows the employee's own clock, the two agree
+# correctly for any shift that falls between BUSINESS_TZ's midnight and
+# the following midnight AS SEEN IN THAT EMPLOYEE'S OWN ZONE — for IST
+# (11.5h ahead of CST/10.5h ahead of CDT) that's roughly 10:30/11:30 AM
+# IST through the same time the next day, which covers a normal
+# afternoon/evening IST shift (confirmed against Ganesh's own 1 PM-9 PM
+# IST example). An employee working a very early-morning IST shift (say,
+# midnight-8 AM IST) could have that work land on the calendar day
+# BUSINESS_TZ still calls "yesterday" at that moment, even though it's
+# their own today — a real edge case, flagged and accepted rather than
+# solved here; revisit if an actual employee is ever on a shift like
+# that.
+EMPLOYEE_CLOCK_TIMEZONES = {
+    m.LOCATION_INDIA: ZoneInfo("Asia/Kolkata"),
+    m.LOCATION_US: BUSINESS_TZ,
+}
+
+
+def employee_clock_tz(emp: "m.Employee") -> ZoneInfo:
+    """Which real-world clock emp's own live actions (timer/break) should
+    read from, per Employee.location. Falls back to BUSINESS_TZ for a
+    blank/unrecognized location — same "never guess, fall back to the
+    shared default" instinct DEFAULT_LOCATION's own docstring already
+    uses — so a location value this dict doesn't know about (a future
+    third country, or simply unset) behaves exactly like today, not a
+    crash."""
+    return EMPLOYEE_CLOCK_TIMEZONES.get(emp.location, BUSINESS_TZ)
+
+
+def now_for_employee(emp: "m.Employee") -> dt.datetime:
+    """The current wall-clock moment in emp's OWN clock timezone (see
+    EMPLOYEE_CLOCK_TIMEZONES above) — use this instead of now_local()
+    specifically at the handful of places a LIVE action captures a
+    start_minute/end_minute for that one employee's own timer/break (Auto
+    time capture, Plan Start/Pause/Resume/Stop, Break Start/End). Do NOT
+    use this for "today"/date/day-boundary logic — that stays now_local()/
+    today_local() everywhere else, unchanged; see this function's own
+    module-level comment above for exactly why the split is drawn there."""
+    return dt.datetime.now(dt.timezone.utc).astimezone(employee_clock_tz(emp))
+
+
 def fmt_hm(minutes: Optional[int]) -> str:
     """480 -> '8:00', 259 -> '4:19'. None -> em dash."""
     if minutes is None:
@@ -339,19 +400,24 @@ def ensure_location_backfill(db: Session) -> None:
     historical holiday would silently fail to match either LOCATION_US or
     LOCATION_INDIA in engine.holidays_set()/is_working_day(), so nobody's
     calendar would show any holidays at all until they explicitly picked a
-    country. Backfills to m.DEFAULT_LOCATION ("India"), matching the
-    original all-offshore scope — a no-op for anyone/anything created after
-    this feature shipped, since the column default already applies there.
-    A no-op once every row already has a location — safe on every startup,
-    same pattern as ensure_employee_codes / ensure_list_status_backfill."""
+    country. Backfills to m.LOCATION_INDIA directly (NOT m.DEFAULT_LOCATION
+    — the two were the same value until 2026-09-04, when DEFAULT_LOCATION
+    flipped to LOCATION_US for newly-added employees only; this backfill's
+    job is historical — every row that predates the location column at all
+    was, in fact, India-based, "the original all-offshore scope," and that
+    fact doesn't change just because new hires now default differently).
+    A no-op for anyone/anything created after the location feature shipped,
+    since the column's own ORM default already applies there. Also a no-op
+    once every row already has a location — safe on every startup, same
+    pattern as ensure_employee_codes / ensure_list_status_backfill."""
     changed = False
     emp_rows = list(db.execute(select(m.Employee).where(m.Employee.location.is_(None))).scalars())
     for row in emp_rows:
-        row.location = m.DEFAULT_LOCATION
+        row.location = m.LOCATION_INDIA
         changed = True
     holiday_rows = list(db.execute(select(m.Holiday).where(m.Holiday.location.is_(None))).scalars())
     for row in holiday_rows:
-        row.location = m.DEFAULT_LOCATION
+        row.location = m.LOCATION_INDIA
         changed = True
     if changed:
         db.commit()

@@ -148,6 +148,40 @@
 </div>
 {% endif %}
 
+{% if LEAVE_MANAGEMENT_V2_ENABLED and user.is_super_admin and pending_compensation %}
+<div class="card">
+  <div class="card-head"><h2>Sick-hour compensation in progress ({{ pending_compensation|length }})</h2></div>
+  <p class="small muted" style="margin:-4px 0 10px">Approved Unplanned (Sick) leave where the employee asked to make the
+    hours up with overtime instead. Excused either way — this is only about whether the hours get debited from
+    their Sick balance. Resolve becomes available once the deadline has passed with no full match.</p>
+  <table>
+    <thead><tr><th>Employee</th><th>Day</th><th>Needed</th><th>Matched so far</th><th>Deadline</th><th></th></tr></thead>
+    <tbody>
+      {% for lv, matched, overdue in pending_compensation %}
+      <tr>
+        <td><a href="/admin/person/{{ lv.employee_id }}">{{ lv.employee.name }}</a></td>
+        <td class="nowrap">{{ lv.start_date|mdy }}</td>
+        <td>{{ lv.compensation_minutes_needed|hm }}</td>
+        <td>{{ matched|hm }}</td>
+        <td class="nowrap{% if overdue %} b-missing{% endif %}">{{ lv.compensation_deadline|mdy }}{% if overdue %} (passed){% endif %}</td>
+        <td class="nowrap">
+          {% if overdue %}
+          <form method="post" action="/admin/leave/{{ lv.id }}/resolve-compensation" style="display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap;max-width:300px">
+            <input name="note" placeholder="Note (optional)" style="flex:1;min-width:120px">
+            <button class="small" name="disposition" value="unplanned">Mark as Sick time</button>
+            <button class="small secondary" name="disposition" value="unpaid">Mark as Unpaid</button>
+          </form>
+          {% else %}
+          <span class="muted small">Not due yet</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
 <div class="card">
   <div class="card-head"><h2>Approved leaves</h2></div>
   <div class="searchbar">
@@ -166,7 +200,13 @@
           <div class="muted small">approved {{ lv.approved_minutes_per_day|hm }} (partial)</div>
           {% endif %}
         </td>
-        <td class="small">{{ lv.note }}{% if lv.imported %} <span class="muted">(legacy)</span>{% endif %}</td>
+        <td class="small">{{ lv.note }}{% if lv.imported %} <span class="muted">(legacy)</span>{% endif %}
+          {% if lv.compensation_status == 'pending' %}<div class="muted">pending compensation, due {{ lv.compensation_deadline|mdy }}</div>
+          {% elif lv.compensation_status == 'matched' %}<div class="muted">made up with overtime</div>
+          {% elif lv.compensation_status == 'resolved_unplanned' %}<div class="muted">unmatched — counted as Sick time</div>
+          {% elif lv.compensation_status == 'resolved_unpaid' %}<div class="muted">unmatched — converted to Unpaid</div>
+          {% endif %}
+        </td>
         <td class="small muted">{{ lv.entered_by }}</td>
         {% if user.is_super_admin %}
         <td><form method="post" action="/admin/leave/{{ lv.id }}/delete" class="inline"

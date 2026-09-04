@@ -90,7 +90,15 @@ BEREAVEMENT_RELATIONS = ("Spouse", "Child", "Parent", "Sibling", "Other")
 LOCATION_US = "US"
 LOCATION_INDIA = "India"
 LOCATIONS = (LOCATION_INDIA, LOCATION_US)
-DEFAULT_LOCATION = LOCATION_INDIA
+# Flipped from LOCATION_INDIA to LOCATION_US (Ganesh, 2026-09-04, per-employee
+# clock timezone — see util.py's now_for_employee()/EMPLOYEE_CLOCK_TIMEZONES):
+# the team is no longer originally-all-India-offshore, and Ganesh wants every
+# NEW employee to default to US/CST hours unless someone explicitly picks
+# India on Profile. This is a Python-default change only — it affects the
+# next INSERT with no explicit location, nothing else; every already-hired
+# employee still has whatever "India" or "US" value is already stored in
+# their own row from before this change, untouched.
+DEFAULT_LOCATION = LOCATION_US
 
 
 class Employee(Base):
@@ -181,14 +189,22 @@ class Employee(Base):
     # bulk-upload "Reports To" column (matched by employee code, same key
     # bulk *updates* already use — see app/bulk_upload.py).
     reports_to_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), nullable=True)
-    # Work location / country (Ganesh, 2026-08-12) — drives which country's
-    # Holiday calendar this employee's own compliance days/My Month use (see
-    # engine.holidays_set()/is_working_day()). Self-service (Profile page,
-    # left of the photo upload) or admin-set (Roster -> Add/Edit), same
-    # dual-editable pattern as department/designation. Defaults to
-    # DEFAULT_LOCATION ("India") rather than NULL/blank, since "which
-    # calendar applies" always needs an answer, unlike e.g. date_of_birth
-    # where blank is a perfectly fine, honest "not collected yet" state.
+    # Work location / country (Ganesh, 2026-08-12). Originally drove which
+    # country's Holiday calendar this employee's compliance days used;
+    # holidays became one shared company-wide list on 2026-08-14 (see
+    # Holiday's own docstring below) and nothing reads this column to
+    # filter anything anymore — as of 2026-09-04 it drives a different,
+    # narrower thing instead: which real-world clock this employee's own
+    # live actions (Auto time capture, Plan Start/Pause/Resume/Stop, Break
+    # Start/End) read their start/end minute from — see
+    # util.now_for_employee()/EMPLOYEE_CLOCK_TIMEZONES. Self-service
+    # (Profile page, left of the photo upload) or admin-set (Roster ->
+    # Add/Edit), same dual-editable pattern as department/designation.
+    # Defaults to DEFAULT_LOCATION ("US" as of 2026-09-04, flipped from
+    # "India" — see that constant's own comment above) rather than NULL/
+    # blank, since "which clock does this employee's own timer read from"
+    # always needs an answer, unlike e.g. date_of_birth where blank is a
+    # perfectly fine, honest "not collected yet" state.
     location: Mapped[str] = mapped_column(String(20), default=DEFAULT_LOCATION)
 
     # Leave Management V2 (Ganesh, 2026-08-21). Both additive/nullable —
@@ -994,6 +1010,35 @@ LEAD_ACCEPTED = "accepted"
 LEAD_DENIED = "denied"
 LEAD_DECISIONS = (LEAD_ACCEPTED, LEAD_DENIED)
 
+# Deferred Unplanned-Time compensation (Ganesh, 2026-09-04) — an employee
+# requesting Unplanned (Sick) Time can ask, at request time, to make the
+# hours up with overtime later in the same calendar month instead of
+# having them debited from their 40-hour yearly pool right away (see
+# CONFIG_DEFAULTS' unplanned_hours_year_cap). See engine.leave_balance_v2()'s
+# own docstring for exactly how each of these is treated. LEAVE_COMP_PENDING:
+# approved, excused (the day's target is still zeroed exactly like any other
+# approved leave), just not yet debited, still within compensation_deadline.
+# LEAVE_COMP_MATCHED: fully paid off via a CompensationLink (see
+# CompensationLink.pending_leave_id below) — never debited at all.
+# LEAVE_COMP_RESOLVED_UNPLANNED / LEAVE_COMP_RESOLVED_UNPAID: a Super
+# Admin's manual call once the deadline passed with no match (see
+# resolve_leave_compensation() in app/routes/admin.py) — "resolved_unpaid"
+# also flips LeaveRecord.type itself to LEAVE_UNPAID, so it flows through
+# the ordinary Unpaid-Time accounting from then on with no special-casing
+# needed anywhere else. Reuses the same "generic status strings, not a new
+# enum per table" precedent LEAVE_REQUESTED/LEAD_ACCEPTED above already
+# set. None (the default for every pre-existing row and every LeaveRecord
+# that never opted into this) means "not deferred — plain leave," so
+# leave_balance_v2() only ever has to special-case a row where this is
+# actually set to one of the four values below.
+LEAVE_COMP_PENDING = "pending"
+LEAVE_COMP_MATCHED = "matched"
+LEAVE_COMP_RESOLVED_UNPLANNED = "resolved_unplanned"
+LEAVE_COMP_RESOLVED_UNPAID = "resolved_unpaid"
+LEAVE_COMP_STATUSES = (
+    LEAVE_COMP_PENDING, LEAVE_COMP_MATCHED, LEAVE_COMP_RESOLVED_UNPLANNED, LEAVE_COMP_RESOLVED_UNPAID,
+)
+
 
 class UnlockRequest(Base):
     """Employee-initiated "please unlock this locked day" request (Ganesh,
@@ -1089,6 +1134,26 @@ class LeaveRecord(Base):
     lead_reason: Mapped[str] = mapped_column(Text, default="")
     lead_reviewed_by: Mapped[str] = mapped_column(String(120), default="")
     lead_reviewed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    # Deferred Unplanned-Time compensation (Ganesh, 2026-09-04) — see
+    # LEAVE_COMP_PENDING's own comment above for the full mechanic.
+    # wants_compensation is set once, at request time (request_leave()),
+    # and is only ever meaningful when type == LEAVE_UNPLANNED; every
+    # other type leaves it False, always — the checkbox that sets it isn't
+    # even shown for another type. compensation_status stays None for a
+    # normal (non-deferred) request/row, including every row that
+    # predates this feature, so leave_balance_v2()'s used-hours loop only
+    # has to special-case a row where this is actually set to something.
+    # compensation_deadline/_minutes_needed are set once, at APPROVAL time
+    # (leave_approve()), not at request time — an admin might partially
+    # approve fewer hours than asked, and the debt owed should reflect
+    # what was actually approved, not the original ask.
+    wants_compensation: Mapped[bool] = mapped_column(Boolean, default=False)
+    compensation_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    compensation_deadline: Mapped[Optional[dt.date]] = mapped_column(Date, nullable=True)
+    compensation_minutes_needed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    compensation_resolved_by: Mapped[str] = mapped_column(String(120), default="")
+    compensation_resolved_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    compensation_note: Mapped[str] = mapped_column(Text, default="")
 
     employee = relationship("Employee")
 
@@ -1416,6 +1481,24 @@ class CompensationLink(Base):
     lead_reason: Mapped[str] = mapped_column(Text, default="")
     lead_reviewed_by: Mapped[str] = mapped_column(String(120), default="")
     lead_reviewed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    # Deferred Unplanned-Time compensation (Ganesh, 2026-09-04) — set only
+    # when this link is paying off a LeaveRecord's deferred Sick-hour debt
+    # (see LEAVE_COMP_PENDING's comment above) rather than an ordinary
+    # shortfall DAY. shortfall_date is still always populated even then —
+    # set to the leave's own start_date, for display/history consistency
+    # with every other link — but the "how many minutes are actually
+    # needed" comes from LeaveRecord.compensation_minutes_needed via this
+    # FK, not from that date's DayStatus.variance_minutes: a leave day has
+    # no shortfall variance at all, since the approved leave already
+    # zeroed its target. NULL for every ordinary shortfall-day link,
+    # including every row that predates this feature —
+    # engine.allocate_surplus_minutes()/evaluate_link() both branch on
+    # whether this is set, and surplus_minutes_used_by_date() (the shared
+    # "how much of this surplus day is already spoken for" ledger) is
+    # untouched and still scans every link regardless of this field, which
+    # is what stops the same overtime minutes from paying off both an
+    # ordinary shortfall day AND a deferred leave debt at once.
+    pending_leave_id: Mapped[Optional[int]] = mapped_column(ForeignKey("leave_records.id"), nullable=True)
 
     employee = relationship("Employee")
 
