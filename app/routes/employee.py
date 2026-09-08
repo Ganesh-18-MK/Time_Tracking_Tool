@@ -22,6 +22,7 @@ from app.util import (
     capitalize_first,
     clamp_break_end,
     fmt_date,
+    fmt_hm,
     fmt_time,
     normalize_title_case,
     now_for_employee,
@@ -220,25 +221,32 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
     # `date == today`, same as how Start Break/Punch In are hardcoded to
     # "today" regardless of which day is currently being viewed.
     #
-    # Max-row auto-split (Ganesh, 2026-08-28) — see
-    # _auto_split_timer_if_over_cap's own docstring — runs right here,
-    # BEFORE `entries` is queried below, specifically so a chunk it just
-    # logged shows up in *this same* page load's task log/total/gap flags
-    # instead of only appearing after a second refresh. This is the read
-    # path (every GET /today, i.e. every page load/reload), so it's what
-    # heals a timer that's already run past Config.max_row_minutes even if
-    # the employee never clicks Stop — logs the completed cap-length
-    # chunk(s) and advances the same timer's start_minute forward, so the
-    # Auto time capture widget renders a freshly-reset elapsed time on this
-    # very page load. Only for `date == today` — the widget itself is only
-    # ever shown then (see today.html), and the helper is employee-scoped,
-    # not date-scoped, so running it while browsing a past day would have
-    # nothing to do with what's on screen.
+    # Max-row/midnight auto-CLOSE (Ganesh, 2026-08-28, redesigned
+    # 2026-09-08 — see _auto_split_timer_if_over_cap's own docstring) —
+    # runs right here, BEFORE `entries` is queried below, specifically so
+    # a segment it just logged shows up in *this same* page load's task
+    # log/total/gap flags instead of only appearing after a second
+    # refresh. This is the read path (every GET /today, i.e. every page
+    # load/reload), so it's what heals a timer that's already run past
+    # Config.max_row_minutes or already crossed midnight even if the
+    # employee never clicks Stop — logs the one bounded segment and
+    # deletes the timer outright, so the Auto time capture widget renders
+    # as "not running" on this very page load rather than a stale ticking
+    # clock. Only for `date == today` — the widget itself is only ever
+    # shown then (see today.html), and the helper is employee-scoped, not
+    # date-scoped, so running it while browsing a past day would have
+    # nothing to do with what's on screen. `timer_auto_stopped` lets
+    # today_page() flash a one-time "this got closed automatically" notice
+    # the moment it actually happens (active_timer flips from a real row
+    # to None on THIS call) — it naturally never fires again on a later
+    # page load, since there's no timer left to re-close by then.
     active_timer = db.execute(
         select(m.ActiveTaskTimer).where(m.ActiveTaskTimer.employee_id == emp.id)
     ).scalar_one_or_none()
+    timer_auto_stopped = False
     if active_timer is not None and date == today_local():
         active_timer = _auto_split_timer_if_over_cap(db, emp, active_timer, cfg)
+        timer_auto_stopped = active_timer is None
 
     entries = list(
         db.execute(
@@ -409,6 +417,7 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
         "punch_remaining": punch_remaining,
         "punch_overtime": punch_overtime,
         "active_timer": active_timer,
+        "timer_auto_stopped": timer_auto_stopped,
         "plans": plans,
         "past_plans": past_plans,
     }
@@ -807,6 +816,20 @@ def today_page(
     }
     task_project_links = _task_project_links(db)
     ctx = _day_context(db, user, day, cfg)
+    if ctx["timer_auto_stopped"]:
+        # Auto-close redesign (Ganesh, 2026-09-08) — the employee never
+        # clicked Stop, so this is the one place they find out their timer
+        # didn't just keep running forever: it hit the cap or crossed
+        # midnight and was closed out on its own. See
+        # _auto_split_timer_if_over_cap's own docstring for why this no
+        # longer auto-restarts.
+        cap = engine.cfg_int(cfg, "max_row_minutes")
+        flash(
+            request,
+            f"Auto time capture reached {fmt_hm(cap)} (or crossed midnight) and was "
+            "stopped automatically — logged what it captured. Click Start to begin a new one.",
+            "ok",
+        )
     last_end = max((e.end_minute for e in ctx["entries"]), default=None)
 
     # Suggestion-edit notices (Ganesh, 2026-08-21) — see
@@ -1446,167 +1469,142 @@ def _log_timer_as_entry(db: Session, user: m.Employee, timer: m.ActiveTaskTimer,
 
 
 def _auto_split_timer_if_over_cap(db: Session, user: m.Employee, timer: Optional[m.ActiveTaskTimer], cfg: dict) -> Optional[m.ActiveTaskTimer]:
-    """Max single-row duration auto-split (Ganesh, 2026-08-28) — before
-    this, a timer left running past Config.max_row_minutes (the same §4
-    4h cap validate_entry enforces on every manually-typed row, see
-    validate_entry's own "times" section) just got stuck: Stop & Log
-    failed outright with "Single row longer than 4h 0m — break the work
-    down" (validate_entry's own message), and Pause/Stop on a plan-linked
-    timer failed the exact same way since both go through
-    _finish_task_timer below. The employee had no way to resolve it short
-    of editing the day by hand — reported live via screenshot, a timer
-    that had been left running 6h+.
+    """Max single-row duration auto-CLOSE, not auto-continue (Ganesh,
+    2026-09-08, replacing the 2026-08-28 auto-split-and-keep-running design
+    below after it turned out to be the actual mechanism behind a much
+    bigger problem: a timer left running unattended for many hours, or even
+    days, silently kept re-splitting itself into more cap-length TaskEntry
+    rows forever on every page load, with no human ever touching it. That's
+    exactly how a single stale Employee.location value turned into 4
+    fabricated 4:00 rows the same morning this was rebuilt (see that
+    bugfix's own CLAUDE.md entry) — the sanity check added for THAT bug is
+    still here below and still matters, but the real fix is to never let a
+    timer survive past a boundary unattended in the first place.
+
+    New rule, the same in both directions this function used to handle
+    separately: the FIRST time a currently-running timer would need to be
+    split — because it's been running longer than Config.max_row_minutes,
+    OR because it's crossed at least one midnight while running (a
+    TaskEntry can never span a calendar day, same rule as always) — this
+    logs exactly ONE bounded segment, from the timer's own start up to
+    whichever boundary comes first (`min(timer.start_minute + cap, 1440)`,
+    which naturally picks day-end instead of the cap when the timer started
+    late enough at night that midnight arrives first), as a real TaskEntry
+    via _log_timer_as_entry — then DELETES the ActiveTaskTimer outright.
+    Nothing after that boundary is ever logged, guessed, or carried
+    forward — if the employee genuinely kept working past it, that time is
+    simply gone, same as if Auto time capture had never been started; they
+    click Start (or Resume, for a plan) again to pick back up. This is a
+    deliberate trade: it can undercount a very long uninterrupted session,
+    but it can never again overcount one, which is the failure mode that
+    actually did real damage. Returns None once the timer has been closed
+    this way — every caller below has to handle that (there's no more
+    "same timer, just advanced" case to return).
+
+    A plan-linked timer (timer.planned_task_id set) that gets auto-closed
+    this way flips its PlannedTask back to PLAN_PAUSED, exactly the same
+    "interrupted, not finished" state _stop_current_timer_if_any() already
+    puts an interrupted plan into when something else auto-stops its
+    timer — so Resume shows up cleanly instead of the plan looking stuck on
+    "running" with nothing behind it.
 
     This app has no background scheduler (see the missing-legacy-data /
     no-pytest sandbox notes — everything here is plain request/response),
-    so "automatically" means lazily, on next touch — same convention
-    stop_task_timer/cancel_task_timer already use to keep PlannedTask.status
-    in sync as "defense-in-depth" (Ganesh, 2026-08-22 bugfix). Called from
-    two places: _day_context (every GET /today, so simply reloading the
-    page — including the client-side auto-reload today.html's timer script
-    now does once its live clock crosses this same cap — heals a stuck
-    timer with no click needed) and the top of _finish_task_timer (so Stop
-    & Log / Pause / Stop-plan / starting-a-new-timer's own auto-finish via
-    _stop_current_timer_if_any never hit the "longer than 4h" error in the
-    first place — the split runs first, so by the time _finish_task_timer
-    computes its own final segment against "now", only the within-cap
-    remainder is left).
-
-    For each full cap-length chunk the timer has been running past its own
-    start_minute, logs it as a real TaskEntry (start, start+cap) via
-    _log_timer_as_entry — same validated path, same Details/Client copied
-    as-is a normal Stop & Log already uses — then advances this SAME
-    ActiveTaskTimer's start_minute/started_at forward by one cap-length
-    instead of deleting it, so the timer keeps running uninterrupted under
-    its existing id: the live JS clock re-reads started_at fresh on next
-    page load and naturally reads back near 0:00 — that's the "timer
-    restarts from 00:00 for the same task" the employee asked for, not a
-    separate stop-then-start action. Loops (bounded by how many
-    cap-lengths could possibly fit in a day, so a misconfigured tiny cap
-    can't spin) in case a page was left open across more than one full
-    cap-length. Stops early, leaving the remainder running rather than
-    logging a row past midnight, if a chunk's boundary would reach 1440 —
-    the existing "no rows span midnight" rule already covers what happens
-    next, same as any other overnight-left-running timer today. Also stops
-    early (silently, leaving the timer exactly as it was) if a chunk fails
-    validate_entry for an unrelated reason (day got locked mid-run, project
-    deactivated) — same "don't lose time, leave it for a human to sort
-    out" instinct _finish_task_timer's own failure path already has.
+    so "automatically" still means lazily, on next touch: _day_context
+    (every GET /today, including the client-side auto-reload today.html's
+    timer script does once its live clock crosses the cap) and the top of
+    _finish_task_timer (so Stop & Log / Pause / Stop-plan / starting-a-new-
+    timer's own auto-finish via _stop_current_timer_if_any never hit
+    validate_entry's own "longer than 4h" rejection — by the time
+    _finish_task_timer would compute its own final segment, this has
+    already either closed the timer out entirely or confirmed it's still
+    within bounds).
 
     Deliberately does NOT run from cancel_task_timer — Cancel means "this
-    timer was a mistake, discard the whole thing," and retroactively
-    logging cap-length chunks the employee is actively trying to throw
-    away would contradict that.
+    timer was a mistake, discard the whole thing," and logging even one
+    real segment the employee is actively trying to throw away would
+    contradict that.
 
-    Cross-midnight rollover (Ganesh, 2026-08-28, same-day follow-up —
-    explicitly asked for over the alternative of just discarding a stuck
-    timer via Cancel) — a timer whose `date` no longer matches today
-    crossed midnight while still running (reported live: Today stuck
-    "loading" forever, because the reload-on-cap-crossing script in
-    today.html had no way to know the server couldn't fix a timer like
-    this, and kept retrying every time the reloaded page still showed it
-    over cap — see that bugfix's own CLAUDE.md entry). Before touching
-    "now," this closes out the remainder of the ORIGINAL day first — same
-    cap-sized chunks as below, just capped at day-end (1440) instead of
-    stopping there — then rolls the SAME timer forward to start fresh at
-    00:00 BUSINESS_TZ the next calendar day (`started_at` recomputed via
-    BUSINESS_TZ midnight -> UTC, not naive timedelta arithmetic, so a
-    DST boundary can't shift it) and repeats, bounded to 7 calendar days
-    so a timer stuck for a very long time doesn't loop indefinitely (a
-    timer that old is a sign something else needs a human, not something
-    to keep auto-processing). Once `timer.date == today`, falls through
-    to the ordinary same-day loop below unchanged. Same "leave it alone
-    and stop" fallback as everywhere else here if a chunk fails
-    validate_entry (e.g. that old day is now locked)."""
+    Same "leave it alone and stop, nothing lost" fallback as before if the
+    one segment fails validate_entry for an unrelated reason (day got
+    locked mid-run, project deactivated) — the timer is returned completely
+    untouched rather than partially advanced, so a human can sort it out."""
     if timer is None:
         return timer
     cap = engine.cfg_int(cfg, "max_row_minutes")
     if cap <= 0:
         return timer
     today = today_local()
-    changed = False
 
-    # Cross-midnight rollover deliberately stays BUSINESS_TZ-based (Ganesh,
-    # 2026-09-04, per-employee clock timezone): `timer.date` is, and stays,
-    # a today_local()/BUSINESS_TZ calendar-day concept everywhere else in
-    # this app (see start_task_timer()/start_plan()) — only the MINUTE an
-    # employee's own timer reads now follows their own clock (see
-    # util.now_for_employee()'s own docstring for the full split). Rolling
-    # this loop's midnight boundary to the employee's own zone instead
-    # would make `timer.date` disagree with every other date this employee
-    # already has stamped in BUSINESS_TZ terms. This only matters for the
-    # rare "timer left running across a real midnight" case this loop
-    # exists for in the first place — accepted, not solved here.
-    guard_days = 0
-    while timer.date != today and guard_days < 7:
-        while timer.start_minute < 1440:
-            boundary = min(timer.start_minute + cap, 1440)
-            ok, _error = _log_timer_as_entry(db, user, timer, boundary, cfg)
-            if not ok:
-                if changed:
-                    db.commit()
-                return timer
-            timer.start_minute = boundary
-            changed = True
-        next_day = timer.date + dt.timedelta(days=1)
-        local_midnight = dt.datetime.combine(next_day, dt.time(0, 0), tzinfo=BUSINESS_TZ)
-        timer.date = next_day
-        timer.start_minute = 0
-        timer.started_at = local_midnight.astimezone(dt.timezone.utc).replace(tzinfo=None)
-        guard_days += 1
+    # A timer whose `date` no longer matches today crossed at least one
+    # midnight while still running — deliberately BUSINESS_TZ-based
+    # (Ganesh, 2026-09-04, per-employee clock timezone: `timer.date` is,
+    # and stays, a today_local()/BUSINESS_TZ calendar-day concept
+    # everywhere else in this app — only the MINUTE an employee's own
+    # timer reads now follows their own clock, see
+    # util.now_for_employee()'s own docstring). That alone is enough to
+    # know real time has passed a day boundary, with no zone-mismatch risk
+    # the same-day case below has to guard against — BUSINESS_TZ never
+    # changes out from under a running timer the way Employee.location
+    # can.
+    needs_close = timer.date != today
 
-    # Same-day chunking DOES follow the employee's own clock (2026-09-04) —
-    # this has to match whatever clock timer.start_minute was itself
-    # stamped from (now_for_employee(), see start_task_timer()/start_plan()
-    # below), or "how much of today has this timer been running" would be
-    # computed by mixing two different clocks and produce nonsense.
-    now_for_emp = now_for_employee(user)
-    now_minute = now_for_emp.hour * 60 + now_for_emp.minute
+    if not needs_close:
+        # Same-day chunking DOES follow the employee's own clock
+        # (2026-09-04) — this has to match whatever clock
+        # timer.start_minute was itself stamped from (now_for_employee(),
+        # see start_task_timer()/start_plan() below), or "how much of
+        # today has this timer been running" would be computed by mixing
+        # two different clocks and produce nonsense.
+        now_for_emp = now_for_employee(user)
+        now_minute = now_for_emp.hour * 60 + now_for_emp.minute
 
-    # Sanity check (Ganesh, 2026-09-08 bugfix) — timer.start_minute and
-    # now_minute are only comparable if BOTH were read in the same
-    # employee timezone. If Employee.location changes while this timer is
-    # already running (blocked going forward — see the new guards on
-    # update_location()/_emp_from_form() in this file and app/routes/
-    # admin.py — but a defense-in-depth check here covers a timer that was
-    # already left in this state before that fix shipped, or any other
-    # future cause of the same mismatch), the two clocks disagree and
-    # `now_minute - timer.start_minute` can read many hours larger than
-    # any real elapsed time — which this loop would otherwise dutifully
-    # chop into fabricated cap-length TaskEntry rows (reported live: 4
-    # identical 4:00 "Respond to Client emails" rows plus a partial one,
-    # ~18 hours of Task Log time nobody actually worked). timer.started_at
-    # stays true UTC regardless of location (see start_task_timer()/
-    # start_plan()), so it's a location-independent ground truth for real
-    # elapsed minutes — used here only to sanity-check the zone-based
-    # number, not to replace it, since the zone-based number is what every
-    # other same-day case above already correctly relies on. A few
-    # minutes of slack absorbs ordinary request latency/clock drift; a
-    # larger gap means the two numbers were read in different zones, not
-    # that real time actually jumped, so this pass leaves the timer
-    # exactly as-is (same "don't lose time, leave it for a human to sort
-    # out" instinct every other failure path in this function already
-    # has) rather than trusting either number blindly.
-    real_elapsed_minutes = (dt.datetime.utcnow() - timer.started_at).total_seconds() / 60
-    zone_elapsed_minutes = now_minute - timer.start_minute
-    if abs(zone_elapsed_minutes - real_elapsed_minutes) > 10:
+        # Sanity check (Ganesh, 2026-09-08 bugfix) — timer.start_minute
+        # and now_minute are only comparable if BOTH were read in the same
+        # employee timezone. If Employee.location changes while this
+        # timer is already running (blocked going forward — see the
+        # guards on update_location()/_emp_from_form() in this file and
+        # app/routes/admin.py — but this defense-in-depth check also
+        # covers a timer that was already left in this state before that
+        # fix shipped, or any other future cause of the same mismatch),
+        # the two clocks disagree and `now_minute - timer.start_minute`
+        # can read many hours larger than any real elapsed time.
+        # timer.started_at stays true UTC regardless of location (see
+        # start_task_timer()/start_plan()), so it's a location-independent
+        # ground truth for real elapsed minutes — used here only to
+        # sanity-check the zone-based number, not to replace it, since the
+        # zone-based number is what the boundary math below correctly
+        # relies on otherwise. A few minutes of slack absorbs ordinary
+        # request latency/clock drift; a larger gap means the two numbers
+        # were read in different zones, not that real time actually
+        # jumped, so this leaves the timer exactly as-is rather than
+        # trusting either number blindly.
+        real_elapsed_minutes = (dt.datetime.utcnow() - timer.started_at).total_seconds() / 60
+        zone_elapsed_minutes = now_minute - timer.start_minute
+        if abs(zone_elapsed_minutes - real_elapsed_minutes) > 10:
+            return timer
+
+        needs_close = (now_minute - timer.start_minute) > cap
+
+    if not needs_close:
         return timer
 
-    for _ in range((1440 // cap) + 2):
-        if now_minute - timer.start_minute <= cap:
-            break
-        boundary = timer.start_minute + cap
-        if boundary >= 1440:
-            break
-        ok, _error = _log_timer_as_entry(db, user, timer, boundary, cfg)
-        if not ok:
-            break
-        timer.start_minute = boundary
-        timer.started_at = timer.started_at + dt.timedelta(minutes=cap)
-        changed = True
-    if changed:
-        db.commit()
-    return timer
+    boundary = min(timer.start_minute + cap, 1440)
+    ok, _error = _log_timer_as_entry(db, user, timer, boundary, cfg)
+    if not ok:
+        # Leave it exactly as it was — same "don't lose time, leave it for
+        # a human to sort out" instinct every other failure path here has.
+        return timer
+
+    plan_id = timer.planned_task_id
+    db.delete(timer)
+    db.commit()
+    if plan_id is not None:
+        plan = db.get(m.PlannedTask, plan_id)
+        if plan is not None and plan.status == m.PLAN_RUNNING:
+            plan.status = m.PLAN_PAUSED
+            db.commit()
+    return None
 
 
 def _finish_task_timer(db: Session, user: m.Employee, timer: m.ActiveTaskTimer, cfg: dict):
@@ -1625,15 +1623,23 @@ def _finish_task_timer(db: Session, user: m.Employee, timer: m.ActiveTaskTimer, 
     plan-linked timers stamp ENTRY_METHOD_PLAN, ad-hoc ones stamp
     ENTRY_METHOD_AUTO_TIMER.
 
-    Max-row auto-split (Ganesh, 2026-08-28) runs first here — see
-    _auto_split_timer_if_over_cap's docstring — so a timer that's been
-    running past Config.max_row_minutes gets its earlier full-cap chunks
-    logged off before this function computes its own final segment against
-    "now"; without this, Stop (and Pause/Stop-plan, which both funnel
-    through this same function) on a stuck long-running timer failed
-    outright with validate_entry's "longer than 4h — break the work down"
-    error instead of logging anything."""
+    Max-row/midnight auto-CLOSE (Ganesh, 2026-08-28, redesigned 2026-09-08
+    — see _auto_split_timer_if_over_cap's own docstring) runs first here:
+    a timer that's already past Config.max_row_minutes or already crossed
+    a midnight gets closed out and DELETED before this function ever gets
+    a chance to compute its own final segment against "now" — without
+    this, Stop (and Pause/Stop-plan, which both funnel through this same
+    function) on a stuck long-running timer failed outright with
+    validate_entry's "longer than 4h — break the work down" error instead
+    of logging anything. Since the redesign, that helper can come back
+    None (the timer was already fully closed and deleted by the boundary
+    it just crossed) — Stop/Pause simply has nothing left to do in that
+    case; the real segment was already logged a moment ago by the same
+    call, so this just confirms success rather than logging a second,
+    now-nonexistent one."""
     timer = _auto_split_timer_if_over_cap(db, user, timer, cfg)
+    if timer is None:
+        return True, None
     # Per-employee clock timezone (Ganesh, 2026-09-04) — must match
     # whatever clock timer.start_minute was itself stamped from (see
     # start_task_timer()/start_plan() below and util.now_for_employee()'s
@@ -1773,7 +1779,16 @@ def stop_task_timer(
         return RedirectResponse("/today", status_code=303)
     if plan_id is not None:
         plan = db.get(m.PlannedTask, plan_id)
-        if plan is not None and plan.status == m.PLAN_RUNNING:
+        # Checks PLAN_PAUSED too, not just PLAN_RUNNING (Ganesh, 2026-09-08,
+        # stop-and-require-restart redesign) — if this same timer had
+        # already crossed the cap/midnight by the moment this Stop was
+        # clicked, _auto_split_timer_if_over_cap() (inside
+        # _finish_task_timer above) already closed it out and set this
+        # plan to PAUSED on its own, treating it as "interrupted" since
+        # that helper has no way to know a real Stop click is what
+        # triggered it. An explicit Stop always means "done," so it still
+        # wins here regardless of which state the auto-close left it in.
+        if plan is not None and plan.status in (m.PLAN_RUNNING, m.PLAN_PAUSED):
             plan.status = m.PLAN_DONE
             db.commit()
     flash(request, "Timer stopped — entry logged.", "ok")

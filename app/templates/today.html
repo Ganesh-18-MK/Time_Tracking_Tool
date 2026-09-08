@@ -632,40 +632,27 @@
     // timezone.
     const startEpoch = new Date("{{ active_timer.started_at.isoformat() }}Z").getTime();
     const el = document.getElementById('tasktimer');
-    // Max-row auto-split (Ganesh, 2026-08-28) — the actual split (log the
-    // completed cap-length chunk, advance the timer forward) happens
-    // server-side on next page load (see _auto_split_timer_if_over_cap in
-    // app/routes/employee.py); this just makes "next page load" happen on
-    // its own for a tab left open past the cap, instead of the employee
-    // having to notice a stuck timer and click something themselves.
-    //
-    // Reload-loop bugfix (Ganesh, 2026-08-28, same day) — a timer that
-    // crosses midnight has a `date` that no longer matches "today", which
-    // _auto_split_timer_if_over_cap deliberately leaves alone (a separate,
-    // not-yet-handled edge case — see its own docstring), so the server
-    // can never shrink it back under the cap. The original version here
-    // reloaded once per PAGE LOAD (reloadedForSplit is reset by the reload
-    // itself), so a timer the server can't fix just reloaded again the
-    // instant the new page rendered — an infinite reload loop that never
-    // let the rest of the page finish rendering (reported live: page stuck
-    // "loading", task log/Add Row missing below Auto time capture).
-    // alreadyOverCapOnLoad is computed once, before the interval starts:
-    // if the timer is ALREADY over cap the moment this page loads, a
-    // reload clearly won't help (the server just tried and couldn't), so
-    // this tab stops trying — same as before this feature existed, just
-    // showing the real (if large) elapsed number instead of looping. The
-    // reload still fires normally for the common case: a timer that was
-    // under cap when this page loaded and organically crosses it while
-    // the tab stays open.
+    // Auto-CLOSE, not auto-continue (Ganesh, 2026-09-08 redesign — see
+    // _auto_split_timer_if_over_cap's own docstring in
+    // app/routes/employee.py). The server closes the timer out (logs the
+    // one real segment, deletes it) the moment it's asked to and finds the
+    // cap crossed OR a midnight crossed — there's no more "can't fix this
+    // one, stop trying" case left to special-case the way the original
+    // 2026-08-28 version of this script had to (that bug is what this
+    // whole redesign replaced): every reload past the cap now reliably
+    // ends with either a closed-out timer (Auto time capture goes back to
+    // "not running," with a flash explaining why) or nothing to do at all.
+    // So this always reloads exactly once, the moment the live clock
+    // reaches the cap, regardless of whether the timer was already over
+    // cap the instant this page loaded.
     const capSec = {{ max_row_minutes }} * 60;
-    const alreadyOverCapOnLoad = Math.max(0, Math.floor((Date.now() - startEpoch) / 1000)) >= capSec;
-    let reloadedForSplit = false;
+    let reloaded = false;
     function tick() {
       const elapsedSec = Math.max(0, Math.floor((Date.now() - startEpoch) / 1000));
       const h = Math.floor(elapsedSec / 3600), mi = Math.floor((elapsedSec % 3600) / 60), s = elapsedSec % 60;
       el.textContent = (h ? h + ':' : '') + String(mi).padStart(2, '0') + ':' + String(s).padStart(2, '0');
-      if (!alreadyOverCapOnLoad && elapsedSec >= capSec && !reloadedForSplit) {
-        reloadedForSplit = true;
+      if (elapsedSec >= capSec && !reloaded) {
+        reloaded = true;
         location.reload();
       }
     }
