@@ -1250,6 +1250,24 @@ def _emp_from_form(
     # future caller of _emp_from_form doesn't have to supply it to avoid
     # silently resetting an existing employee back to the default).
     if location in m.LOCATIONS:
+        # Bug fix (Ganesh, 2026-09-08) — changing Location while the
+        # employee has a running Auto time capture timer stamps the
+        # timer's start in one timezone and every later "how long has this
+        # been running" check in another, which
+        # _auto_split_timer_if_over_cap() can misread as many hours of
+        # elapsed time that never happened, fabricating Task Log rows (see
+        # that function's own sanity check for the other half of this
+        # fix). `emp.id is not None` skips this for a brand-new employee
+        # being created, who can't possibly have a timer yet.
+        if location != emp.location and emp.id is not None:
+            open_timer = db.execute(
+                select(m.ActiveTaskTimer).where(m.ActiveTaskTimer.employee_id == emp.id)
+            ).scalar_one_or_none()
+            if open_timer is not None:
+                raise FormError(
+                    f"Can't change {emp.name or 'this employee'}'s Location while their Auto time "
+                    "capture timer is running — have them Stop or Cancel it first."
+                )
         emp.location = location
     emp.country_code = country_code.strip() or None
     emp.phone = phone.strip() or None

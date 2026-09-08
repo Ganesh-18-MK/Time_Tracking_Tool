@@ -1562,6 +1562,36 @@ def _auto_split_timer_if_over_cap(db: Session, user: m.Employee, timer: Optional
     # computed by mixing two different clocks and produce nonsense.
     now_for_emp = now_for_employee(user)
     now_minute = now_for_emp.hour * 60 + now_for_emp.minute
+
+    # Sanity check (Ganesh, 2026-09-08 bugfix) — timer.start_minute and
+    # now_minute are only comparable if BOTH were read in the same
+    # employee timezone. If Employee.location changes while this timer is
+    # already running (blocked going forward — see the new guards on
+    # update_location()/_emp_from_form() in this file and app/routes/
+    # admin.py — but a defense-in-depth check here covers a timer that was
+    # already left in this state before that fix shipped, or any other
+    # future cause of the same mismatch), the two clocks disagree and
+    # `now_minute - timer.start_minute` can read many hours larger than
+    # any real elapsed time — which this loop would otherwise dutifully
+    # chop into fabricated cap-length TaskEntry rows (reported live: 4
+    # identical 4:00 "Respond to Client emails" rows plus a partial one,
+    # ~18 hours of Task Log time nobody actually worked). timer.started_at
+    # stays true UTC regardless of location (see start_task_timer()/
+    # start_plan()), so it's a location-independent ground truth for real
+    # elapsed minutes — used here only to sanity-check the zone-based
+    # number, not to replace it, since the zone-based number is what every
+    # other same-day case above already correctly relies on. A few
+    # minutes of slack absorbs ordinary request latency/clock drift; a
+    # larger gap means the two numbers were read in different zones, not
+    # that real time actually jumped, so this pass leaves the timer
+    # exactly as-is (same "don't lose time, leave it for a human to sort
+    # out" instinct every other failure path in this function already
+    # has) rather than trusting either number blindly.
+    real_elapsed_minutes = (dt.datetime.utcnow() - timer.started_at).total_seconds() / 60
+    zone_elapsed_minutes = now_minute - timer.start_minute
+    if abs(zone_elapsed_minutes - real_elapsed_minutes) > 10:
+        return timer
+
     for _ in range((1440 // cap) + 2):
         if now_minute - timer.start_minute <= cap:
             break
@@ -3273,6 +3303,20 @@ def update_location(
         flash(request, "Choose a valid country.", "err")
         return RedirectResponse("/profile", status_code=303)
     if location != user.location:
+        # Bug fix (Ganesh, 2026-09-08) — changing Location while a timer is
+        # already running stamps the timer's start in one timezone and every
+        # later "how long has this been running" check in another, which
+        # _auto_split_timer_if_over_cap() (app/routes/employee.py) can
+        # misread as many hours of elapsed time that never happened,
+        # fabricating Task Log rows. See that function's own new sanity
+        # check for the defense-in-depth half of this fix — this half stops
+        # the mismatch from ever being created in the first place.
+        open_timer = db.execute(
+            select(m.ActiveTaskTimer).where(m.ActiveTaskTimer.employee_id == user.id)
+        ).scalar_one_or_none()
+        if open_timer is not None:
+            flash(request, "Stop or cancel your running Auto time capture timer before changing Country.", "err")
+            return RedirectResponse("/profile", status_code=303)
         user.location = location
         db.commit()
         audit(db, user.name, "location_change", "Employee", str(user.id), {"location": location})
