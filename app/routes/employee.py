@@ -875,6 +875,27 @@ def today_page(
             ).first()
             show_overtime_prompt = already_requested is None
 
+    # Punch-badge/"Target reached" banner overtime gate (Ganesh, 2026-09-05):
+    # previously the live Punch In/Out badge (#punchtimer) and its
+    # "⏱ Target reached — now tracking overtime." banner flipped into
+    # overtime styling purely from Punch-elapsed time crossing `target` —
+    # a real gap from the actual Task Log, since an employee can stay
+    # punched in past target while their logged task rows are still short
+    # of it (see the separate show_overtime_prompt banner right above,
+    # which already correctly keys off Task Log time and was NOT showing
+    # in that situation — it was only the Punch badge/banner disagreeing
+    # with it). task_log_overtime reuses that exact same signal
+    # (over_allocation_minutes, i.e. ctx["total"] >= ctx["target"]) so the
+    # two banners can never contradict each other again. Deliberately a
+    # static, once-per-page-load flag (not live-ticked) — Task Log time
+    # only changes when a row is actually saved, not every second, so
+    # there's nothing to tick; the Punch badge's own displayed digits keep
+    # ticking every second exactly as before (still real Punch-elapsed
+    # time), only whether that ticking number is shown/labeled as
+    # "overtime" (red, "+" prefix, banner revealed) is now gated by this
+    # flag instead of by its own sign — see today.html's punchtimer script.
+    task_log_overtime = over_allocation_minutes > 0
+
     # Punch-out reminder popup (Ganesh, 2026-08-21): Punch Out is already
     # blocked until Submit Day locks the day (see util.punch_out_error) —
     # this is the other half of that, a nudge the moment it becomes
@@ -928,6 +949,7 @@ def today_page(
             "pending_ot_days": pending_ot_days,
             "over_allocation_minutes": over_allocation_minutes,
             "show_overtime_prompt": show_overtime_prompt,
+            "task_log_overtime": task_log_overtime,
             "show_punch_out_reminder": show_punch_out_reminder,
             "edit_notices": edit_notices,
             "plan_assignment_notices": plan_assignment_notices,
@@ -987,6 +1009,57 @@ def _client_required_error(project: Optional[m.Project], client: str) -> Optiona
     return None
 
 
+def _is_recent_duplicate_entry(
+    db: Session, employee_id: int, date: dt.date, project_id: int, task_type_id: int,
+    start_minute: int, end_minute: int, window_seconds: int = 15,
+) -> bool:
+    """Double-submit guard (Ganesh, 2026-09-08 bugfix) — a real production
+    Task Log row was found logged twice, byte-for-byte identical (same
+    project/task/details/start/end). Root cause: neither the Add Task form
+    nor Stop/Pause (which both funnel every timer-based row through
+    _log_timer_as_entry below) had any protection against being submitted
+    twice — a double-click, a double-tap on mobile, or a slow connection
+    causing a retry, can fire two POSTs close enough together that both
+    pass validate_entry()'s overlap check before either has committed
+    (most likely on Stop/Pause: "now" rounds to the same minute for two
+    clicks a second apart, so the two computed end_minutes — and the
+    resulting rows — can come out byte-identical). Disabling the submit
+    button the instant a form is submitted (app/static/submit_guard.js,
+    loaded globally via base.html) closes off the common single-device
+    case before it ever reaches the server; this is the server-side
+    backstop for the rare case a resubmission still gets through.
+
+    True when an identical row (same employee/date/project/task/start/end)
+    was already committed within the last `window_seconds` seconds.
+    Deliberately does NOT also compare details/client — a genuine
+    duplicate click resends the exact same form values anyway, and
+    matching on fewer columns keeps this robust to incidental whitespace
+    differences. Deliberately does NOT widen this into a real fix for the
+    underlying race (e.g. a DB-level unique index on
+    (employee_id, date, start_minute, end_minute), which SQL could enforce
+    atomically) — this project's own production data already has at least
+    one pre-existing violation of that shape (the very row that surfaced
+    this bug), so adding a hard constraint now would need a cleanup pass
+    first or it'd block app startup; flagged here as the more complete fix
+    to revisit once that cleanup happens, not attempted in this pass.
+    Uses created_at (a plain UTC audit timestamp, per util.py's own
+    now_local()/BUSINESS_TZ convention for audit vs. clock-face values) —
+    this is a pure "was this just inserted" check, not a clock-face value,
+    so it deliberately does not go through now_for_employee()."""
+    cutoff = dt.datetime.utcnow() - dt.timedelta(seconds=window_seconds)
+    return db.execute(
+        select(m.TaskEntry.id).where(
+            m.TaskEntry.employee_id == employee_id,
+            m.TaskEntry.date == date,
+            m.TaskEntry.project_id == project_id,
+            m.TaskEntry.task_type_id == task_type_id,
+            m.TaskEntry.start_minute == start_minute,
+            m.TaskEntry.end_minute == end_minute,
+            m.TaskEntry.created_at >= cutoff,
+        )
+    ).scalars().first() is not None
+
+
 @router.post("/entries")
 def add_entry(
     request: Request,
@@ -1034,6 +1107,15 @@ def add_entry(
     if client_err:
         flash(request, client_err, "err")
         return _reopen(start_time)
+    if _is_recent_duplicate_entry(db, user.id, day, project_id, task_type_id, start_minute, end_minute):
+        # Double-submit guard (Ganesh, 2026-09-08 bugfix) — see
+        # _is_recent_duplicate_entry's own docstring. Treat this exactly
+        # like a normal success: the row's already there from the first
+        # submission, so redirect the same way add_entry always does on
+        # success rather than showing a scary error for what looks, from
+        # the employee's side, like nothing went wrong the first time.
+        flash(request, "That row looked like it was already added a moment ago — skipped the duplicate.", "ok")
+        return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
     try:
         validate_entry(
             db, user, day, project_id, task_type_id, details, start_minute, end_minute, cfg
@@ -1332,6 +1414,18 @@ def _log_timer_as_entry(db: Session, user: m.Employee, timer: m.ActiveTaskTimer,
     client_err = _client_required_error(db.get(m.Project, timer.project_id), timer.client)
     if client_err:
         return False, client_err
+    # Double-submit guard (Ganesh, 2026-09-08 bugfix) — see
+    # _is_recent_duplicate_entry's own docstring. Every timer-based row
+    # (Stop, Pause, Plan-stop, auto-split chunks) funnels through this one
+    # function, so this one check covers all of them. Returning success
+    # without inserting again lets the caller (_finish_task_timer) still
+    # delete the now-redundant ActiveTaskTimer row exactly as it would on
+    # a real success — a harmless no-op if the first, genuine request
+    # already deleted it.
+    if _is_recent_duplicate_entry(
+        db, user.id, timer.date, timer.project_id, timer.task_type_id, timer.start_minute, end_minute
+    ):
+        return True, None
     try:
         validate_entry(
             db, user, timer.date, timer.project_id, timer.task_type_id,

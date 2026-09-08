@@ -413,6 +413,7 @@ The PRD's §9 targets, updated for the actual rollout plan (self-signup auth + A
 | Dashboard shows `·` on a past weekday | Legacy blank (no sheet mark) — historical blanks are *not* fabricated into Missing. Live days after `live_start_date` do compute Missing. |
 | A person's April strikes look "too low" | Pre-policy days (before Apr 15 2026) are strike-exempt, matching the sheet's own formulas. Hover the faded cells. |
 | Times look shifted 12 h in old task rows | The legacy files logged 12-hour clock times without AM/PM; the importer normalizes monotonically per day. Raw values are in `legacy/cache/divya.jsonl`. |
+| A Task Log row shows up twice, identical | A double-click/double-tap/network retry submitted the same Add Task, Stop, or Pause action twice before a fix on 2026-09-08 (`app/static/submit_guard.js` disables the button on submit; `app/routes/employee.py`'s `_is_recent_duplicate_entry()` is a 15-second server-side backstop) — see CLAUDE.md's 2026-09-08 bullet. A row logged *before* that date can still have a stray duplicate from before the fix; check Person Detail's Task log and delete the extra one manually. |
 
 ## PRD traceability
 

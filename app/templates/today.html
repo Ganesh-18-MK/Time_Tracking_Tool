@@ -25,7 +25,7 @@
     <div class="quickbar">
       <div class="qitem">
         {% if active_punch %}
-          <span class="qtimer" id="punchtimer" style="color:{{ 'var(--bad)' if punch_remaining < 0 else 'var(--ok)' }}">0:00:00</span>
+          <span class="qtimer" id="punchtimer" style="color:{{ 'var(--bad)' if task_log_overtime else 'var(--ok)' }}">0:00:00</span>
           <form method="post" action="/punch/out" class="inline">
             <button class="small" title="{% if not day_locked %}Submit today's task log below first — Punch Out needs it locked.{% else %}End today's punch session.{% endif %}">Punch Out</button>
           </form>
@@ -138,7 +138,20 @@
 {% endif %}
 
 {% if day == today and active_punch %}
-<span id="overtimeBanner" class="gapflag" style="display:{{ '' if punch_remaining < 0 else 'none' }}">
+{# Ganesh, 2026-09-05: this banner + the punch badge's red/"+" overtime
+   styling used to flip the instant Punch-elapsed time (remain, below)
+   crossed `target` — but Punch time and logged Task Log time can and do
+   drift apart (staying punched in while behind on logging), so this could
+   show "now tracking overtime" while the Today Tasks footer still read
+   under target. Both now gate on task_log_overtime instead — the exact
+   same ctx["total"] >= ctx["target"] signal the show_overtime_prompt
+   banner further down the page already uses — so the two can never
+   disagree again. task_log_overtime is a static, per-page-load flag (Task
+   Log time only changes when a row is saved, not every second); the
+   ticking DIGITS below still count real Punch-elapsed time every second
+   exactly as before — only whether that number is presented as overtime
+   is gated by this flag now, not by its own sign. #}
+<span id="overtimeBanner" class="gapflag" style="display:{{ '' if task_log_overtime else 'none' }}">
   ⏱ Target reached — now tracking overtime.
 </span>
 <script>
@@ -164,23 +177,39 @@
   const breakStartEpoch = {% if active_break %}new Date("{{ active_break.started_at.isoformat() }}Z").getTime(){% else %}null{% endif %};
   const el = document.getElementById('punchtimer');
   const banner = document.getElementById('overtimeBanner');
-  let overtimeShown = {{ 'true' if punch_remaining < 0 else 'false' }};
+  // Fixed for this page load (see the comment above) — NOT recomputed from
+  // `remain` on every tick like it used to be. While false, the countdown
+  // floors at 0:00:00 instead of going negative if Punch time alone
+  // outruns target before the Task Log catches up — a real, intended state
+  // ("you've punched enough time, but it isn't logged as overtime yet"),
+  // not a bug.
+  const taskLogOvertime = {{ 'true' if task_log_overtime else 'false' }};
+  let overtimeShown = taskLogOvertime;
   function tick() {
     const refEpoch = breakStartEpoch !== null ? breakStartEpoch : Date.now();
     const rawElapsedSec = Math.max(0, Math.floor((refEpoch - startEpoch) / 1000));
     const elapsedSec = Math.max(0, rawElapsedSec - completedBreakSec);
     const remain = remainingAtLoad - elapsedSec;
-    const over = remain < 0;
-    const abs = Math.abs(remain);
-    const h = Math.floor(abs / 3600), mi = Math.floor((abs % 3600) / 60), s = abs % 60;
+    const over = taskLogOvertime;
+    // Bug caught during verification (Ganesh, 2026-09-08): `over` and
+    // `remain` are now two independent signals (Task Log total vs. target,
+    // and Punch-elapsed time vs. target) that can each cross before the
+    // other. The old `Math.abs(remain)` assumed they'd always agree, so
+    // whenever Task Log had already reached target but Punch time hadn't
+    // caught up yet (remain still positive — plausible any time logged
+    // task rows don't line up 1:1 with the live punch session), it showed
+    // that still-positive "time left" number with a "+" prefix as if it
+    // were elapsed overtime. `Math.max(0, -remain)` only ever counts real
+    // elapsed Punch-clock overtime (0 until remain itself actually goes
+    // negative), so the badge can say "overtime" (from Task Log) without
+    // fabricating a number Punch time hasn't earned yet.
+    const shown = over ? Math.max(0, -remain) : Math.max(0, remain);
+    const h = Math.floor(shown / 3600), mi = Math.floor((shown % 3600) / 60), s = shown % 60;
     el.textContent = (over ? '+' : '') + h + ':' + String(mi).padStart(2, '0') + ':' + String(s).padStart(2, '0');
     el.style.color = over ? 'var(--bad)' : 'var(--ok)';
-    el.title = (over ? "overtime — past today's target" : "time left to reach today's target") +
+    el.title = (over ? "overtime — your logged task time has passed today's target" : "time left to reach today's target, by punched time (won't count as overtime until your logged task time also reaches it)") +
       " ({{ target|hm }}{% if break_excess %}, includes {{ break_excess|hm }} break-allowance extension{% endif %})" +
       (breakStartEpoch !== null ? " — paused for your break" : "");
-    // banner shows once, the moment overtime starts — not re-hidden if they
-    // somehow dip back under (can't happen with a monotonic clock, but
-    // stays a one-way flag rather than toggling every tick regardless)
     if (over && !overtimeShown) {
       overtimeShown = true;
       banner.style.display = '';
