@@ -83,7 +83,7 @@
   </div>
   <table id="att-summary-table">
     <thead>
-      <tr><th>Name</th><th>Department</th><th>Last days</th><th>Attendance</th>
+      <tr><th>Name</th><th>Department</th><th>Days Present</th><th>Hours Worked</th>
         <th>Complete</th><th>Partial</th><th>Missing</th>
         <th>Leave</th><th>Holiday</th><th>Weekend</th><th>Overtime</th><th>Approved</th></tr>
     </thead>
@@ -94,22 +94,11 @@
         <td><a href="/admin/person/{{ r.employee.id }}">{{ r.employee.name }}</a></td>
         <td>{{ r.department if r.department != '—' else '' }}{% if r.department == '—' %}<span class="muted">— not set</span>{% endif %}</td>
         <td>
-          <div class="daystrip">
-            {% for d in r.daily[-14:] %}
-            <div class="d s-{{ d.status }}" title="{{ d.date|mdy }} · {{ STATUS_NAMES.get(d.status, d.status) }}">{{ d.date.strftime('%a')[0] }}</div>
-            {% else %}
-            <span class="muted small">no data</span>
-            {% endfor %}
-          </div>
-        </td>
-        <td>
-          {% if r.attendance_pct is not none %}
-          <div class="pctbar-wrap">
-            <div class="pctbar"><i style="width:{{ r.attendance_pct }}%;background:{{ 'var(--bad)' if r.attendance_pct < 60 else ('var(--warn)' if r.attendance_pct < 90 else 'var(--ok)') }}"></i></div>
-            <span class="pctbar-v">{{ r.attendance_pct }}%</span>
-          </div>
+          {% if r.working_days %}
+          <strong>{{ r.present_days }}</strong><span class="muted"> / {{ r.working_days }} working days</span>
           {% else %}<span class="muted">—</span>{% endif %}
         </td>
+        <td>{{ r.actual_minutes|hm if r.actual_minutes else '—' }}</td>
         <td>{{ r.counts.complete }}</td>
         <td>{{ r.counts.partial }}</td>
         <td>{{ r.counts.missing }}</td>

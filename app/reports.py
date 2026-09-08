@@ -467,7 +467,12 @@ def attendance_report(db: Session, start: dt.date, end: dt.date,
                        department: Optional[str] = None, employee_id: Optional[int] = None) -> dict:
     """{"mode": "daily", "employee": Employee, "rows": [{"date","status","overtime"}]}
     when one specific employee is selected, else {"mode": "summary",
-    "rows": [{"employee","department","counts","attendance_pct","overtime_minutes"}]}.
+    "rows": [{"employee","department","counts","attendance_pct","overtime_minutes",
+    "present_days","working_days","actual_minutes"}]} — the last three added
+    2026-09-04 for the on-screen "Days Present" / "Hours Worked" columns
+    (see admin/reports_attendance.html), replacing the day-strip and
+    percentage bar there; attendance_pct itself is untouched/still used by
+    the XLSX export.
 
     "overtime" / "overtime_minutes" comes from completed Punch In/Out
     sessions vs. each day's already-computed target (DayStatus.target_minutes,
@@ -513,12 +518,17 @@ def attendance_report(db: Session, start: dt.date, end: dt.date,
     for e in emps:
         counts = _empty_counts()
         emp_overtime = emp_approved_overtime = 0
+        emp_actual_minutes = 0
         emp_ranges = approved_ranges.get(e.id, [])
         # daily: same {date, status} shape as daily-detail mode's own rows,
         # kept here too (Ganesh, 2026-08-29) so the summary table's
         # day-strip mini calendar doesn't need a second query — this
         # report already loads every DayStatus row in range per employee
         # via by_emp above, this just doesn't throw the per-day detail away.
+        # (2026-09-04: the day-strip itself was replaced on-screen by the
+        # present_days/working_days count below, but `daily` stays here —
+        # it's still what the row-highlight/sort-to-top logic reads via
+        # counts, and removing it isn't what was asked.)
         daily = []
         emp_rows = sorted(by_emp.get(e.id, []), key=lambda r: r.date)
         for r in emp_rows:
@@ -529,6 +539,7 @@ def attendance_report(db: Session, start: dt.date, end: dt.date,
             emp_overtime += day_overtime
             if _date_is_approved(emp_ranges, r.date):
                 emp_approved_overtime += day_overtime
+            emp_actual_minutes += r.actual_minutes or 0
             daily.append({"date": r.date, "status": eff})
         expected = counts[COMPLETE] + counts[PARTIAL] + counts[MISSING]
         pct = round(100 * counts[COMPLETE] / expected, 1) if expected else None
@@ -536,6 +547,25 @@ def attendance_report(db: Session, start: dt.date, end: dt.date,
             "employee": e, "department": e.department or "—", "counts": counts,
             "attendance_pct": pct, "overtime_minutes": emp_overtime,
             "approved_overtime_minutes": emp_approved_overtime, "daily": daily,
+            # Ganesh, 2026-09-04: "Last days"/"Attendance" columns replaced
+            # on-screen with a plain present/working-days count and total
+            # hours worked — see admin/reports_attendance.html. "Present"
+            # reuses the same `counts[COMPLETE]` the % figure above already
+            # counted, which already reads Complete for a fully compensated
+            # shortfall day (DayStatus.effective_status()) — so a day made
+            # up via compensation counts as present here too, matching
+            # "should complete target hours, either by compensating also"
+            # verbatim. "working_days" is the same `expected` denominator
+            # the % used (Complete+Partial+Missing) — Leave/Holiday/Weekend
+            # days were never "working days" to begin with, so they're
+            # correctly excluded from both the numerator and denominator,
+            # not just hidden from view. attendance_pct/counts/daily are
+            # left in place, unremoved — the XLSX export (app/routes/
+            # reports.py) and the day-strip pattern reports_strikes.html
+            # still uses both still read them, so removing either would be
+            # a silent break to something not asked to change.
+            "present_days": counts[COMPLETE], "working_days": expected,
+            "actual_minutes": emp_actual_minutes,
         })
     # Rows needing action sort to the top (Ganesh, 2026-08-29, matching the
     # mockup) — anyone with at least one Missing day in range first, then

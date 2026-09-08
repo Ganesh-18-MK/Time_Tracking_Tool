@@ -641,12 +641,6 @@ details > summary { cursor: pointer; color: var(--accent); }
 .daystrip .d.s-holiday, .daystrip .d.s-weekend { background: var(--hol-bg); color: var(--muted); }
 .daystrip .d.s-none { background: var(--pending-bg); color: var(--muted); }
 
-/* attendance/overtime % bar (Attendance report summary rows) */
-.pctbar-wrap { display: flex; align-items: center; gap: 8px; }
-.pctbar { width: 70px; height: 6px; background: var(--pending-bg); border-radius: 4px; overflow: hidden; }
-.pctbar i { display: block; height: 100%; border-radius: 4px; background: var(--ok); }
-.pctbar-v { font-variant-numeric: tabular-nums; font-size: 12.5px; font-weight: 600; width: 38px; }
-
 /* status pill row legend under a redesigned report table */
 .report-legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 10px 2px 4px;
   font-size: 12px; color: var(--muted); }
