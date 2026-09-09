@@ -28,6 +28,25 @@ document.addEventListener("submit", function (e) {
   if (e.defaultPrevented) return;
   var btn = e.submitter || e.target.querySelector('button[type="submit"], button:not([type])');
   if (btn && !btn.disabled) {
-    btn.disabled = true;
+    // Bug fix (Ganesh, 2026-09-10) — disabling the submitter SYNCHRONOUSLY
+    // inside this handler broke every multi-button form where the button
+    // itself carries a name/value pair the server requires (Accept/Deny
+    // posting name="decision", Mark as Sick time/Unpaid posting
+    // name="disposition" — see admin/leave.html, admin/overtime.html).
+    // Browsers construct a form's submitted entry list as part of the same
+    // synchronous default action that follows this event's dispatch, before
+    // any macrotask runs — so a button already `disabled` at that point is
+    // silently EXCLUDED from the POST body, which is exactly what produced
+    // FastAPI's "decision: Field required" 422 on /admin/leave/{id}/lead-
+    // review and its two overtime.html equivalents. Deferring the disable
+    // with setTimeout(...,0) pushes it to the next tick — after the
+    // browser has already captured this click's form data and started the
+    // navigation — so the button's own value still submits correctly, and
+    // it's disabled fast enough (effectively instant to a human) to still
+    // block a rapid double-click before the page navigates away. Every
+    // plain single-button form on this site (the vast majority) behaves
+    // identically either way, since it never depended on the button's own
+    // name/value in the first place.
+    setTimeout(function () { btn.disabled = true; }, 0);
   }
 });
