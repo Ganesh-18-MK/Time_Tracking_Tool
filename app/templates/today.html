@@ -46,6 +46,20 @@
           <form method="post" action="/break/end" class="inline">
             <button class="small">End Break</button>
           </form>
+          {# Cancel/remove a break started by mistake or left running past
+             when it actually ended (Ganesh, 2026-09-10, Swathy incident —
+             see delete_break_entry()'s own docstring in
+             app/routes/employee.py) — "End Break" always stamps whatever
+             time it's clicked at, which is wrong for a break that's been
+             open for hours past its real end; removing it outright is the
+             safe fix (an ordinary break under the daily allowance doesn't
+             affect target/compliance either way, see delete_break_entry's
+             docstring), not something to reconstruct a guessed end time
+             for. #}
+          <form method="post" action="/breaks/{{ active_break.id }}/delete" class="inline"
+                onsubmit="return confirm('Remove this break entirely? Nothing will be logged for it — use End Break instead if you just want to close it out now.')">
+            <button class="small secondary" title="Started by mistake, or left running past when it really ended">✕</button>
+          </form>
         {% else %}
           <form method="post" action="/break/start" class="inline">
             <select name="break_type" title="{{ max_break_minutes }} min allowed/day{% if completed_breaks %} — {{ total_break_minutes|hm }} taken so far{% endif %}">
@@ -827,6 +841,18 @@
           {% if e.id and not day_locked %}
           <form method="post" action="/entries/{{ e.id }}/delete" class="inline"
                 onsubmit="return confirm('Delete this row?')">
+            <button class="small secondary">✕</button>
+          </form>
+          {% elif e.break_id and not day_locked %}
+          {# Same ✕ delete control real task rows get, extended to an
+             already-completed break row (Ganesh, 2026-09-10) — see
+             delete_break_entry()'s docstring. The still-*running* case
+             (end_minute is None) never reaches this table at all —
+             _merge_entries_and_breaks() only ever includes a completed
+             break — so that one's own ✕ lives next to "End Break" in the
+             header quickbar instead (see the active_break block above). #}
+          <form method="post" action="/breaks/{{ e.break_id }}/delete" class="inline"
+                onsubmit="return confirm('Delete this break entry?')">
             <button class="small secondary">✕</button>
           </form>
           {% endif %}

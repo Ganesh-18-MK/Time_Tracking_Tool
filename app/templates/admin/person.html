@@ -217,7 +217,7 @@
     <div class="card-head"><h2>Breaks ({{ month_label(year, month) }})</h2></div>
     <p class="small muted">Allowance: {{ max_break_minutes }} min/day — time over it extends that day's target.</p>
     <table>
-      <thead><tr><th>Date</th><th>Type</th><th>When</th><th>Duration</th></tr></thead>
+      <thead><tr><th>Date</th><th>Type</th><th>When</th><th>Duration</th>{% if user.is_super_admin %}<th></th>{% endif %}</tr></thead>
       <tbody>
         {% for b in breaks[:40] %}
         <tr>
@@ -227,9 +227,18 @@
             {{ b.start_minute|clock }}–{{ b.end_minute|clock if b.end_minute is not none else 'in progress' }}
           </td>
           <td>{{ b.duration_minutes|hm if b.duration_minutes is not none else '—' }}</td>
+          {% if user.is_super_admin %}
+          <td>
+            <form method="post" action="/admin/person/{{ emp.id }}/break/{{ b.id }}/delete" class="inline"
+                  onsubmit="return confirm('Remove this break entry{{ ' (still in progress)' if b.end_minute is none else '' }}? This can\'t be undone.')">
+              <input type="hidden" name="ym" value="{{ ym }}">
+              <button class="small secondary" type="submit">Delete</button>
+            </form>
+          </td>
+          {% endif %}
         </tr>
         {% else %}
-        <tr><td colspan="4" class="muted">No breaks logged.</td></tr>
+        <tr><td colspan="{{ 5 if user.is_super_admin else 4 }}" class="muted">No breaks logged.</td></tr>
         {% endfor %}
       </tbody>
     </table>

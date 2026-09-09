@@ -1362,6 +1362,52 @@ def edit_break_details(
     return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
 
 
+@router.post("/breaks/{break_id}/delete")
+def delete_break_entry(
+    break_id: int,
+    request: Request,
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Employee self-service delete for a break row — the ✕ control
+    delete_entry() already gives every real TaskEntry row, extended to
+    Breaks (Ganesh, 2026-09-10, from the Swathy stuck-open-break incident:
+    she'd started a Break, forgot to click End Break, and only noticed
+    once she'd already logged a full day of real work). Before this, an
+    employee had no way at all to fix a break she started by mistake or
+    forgot to close — `end_break()` only ever finds a break dated *today*
+    (unreachable to her once the day rolls over), and edit_break_details()
+    only ever edits the optional note on an already-*completed* break,
+    never touching start/end/removing it outright. This mirrors
+    delete_entry()'s exact same shape (ownership-or-admin check, then the
+    day-lock check, non-admins blocked on a locked day) rather than
+    inventing a different rule for Breaks — same "one ✕ button, one
+    consistent meaning" the task log's own delete already established.
+    Deliberately works on an open (still-running, end_minute is None) OR
+    an already-completed break — the stuck-open case this was built for
+    needs to be removable, not just a finished one. See admin.delete_break
+    (Person Detail, Super-Admin-only) for the equivalent admin-side
+    action on any employee's break, including one from a day already
+    locked to the employee herself; this route is the plain-employee,
+    own-data, own-visible-day counterpart to that."""
+    brk = db.get(m.BreakEntry, break_id)
+    if brk is None or (brk.employee_id != user.id and not user.is_admin):
+        return RedirectResponse("/today", status_code=303)
+    day = brk.date
+    sub = db.execute(
+        select(m.DaySubmission).where(
+            m.DaySubmission.employee_id == brk.employee_id, m.DaySubmission.date == day
+        )
+    ).scalar_one_or_none()
+    if sub is not None and sub.locked and not user.is_admin:
+        flash(request, "Day is locked — ask an admin to unlock it.", "err")
+    else:
+        db.delete(brk)
+        db.commit()
+        flash(request, "Break entry removed.", "ok")
+    return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
+
+
 @router.post("/break/start")
 def start_break(
     request: Request,

@@ -903,6 +903,62 @@ def override_day(
     return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
 
 
+@router.post("/person/{emp_id}/break/{break_id}/delete")
+def delete_break(
+    emp_id: int,
+    break_id: int,
+    request: Request,
+    ym: str = Form(""),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Super-Admin-only cleanup for a BreakEntry that's wrong or stuck open
+    (Ganesh, 2026-09-10, from a live incident: an employee clicked Start
+    Break, forgot to click End Break, and by the time she noticed had
+    already logged a full day of real TaskEntry rows). There was
+    previously no way to fix this at all — an employee's own /break/end
+    only ever closes a break dated *today*, so once the day rolls over
+    it's unreachable; edit_break_details() explicitly refuses to touch a
+    still-open break (end_minute is None) even for an admin, and
+    override_day() above only overrides a day's overall DayStatus, never
+    a raw Break/Task row.
+
+    Deliberately DELETE, not "set a correct end time" (the first design
+    considered) — editing an open break's end time to the real value
+    would need a time-input form and still risks getting the exact
+    minute wrong; deleting it outright was Ganesh's own explicit
+    preference and is actually simpler AND safer here: recompute_
+    employee()'s break-excess calculation (engine.py) only ever sums
+    break_entries with end_minute IS NOT NULL, so an ordinary break
+    under Config.max_break_minutes contributes nothing to that day's
+    target either way — removing the row entirely is compliance-
+    equivalent to a normal short break, whereas leaving it stuck open
+    (or closing it against "now", hours later) risked inflating that
+    day's target via break-excess and turning a genuinely complete day
+    into a false shortfall/strike. Works on any break for this employee,
+    open or already-completed (not scoped to just the stuck-open case),
+    matching Compensation links' own delete_complink()'s same
+    "Super Admin can remove a bad row outright" precedent."""
+    brk = db.get(m.BreakEntry, break_id)
+    if brk is None or brk.employee_id != emp_id:
+        flash(request, "Break entry not found.", "err")
+        return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+    was_open = brk.end_minute is None
+    audit(
+        db, admin.name, "delete_break", "BreakEntry", str(brk.id),
+        {
+            "date": brk.date.isoformat(), "break_type": brk.break_type,
+            "start_minute": brk.start_minute, "end_minute": brk.end_minute,
+            "was_open": was_open,
+        },
+    )
+    break_date = brk.date.isoformat()
+    db.delete(brk)
+    db.commit()
+    flash(request, f"Break entry for {break_date} removed.", "ok")
+    return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+
+
 def _complink_redirect(emp_id: int, ym: str, return_to: str) -> str:
     """Where add_complink sends the admin back to. Defaults to Person Detail
     (the original, still-used flow) — Overtime Management's quick-link form
