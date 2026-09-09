@@ -189,19 +189,28 @@
    * unrestricted, an array means restricted to exactly those project ids
    * (see _combo_items() in app/routes/employee.py).
    *
-   * Case Type / Client (Ganesh, 2026-08-28) — two optional trailing args,
-   * clientWrap (the field's wrapper element, `hidden` by default in the
-   * markup — see today.html) and preselectClientValue (a failed-submit
-   * re-show, same idea as preselectProjectId/preselectTaskId above).
+   * Case Type / Company+Client (Ganesh, 2026-08-28; split into two fields
+   * 2026-09-09) — two optional trailing args, clientWrap (the fields'
+   * shared wrapper element, `hidden` by default in the markup — see
+   * today.html) and preselectClientValue (a failed-submit re-show, same
+   * idea as preselectProjectId/preselectTaskId above — carries the
+   * Company value only, matching reopen_client's own single-value shape;
+   * Client (individual) re-show is handled separately by the template
+   * itself via a plain value="{{ reopen_client_individual }}" attribute,
+   * same as every other sticky-reopen field on that form).
+   *
    * allProjects items carry an "is_case_type" key (see _combo_items());
-   * picking a project with is_case_type=true reveals clientWrap and marks
-   * its input required, same "field appears + becomes required based on
-   * another field's selection" pattern the Suggest-a-new-task Project
-   * picker already established (see combo-menu's submit-time check
-   * above) — just driven from here instead of a plain JS show/hide, since
-   * this one depends on which SPECIFIC project was picked, not a fixed
-   * Type toggle. Hiding it clears the value, same reasoning: a script
-   * that hides a field is responsible for not silently submitting it.
+   * picking a project with is_case_type=true reveals clientWrap, which
+   * as of 2026-09-09 holds TWO inputs — name="client" (Company) and
+   * name="client_individual" (Client) — not just one. Neither is marked
+   * `required` here: unlike the old single-field version, the rule is
+   * now "at least ONE of the two" (Ganesh, confirmed via
+   * AskUserQuestion), which a plain HTML `required` attribute can't
+   * express on two independent fields — that's enforced server-side by
+   * _client_required_error() (app/routes/employee.py) instead. Hiding
+   * the wrapper still clears BOTH values, same reasoning as before: a
+   * script that hides a field is responsible for not silently
+   * submitting it.
    */
   function initProjectTaskCombo(
     projectRoot, taskRoot, allProjects, allTasks,
@@ -215,12 +224,13 @@
     }
     function updateClientVisibility(item) {
       if (!clientWrap) return;
-      const input = clientWrap.querySelector('input[name="client"]');
       const show = !!(item && item.is_case_type);
       clientWrap.hidden = !show;
-      if (input) {
-        input.required = show;
-        if (!show) input.value = "";
+      if (!show) {
+        const companyInput = clientWrap.querySelector('input[name="client"]');
+        const clientInput = clientWrap.querySelector('input[name="client_individual"]');
+        if (companyInput) companyInput.value = "";
+        if (clientInput) clientInput.value = "";
       }
     }
     const taskCombo = initCombo(taskRoot, tasksFor(preselectProjectId), preselectTaskId);

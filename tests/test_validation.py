@@ -197,6 +197,24 @@ class TestDepartmentScopedProjects:
         emp.department = "Front Desk"
         assert "isn't available to your department" in errs(s, emp, project_id=6, task_type_id=1)
 
+    def test_restricted_project_usable_despite_stray_whitespace_on_employee_department(self, db):
+        """Bug fix (Ganesh, 2026-09-09) — a real employee in a real linked
+        department (Legal, on a project also linked to Accounts/Mailroom)
+        couldn't see or log against it. Root cause: their Employee.department
+        predated the Department managed list (2026-09-02) and carried a raw
+        string with stray whitespace — the old exact `==` comparison in
+        project_allowed_for_department() treated "Ops " and "Ops" as two
+        different departments. Matches Ops's linked department exactly
+        except for the surrounding whitespace."""
+        s, emp = db
+        emp.department = " Ops "
+        v(s, emp, project_id=6, task_type_id=1)
+
+    def test_restricted_project_usable_despite_different_case_on_employee_department(self, db):
+        s, emp = db
+        emp.department = "ops"
+        v(s, emp, project_id=6, task_type_id=1)
+
 
 class TestClosingExistingBypass:
     """Bug fix (Ganesh, 2026-09-03) — an employee had a timer already

@@ -659,8 +659,18 @@ def _visible_projects_and_tasks(db: Session, user: m.Employee):
     # this filter can't disagree with it — same "UI convenience, not the
     # only gate" relationship the suggestion-approval filter above has.
     project_depts = _project_department_links(db)
-    emp_dept = user.department or "—"
-    projects = [p for p in projects if p.id not in project_depts or emp_dept in project_depts[p.id]]
+    # Matched case/whitespace-insensitively (2026-09-09 bugfix, same reason
+    # as validation.project_allowed_for_department()'s own docstring — a
+    # legacy Employee.department string can carry stray whitespace/casing
+    # that the clean Department.name values checked in "Manage departments"
+    # never do, so a plain exact-string `in` check could silently exclude a
+    # real employee in a real linked department).
+    emp_dept_norm = (user.department or "—").strip().casefold()
+    projects = [
+        p for p in projects
+        if p.id not in project_depts
+        or any((d or "").strip().casefold() == emp_dept_norm for d in project_depts[p.id])
+    ]
     tasks = list(
         db.execute(
             select(m.TaskType)
@@ -795,6 +805,7 @@ def today_page(
     reopen_task_type_id: Optional[str] = None,
     reopen_details: Optional[str] = None,
     reopen_client: Optional[str] = None,
+    reopen_client_individual: Optional[str] = None,
     reopen_start: Optional[str] = None,
     reopen_end: Optional[str] = None,
     user: m.Employee = Depends(current_user),
@@ -991,6 +1002,7 @@ def today_page(
             "reopen_task_type_id": reopen_task_type_id,
             "reopen_details": reopen_details,
             "reopen_client": reopen_client,
+            "reopen_client_individual": reopen_client_individual,
             "reopen_end": reopen_end or (
                 f"{gap_prefill_end // 60:02d}:{gap_prefill_end % 60:02d}" if gap_prefill_end is not None else None
             ),
@@ -1006,6 +1018,13 @@ def today_page(
             # everything else stays just as pickable.
             "projects": _combo_items(projects, assigned_project_ids),
             "tasks": _combo_items(tasks, assigned_task_ids, task_project_links),
+            # Case Type / Company+Client autocomplete (Ganesh, 2026-09-09) —
+            # plain sorted name lists, fed into <datalist> elements the
+            # Company/Client inputs reference via list="..." (see
+            # _active_names()'s own docstring on why this isn't the same
+            # {id,name}-plus-hidden-id shape _combo_items() uses).
+            "companies": _active_names(db, m.Company),
+            "client_names": _active_names(db, m.ClientName),
             "max_row_minutes": engine.cfg_int(cfg, "max_row_minutes"),
             "gap_minutes": engine.cfg_int(cfg, "gap_flag_minutes"),
         }
@@ -1013,23 +1032,77 @@ def today_page(
     return render(request, "today.html", ctx)
 
 
-def _client_required_error(project: Optional[m.Project], client: str) -> Optional[str]:
-    """Case Type / Client (Ganesh, 2026-08-28) — the one server-side rule
-    this feature needs: if the selected project is flagged is_case_type
-    (see that column's docstring in app/models.py), Client can't be
-    blank. Deliberately a plain route-level helper, not part of
+def _client_required_error(
+    project: Optional[m.Project], company: str, client_individual: str = ""
+) -> Optional[str]:
+    """Case Type / Company+Client (Ganesh, 2026-08-28; split into two
+    fields 2026-09-09) — the one server-side rule this feature needs: if
+    the selected project is flagged is_case_type (see that column's
+    docstring in app/models.py), at least ONE of Company or Client
+    (individual) has to be filled in — not necessarily both (Ganesh,
+    confirmed via AskUserQuestion, 2026-09-09: "At least one required",
+    matching how the single combined field worked before this was split
+    in two). Deliberately a plain route-level helper, not part of
     app/validation.py's validate_entry() — this is a simple presence
     check tied to which project was picked, not a PRD §4 entry rule like
     overlap/gap/cap/backdate, so keeping it here means this feature never
     touches validation.py and isn't gated by the pytest+verify_strikes
-    hard rule. Called from every place a Client value can first be set:
-    add_entry, start_task_timer, stop_task_timer (top-up, in case Start
-    left it blank), and add_plan — NOT from _finish_task_timer, since by
-    the time a segment finishes, Client was already required at whichever
-    of those entry points started it."""
-    if project is not None and project.is_case_type and not (client or "").strip():
-        return f"'{project.name}' is a Case Type project — enter the Client."
+    hard rule. Called from every place a Company/Client value can first
+    be set: add_entry, start_task_timer, and add_plan (both the
+    employee's own and admin_add_plan/admin_edit_plan in
+    app/routes/admin.py) — NOT from _finish_task_timer, since by the time
+    a segment finishes, this was already required at whichever of those
+    entry points started it.
+
+    `client_individual` defaults to "" so existing call sites that pass
+    just `company` (none remain after 2026-09-09, but kept for safety)
+    degrade to "Company alone must be non-blank", not a crash."""
+    if project is not None and project.is_case_type and not (
+        (company or "").strip() or (client_individual or "").strip()
+    ):
+        return f"'{project.name}' is a Case Type project — enter a Company or a Client."
     return None
+
+
+def _active_names(db: Session, model) -> list:
+    """Active row names for a simple flat lookup list (Company/
+    ClientName — see their own docstrings in app/models.py), sorted
+    alphabetically, for the <datalist> autocomplete on the Company/Client
+    inputs (Ganesh, 2026-09-09). Deliberately plain strings, not
+    {id, name} dicts like _combo_items() — Company/Client are free-typed
+    text fields backed by a suggestion list, not a strict pick-from-list
+    combo like Project/Task, so there's no id to submit."""
+    return [
+        n for (n,) in db.execute(
+            select(model.name).where(model.active.is_(True)).order_by(model.name)
+        ).all()
+    ]
+
+
+def _ensure_lookup_name(db: Session, model, name: str, created_by: str) -> None:
+    """Auto-grow a Company/ClientName lookup list the moment an employee
+    (or admin, via admin_add_plan/admin_edit_plan) types a value that
+    isn't on it yet (Ganesh, 2026-09-09 — see Company/ClientName's own
+    docstrings in app/models.py for the fuller design). No approval step
+    — the row is usable in every OTHER employee's autocomplete the very
+    next page load. Case-insensitive existence check, same convention
+    department_add() (app/routes/admin.py) already uses, so 'Acme Inc'
+    typed once and 'acme inc' typed later don't create two rows. A
+    pre-existing but currently-deactivated row is deliberately left
+    alone — reactivating an admin's deliberate Deactivate is their call
+    to make via the admin table, not something a stray keystroke should
+    silently undo. Commits on its own (a tiny, independent write) so a
+    caller doesn't need to thread this into its own commit boundary."""
+    name = (name or "").strip()
+    if not name:
+        return
+    exists = db.execute(
+        select(model.id).where(func.lower(model.name) == name.lower())
+    ).first()
+    if exists is not None:
+        return
+    db.add(model(name=name, created_by=created_by))
+    db.commit()
 
 
 def _is_recent_duplicate_entry(
@@ -1091,6 +1164,7 @@ def add_entry(
     task_type_id: int = Form(0),
     details: str = Form(""),
     client: str = Form(""),
+    client_individual: str = Form(""),
     start_time: str = Form(...),
     end_time: str = Form(...),
     user: m.Employee = Depends(current_user),
@@ -1113,6 +1187,7 @@ def add_entry(
                 "reopen_task_type_id": task_type_id or "",
                 "reopen_details": details,
                 "reopen_client": client,
+                "reopen_client_individual": client_individual,
                 "reopen_start": start_value,
                 "reopen_end": end_time,
             }
@@ -1126,7 +1201,7 @@ def add_entry(
         flash(request, "Enter valid start and end times.", "err")
         return _reopen(start_time)
     project = db.get(m.Project, project_id) if project_id else None
-    client_err = _client_required_error(project, client)
+    client_err = _client_required_error(project, client, client_individual)
     if client_err:
         flash(request, client_err, "err")
         return _reopen(start_time)
@@ -1151,12 +1226,17 @@ def add_entry(
                 task_type_id=task_type_id,
                 details=capitalize_first(details.strip()),
                 client=client.strip(),
+                client_individual=client_individual.strip(),
                 start_minute=start_minute,
                 end_minute=end_minute,
                 entry_method=m.ENTRY_METHOD_MANUAL,
             )
         )
         db.commit()
+        # Company/Client autocomplete growth (Ganesh, 2026-09-09) — see
+        # _ensure_lookup_name()'s own docstring.
+        _ensure_lookup_name(db, m.Company, client, user.name)
+        _ensure_lookup_name(db, m.ClientName, client_individual, user.name)
     except EntryError as e:
         for err in e.errors:
             flash(request, err, "err")
@@ -1434,7 +1514,9 @@ def _log_timer_as_entry(db: Session, user: m.Employee, timer: m.ActiveTaskTimer,
     started — so it skips project_allowed_for_department()/
     task_allowed_for_project() for this one call only; every other check
     (locked day, overlap, 4h cap, backdate window) still fully applies."""
-    client_err = _client_required_error(db.get(m.Project, timer.project_id), timer.client)
+    client_err = _client_required_error(
+        db.get(m.Project, timer.project_id), timer.client, timer.client_individual
+    )
     if client_err:
         return False, client_err
     # Double-submit guard (Ganesh, 2026-09-08 bugfix) — see
@@ -1461,10 +1543,18 @@ def _log_timer_as_entry(db: Session, user: m.Employee, timer: m.ActiveTaskTimer,
         employee_id=user.id, date=timer.date, project_id=timer.project_id,
         task_type_id=timer.task_type_id, details=capitalize_first((timer.details or "").strip()),
         client=(timer.client or "").strip(),
+        client_individual=(timer.client_individual or "").strip(),
         start_minute=timer.start_minute, end_minute=end_minute,
         entry_method=m.ENTRY_METHOD_PLAN if timer.planned_task_id else m.ENTRY_METHOD_AUTO_TIMER,
     ))
     db.flush()
+    # Company/Client autocomplete growth (Ganesh, 2026-09-09) — see
+    # _ensure_lookup_name()'s own docstring. Safe to call even though this
+    # function can in principle be called for more than one chunk of the
+    # same timer — the case-insensitive existence check makes a repeat
+    # call a no-op, not a duplicate row.
+    _ensure_lookup_name(db, m.Company, timer.client, user.name)
+    _ensure_lookup_name(db, m.ClientName, timer.client_individual, user.name)
     return True, None
 
 
@@ -1690,6 +1780,7 @@ def start_task_timer(
     task_type_id: int = Form(...),
     details: str = Form(""),
     client: str = Form(""),
+    client_individual: str = Form(""),
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -1730,7 +1821,7 @@ def start_task_timer(
     # you start the clock, same reasoning add_entry/add_plan already
     # apply to their own Client field, so all 3 entry points are
     # consistent about when this is asked for.
-    client_err = _client_required_error(project, client)
+    client_err = _client_required_error(project, client, client_individual)
     if client_err:
         flash(request, client_err, "err")
         return RedirectResponse("/today", status_code=303)
@@ -1738,10 +1829,15 @@ def start_task_timer(
     now = now_for_employee(user)
     db.add(m.ActiveTaskTimer(
         employee_id=user.id, date=today, project_id=project_id, task_type_id=task_type_id,
-        details=details.strip(), client=client.strip(), start_minute=now.hour * 60 + now.minute,
+        details=details.strip(), client=client.strip(), client_individual=client_individual.strip(),
+        start_minute=now.hour * 60 + now.minute,
         started_at=dt.datetime.utcnow(),
     ))
     db.commit()
+    # Company/Client autocomplete growth (Ganesh, 2026-09-09) — see
+    # _ensure_lookup_name()'s own docstring.
+    _ensure_lookup_name(db, m.Company, client, user.name)
+    _ensure_lookup_name(db, m.ClientName, client_individual, user.name)
     flash(request, "Timer started.", "ok")
     return RedirectResponse("/today", status_code=303)
 
@@ -1877,6 +1973,7 @@ def add_plan(
     task_type_id: int = Form(...),
     details: str = Form(""),
     client: str = Form(""),
+    client_individual: str = Form(""),
     date: str = Form(""),
     estimated_minutes: str = Form(""),
     user: m.Employee = Depends(current_user),
@@ -1929,7 +2026,7 @@ def add_plan(
     if not project_allowed_for_department(db, project_id, user.department):
         flash(request, f"'{project.name}' isn't available to your department.", "err")
         return RedirectResponse(redirect_url, status_code=303)
-    client_err = _client_required_error(project, client)
+    client_err = _client_required_error(project, client, client_individual)
     if client_err:
         flash(request, client_err, "err")
         return RedirectResponse(redirect_url, status_code=303)
@@ -1971,10 +2068,15 @@ def add_plan(
 
     db.add(m.PlannedTask(
         employee_id=user.id, date=plan_date, project_id=project_id,
-        task_type_id=task_type_id, details=cleaned, client=client.strip(), status=m.PLAN_PLANNED,
+        task_type_id=task_type_id, details=cleaned, client=client.strip(),
+        client_individual=client_individual.strip(), status=m.PLAN_PLANNED,
         created_by_employee_id=user.id, estimated_minutes=est_minutes,
     ))
     db.commit()
+    # Company/Client autocomplete growth (Ganesh, 2026-09-09) — see
+    # _ensure_lookup_name()'s own docstring.
+    _ensure_lookup_name(db, m.Company, client, user.name)
+    _ensure_lookup_name(db, m.ClientName, client_individual, user.name)
     msg = "Added to today's plan." if plan_date == today else f"Added to the plan for {fmt_date(plan_date)}."
     flash(request, msg + (" Punched in for you." if punched_in_now else ""), "ok")
     return RedirectResponse(redirect_url, status_code=303)
@@ -2107,6 +2209,7 @@ def start_plan(
     db.add(m.ActiveTaskTimer(
         employee_id=user.id, date=today_local(), project_id=plan.project_id,
         task_type_id=plan.task_type_id, details=plan.details, client=plan.client,
+        client_individual=plan.client_individual,
         start_minute=now.hour * 60 + now.minute, started_at=dt.datetime.utcnow(),
         planned_task_id=plan.id,
     ))

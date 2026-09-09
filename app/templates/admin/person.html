@@ -257,7 +257,7 @@
       {% for p in assigned_plans %}
       <tr>
         <td class="nowrap">{{ p.date|mdy }}</td>
-        <td>{{ p.project.name }}{% if p.client %}<div class="small muted">Client: {{ p.client }}</div>{% endif %}</td>
+        <td>{{ p.project.name }}{% if p.client %}<div class="small muted">Company: {{ p.client }}</div>{% endif %}{% if p.client_individual %}<div class="small muted">Client: {{ p.client_individual }}</div>{% endif %}</td>
         <td>{{ p.task_type.name }}</td>
         <td class="small" style="white-space:pre-wrap">{{ p.details }}</td>
         <td class="small muted">{% if p.estimated_minutes %}{{ p.estimated_minutes|hm }}{% else %}—{% endif %}</td>
@@ -284,7 +284,8 @@
                 </select>
               </div>
               <div><label>Date</label><input type="date" name="date" value="{{ p.date.isoformat() }}" required></div>
-              <div><label>Client</label><input name="client" value="{{ p.client }}"></div>
+              <div><label>Company</label><input name="client" list="company-names" value="{{ p.client }}"></div>
+              <div><label>Client</label><input name="client_individual" list="client-names" value="{{ p.client_individual }}"></div>
               <div style="flex:1 1 200px"><label>Note</label><input name="details" value="{{ p.details }}" style="width:100%"></div>
               <div style="width:100px"><label>Est. min</label><input type="number" name="estimated_minutes" min="0" max="1440" value="{{ p.estimated_minutes or '' }}"></div>
               <div><button class="small">Save</button></div>
@@ -318,9 +319,18 @@
       <input type="hidden" name="task_type_id">
       <div class="combo-menu" hidden></div>
     </div>
-    <div id="client-assign" hidden style="flex:1 1 180px">
-      <label>Client</label>
-      <input type="text" name="client" placeholder="Individual name, or Company - Beneficiary" style="width:100%">
+    {# Case Type / Company+Client (Ganesh, 2026-09-09) — see the matching
+       comment on today.html's own Add Task form for why this is two plain
+       datalist-backed inputs, not the combo.js widget. #}
+    <div id="client-assign" hidden class="client-fields-wrap">
+      <div style="flex:1 1 140px">
+        <label>Company</label>
+        <input type="text" name="client" list="company-names" placeholder="Type or pick a company" style="width:100%">
+      </div>
+      <div style="flex:1 1 140px">
+        <label>Client</label>
+        <input type="text" name="client_individual" list="client-names" placeholder="Type or pick a name" style="width:100%">
+      </div>
     </div>
     <div><label>Date</label><input type="date" name="date" value="{{ today.isoformat() }}" required></div>
     <div style="flex:1 1 220px"><label>Note (optional)</label><input name="details" style="width:100%"></div>
@@ -374,7 +384,7 @@
       <tr class="{{ 'overtime-row' if e.is_overtime else '' }}" {% if e.is_overtime %}title="Logged after that day's target was already reached"{% endif %}>
         <td class="nowrap">{{ e.start_minute|clock }}–{{ e.end_minute|clock }}</td>
         <td class="nowrap"><strong>{{ e.duration_minutes|hm }}</strong></td>
-        <td>{{ e.project.name }}{% if e.client %}<div class="small muted">Client: {{ e.client }}</div>{% endif %}</td>
+        <td>{{ e.project.name }}{% if e.client %}<div class="small muted">Company: {{ e.client }}</div>{% endif %}{% if e.client_individual %}<div class="small muted">Client: {{ e.client_individual }}</div>{% endif %}</td>
         <td>{{ e.task_type.name }}</td>
         <td class="small" style="white-space:pre-wrap">{{ e.details }}{% if e.imported %} <span class="muted">(legacy)</span>{% endif %}</td>
       </tr>
@@ -447,6 +457,15 @@
   </div>
   {% endif %}
 </div>
+<!-- Case Type / Company+Client autocomplete (Ganesh, 2026-09-09) — same
+     shared-datalist pattern as today.html; companies/client_names come from
+     person()'s own render context (_active_names() in app/routes/employee.py). -->
+<datalist id="company-names">
+  {% for c in companies %}<option value="{{ c }}"></option>{% endfor %}
+</datalist>
+<datalist id="client-names">
+  {% for c in client_names %}<option value="{{ c }}"></option>{% endfor %}
+</datalist>
 <!-- combo.js (Project/Task search picker on "Assign a new task" above,
      TK-04, Ganesh 2026-08-28) — not loaded globally by base.html; this is
      now a second admin page that needs it, alongside admin/lists.html. -->

@@ -448,15 +448,19 @@ def ensure_leave_v2_backfill(db: Session) -> None:
 
 def ensure_client_text_backfill(db: Session) -> None:
     """Backfill for `ActiveTaskTimer.client`/`TaskEntry.client`/
-    `PlannedTask.client` (Case Type / Client, Ganesh, 2026-08-28). Same
-    root cause as every other ensure_*_backfill here: the ORM-level
-    `default=""` only applies to a fresh INSERT through SQLAlchemy — any
-    row that existed before this column was added, or that otherwise
-    ended up with a NULL here, keeps NULL forever without this.
+    `PlannedTask.client` (Case Type / Client, Ganesh, 2026-08-28), and —
+    same reasoning, added 2026-09-09 when that single field was split
+    into Company (`client`, unchanged) and Client individual
+    (`client_individual`, a brand-new column on the same 3 tables) — the
+    new `client_individual` column too. Same root cause as every other
+    ensure_*_backfill here: the ORM-level `default=""` only applies to a
+    fresh INSERT through SQLAlchemy — any row that existed before a
+    column was added, or that otherwise ended up with a NULL here, keeps
+    NULL forever without this.
 
     Unlike TaskType.category (a pure display value, safe to leave NULL
     indefinitely since every read is `{% if x.client %}` truthiness),
-    this one is a real bug source: `_log_timer_as_entry()`
+    `client` is a real bug source: `_log_timer_as_entry()`
     (app/routes/employee.py) calls `.strip()` on `timer.client`
     unconditionally when it turns a finished timer segment into a
     TaskEntry — a NULL there raises AttributeError and 500s the Today
@@ -464,16 +468,24 @@ def ensure_client_text_backfill(db: Session) -> None:
     the auto-split path on every GET (2026-08-31 incident: an employee's
     ActiveTaskTimer had a NULL client, left the Today page permanently
     erroring for her). `_client_required_error()` was hardened to treat
-    None the same as "" too, but this backfill closes the gap at the
-    data layer as well so no other NULL row is waiting to hit the same
-    or a similar unguarded `.strip()` elsewhere. A no-op once every row
-    already has a string, safe on every startup."""
+    None the same as "" too, and every 2026-09-09 call site that reads
+    `client_individual` off a live ORM row (`_log_timer_as_entry()`,
+    `_client_required_error()` itself) already does the same `(x or
+    "").strip()` guard as a matter of course — so `client_individual`
+    going NULL on an old row can't actually 500 the page the way
+    `client` once did. This backfill closes the gap at the data layer
+    anyway, for the same reason `client`'s own backfill does: so no
+    future unguarded `.strip()`/string op on either column has to
+    remember to re-add that guard. A no-op once every row already has a
+    string, safe on every startup."""
     any_changed = False
     for model in (m.ActiveTaskTimer, m.TaskEntry, m.PlannedTask):
-        rows = list(db.execute(select(model).where(model.client.is_(None))).scalars())
-        for r in rows:
-            r.client = ""
-            any_changed = True
+        for column_name in ("client", "client_individual"):
+            column = getattr(model, column_name)
+            rows = list(db.execute(select(model).where(column.is_(None))).scalars())
+            for r in rows:
+                setattr(r, column_name, "")
+                any_changed = True
     if any_changed:
         db.commit()
 

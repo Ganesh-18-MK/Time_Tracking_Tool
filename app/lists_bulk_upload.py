@@ -53,23 +53,30 @@ MAX_ROWS = 500
 HEADERS = {
     "project": "Project / Employer Name",
     "task": "Task Name",
+    # Company (Ganesh, 2026-09-09) — see app/models.py's Company docstring
+    # for the fuller "600+ company names" feature. Single-column, add-only,
+    # same shape read_upload_names() already handles for a plain flat list
+    # — no linking column needed, unlike Tasks' Project Name pairing.
+    "company": "Company Name",
 }
 TASK_PROJECT_HEADER = "Project Name"
 PROJECT_DEPARTMENT_HEADER = "Department"
 SHEET_TITLES = {
     "project": "Projects",
     "task": "Tasks",
+    "company": "Companies",
 }
 MODELS = {
     "project": m.Project,
     "task": m.TaskType,
+    "company": m.Company,
 }
 
 
 def _model_for(kind: str):
     model = MODELS.get(kind)
     if model is None:
-        raise ValueError(f"Unknown kind '{kind}' — must be 'project' or 'task'")
+        raise ValueError(f"Unknown kind '{kind}' — must be 'project', 'task', or 'company'")
     return model
 
 
@@ -204,9 +211,18 @@ def process_upload(db, wb: Workbook, kind: str) -> dict:
     not just a task name — see this module's docstring. "added" counts
     task+project LINKS created, not distinct task names (a task linked to
     3 projects via 3 rows counts as 3, matching "N project(s)" wording
-    used elsewhere for this feature, e.g. admin/lists.html)."""
+    used elsewhere for this feature, e.g. admin/lists.html).
+
+    kind="company" (Ganesh, 2026-09-09): plain single-column add-only,
+    same as a bare project-name-only row — no linking, no department
+    scoping, just new Company rows. "added" is a count of new rows;
+    "skipped" covers a name already on the list (case-insensitively,
+    matching company_add()'s own dedup rule in app/routes/admin.py) or
+    repeated within the file."""
     if kind == "project":
         return _process_project_upload(db, wb)
+    if kind == "company":
+        return _process_company_upload(db, wb)
     return _process_task_upload(db, wb)
 
 
@@ -296,6 +312,46 @@ def _process_project_upload(db, wb: Workbook) -> dict:
     }
 
 
+def _process_company_upload(db, wb: Workbook) -> dict:
+    """Company (Ganesh, 2026-09-09) — see this module's docstring on
+    process_upload(). Single-column reader (read_upload_names), add-only,
+    case-insensitive dedup against both the DB and earlier rows in the
+    same file — matching company_add()'s own case-insensitive rule in
+    app/routes/admin.py (a plain case-sensitive check, like Project/Task
+    use elsewhere in this file, would let 'Acme Inc' and 'acme inc' both
+    through as two separate rows, which is exactly the near-duplicate
+    risk a 600+-row real spreadsheet is likely to have)."""
+    rows, header_error = read_upload_names(wb, "company")
+    if header_error:
+        return {"added": 0, "skipped": [], "header_error": header_error}
+    if len(rows) > MAX_ROWS:
+        return {
+            "added": 0, "skipped": [],
+            "header_error": f"Sheet has {len(rows)} data rows — max is {MAX_ROWS} per upload. Split it into batches.",
+        }
+
+    existing_lower = {name.lower() for (name,) in db.execute(select(m.Company.name)).all()}
+    seen_lower_in_file = set()
+    new_names: List[str] = []
+    skipped = []
+    for row_num, name in rows:
+        lname = name.lower()
+        if lname in existing_lower:
+            skipped.append({"row": row_num, "name": name, "reason": "Already on the list — skipped, nothing changed"})
+            continue
+        if lname in seen_lower_in_file:
+            skipped.append({"row": row_num, "name": name, "reason": "Duplicate row in this file — only added once"})
+            continue
+        seen_lower_in_file.add(lname)
+        new_names.append(name)
+
+    for name in new_names:
+        db.add(m.Company(name=name, created_by="bulk upload"))
+    if new_names:
+        db.commit()
+    return {"added": len(new_names), "skipped": skipped, "header_error": None}
+
+
 def _process_task_upload(db, wb: Workbook) -> dict:
     rows, header_error = read_task_rows(wb)
     if header_error:
@@ -376,6 +432,8 @@ def build_sample_workbook(kind: str, db=None) -> Workbook:
     session breaks; falls back to placeholder names when db is None."""
     if kind == "task":
         return _build_task_sample_workbook(db)
+    if kind == "company":
+        return _build_company_sample_workbook()
     header = HEADERS[kind]
     wb = Workbook()
     ws = wb.active
@@ -468,6 +526,41 @@ def _add_projects_reference_sheet(wb: Workbook, db) -> None:
     ref.column_dimensions["A"].width = 46
 
 
+def _build_company_sample_workbook() -> Workbook:
+    """Company (Ganesh, 2026-09-09) — single column, no reference sheet
+    needed (unlike Tasks/Projects, a Company row never links to anything
+    else), same minimal shape as read_upload_names()'s own single-column
+    contract."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_TITLES["company"]
+    ws.append([HEADERS["company"]])
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    ws.append(["Northwind Consulting Inc."])
+    ws.append(["Bluepeak Technologies Inc."])
+    ws.column_dimensions["A"].width = 42
+
+    info = wb.create_sheet("Instructions")
+    info.append(["Column", "Notes"])
+    for c in info[1]:
+        c.font = Font(bold=True)
+    for row in [
+        (HEADERS["company"], "One company name per row."),
+        ("", ""),
+        ("Add-only — this sheet never renames or removes a value.", ""),
+        ("A name already on the list (matched regardless of case) is", ""),
+        ("skipped, not duplicated.", ""),
+        ("To rename or deactivate a company, use the 'Company Names' card", ""),
+        ("further down this same Bulk upload page instead — it's not done", ""),
+        ("via this sheet.", ""),
+    ]:
+        info.append(row)
+    info.column_dimensions["A"].width = 46
+    info.column_dimensions["B"].width = 50
+    return wb
+
+
 def _build_task_sample_workbook(db) -> Workbook:
     wb = Workbook()
     ws = wb.active
@@ -524,6 +617,18 @@ def build_existing_workbook(db, kind: str) -> Workbook:
     ProjectTask's docstring in app/models.py) gets one row with a blank
     Project Name rather than being omitted, so it's visible that the task
     exists even though it has nothing to cross-check against yet."""
+    if kind == "company":
+        wb = Workbook()
+        ws = wb.active
+        ws.title = SHEET_TITLES["company"]
+        ws.append([HEADERS["company"]])
+        for c in ws[1]:
+            c.font = Font(bold=True)
+        for (name,) in db.execute(select(m.Company.name).where(m.Company.active.is_(True)).order_by(m.Company.name)).all():
+            ws.append([name])
+        ws.column_dimensions["A"].width = 42
+        return wb
+
     if kind == "project":
         header = HEADERS["project"]
         wb = Workbook()

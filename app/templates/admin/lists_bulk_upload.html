@@ -42,13 +42,42 @@ duplicated; nothing here renames or deactivates a value.</p>
       <div><button>Upload</button></div>
     </form>
   </div>
+
+  <div class="card">
+    <!-- Company bulk upload (Ganesh, 2026-09-09: "i am having 600+ company
+         names, data i want to upload them") — single-column, add-only,
+         same shape/convention as Projects/Tasks above (see
+         app/lists_bulk_upload.py's _process_company_upload()). The
+         one-at-a-time Add/Rename/Deactivate table for both Company and
+         Client (individual) names lives in the "Client & Company Names"
+         card below, not here. -->
+    <div class="card-head"><h2 style="margin-top:0">Company Names</h2></div>
+    <p class="small muted">Column: <strong>Company Name</strong>. Add-only — a name already on the list
+      is skipped, not duplicated. Once uploaded, employees can pick (or search) any of these from the
+      Company field on a Case Type project's Today entry form.</p>
+    <p>
+      <a class="btn secondary small" href="/admin/lists/bulk-upload/sample.xlsx?kind=company">Download blank template</a>
+      <a class="btn secondary small" href="/admin/lists/bulk-upload/existing.xlsx?kind=company">Download current list</a>
+    </p>
+    <form method="post" action="/admin/lists/bulk-upload" enctype="multipart/form-data" class="formrow">
+      <input type="hidden" name="kind" value="company">
+      <div><input type="file" name="file" accept=".xlsx" required></div>
+      <div><button>Upload</button></div>
+    </form>
+  </div>
 </div>
 
 {% if result %}
 <div class="card" style="max-width:760px">
-  <div class="card-head"><h2 style="margin-top:0">Result — {{ 'Projects' if result_kind == 'project' else 'Tasks' }}</h2></div>
-  <p>{{ result.added }} {{ 'project(s) added.' if result_kind == 'project' else 'task+project link(s) added.' }}
-    {% if result_kind == 'project' and result.department_links_added %}{{ result.department_links_added }} department link(s) added.{% endif %}</p>
+  {% set result_labels = {'project': 'Projects', 'task': 'Tasks', 'company': 'Company Names'} %}
+  <div class="card-head"><h2 style="margin-top:0">Result — {{ result_labels.get(result_kind, result_kind) }}</h2></div>
+  <p>
+    {% if result_kind == 'project' %}{{ result.added }} project(s) added.
+    {% elif result_kind == 'task' %}{{ result.added }} task+project link(s) added.
+    {% elif result_kind == 'company' %}{{ result.added }} company name(s) added.
+    {% else %}{{ result.added }} added.{% endif %}
+    {% if result_kind == 'project' and result.department_links_added %}{{ result.department_links_added }} department link(s) added.{% endif %}
+  </p>
   {% if result.skipped %}
   <table>
     <thead><tr><th>Row</th><th>Name</th><th>Reason skipped</th></tr></thead>
@@ -61,4 +90,101 @@ duplicated; nothing here renames or deactivates a value.</p>
   {% endif %}
 </div>
 {% endif %}
+
+<!-- Client & Company Names (Ganesh, 2026-09-09) — the one-at-a-time
+     Add/Rename/Deactivate management table for both lists, same pattern
+     Roster -> Bulk upload's own Departments card already established.
+     Company is bulk-uploadable (see the card above) as well as
+     quick-add-able here; Client (individual) mostly grows on its own the
+     moment an employee types a new name (_ensure_lookup_name(), no
+     approval — see ClientName's own docstring in app/models.py), so this
+     quick-add is a secondary convenience/typo-fix path for it, not the
+     primary way it grows. -->
+<div class="cols">
+  <div class="card">
+    <div class="card-head"><h2 style="margin-top:0">Company Names</h2></div>
+    <p class="small muted" style="margin-top:-4px">Shows up in the Company field's autocomplete on a Case
+    Type project's entry form.</p>
+    <form method="post" action="/admin/companies/add" class="formrow" style="margin-bottom:12px">
+      <div style="flex:1"><input name="name" placeholder="New company name" style="width:100%" required></div>
+      <div><button class="small">Add</button></div>
+    </form>
+    {% if companies %}
+    <table>
+      <thead><tr><th>Name</th><th></th></tr></thead>
+      <tbody>
+        {% for c in companies %}
+        <tr {% if not c.active %}style="opacity:.5"{% endif %}>
+          <td>
+            {{ c.name }}{% if not c.active %} <span class="muted small">(inactive)</span>{% endif %}
+            <form method="post" action="/admin/companies/{{ c.id }}/rename" class="inline-form"
+                  id="company-rename-{{ c.id }}" hidden style="margin-top:6px">
+              <input name="name" value="{{ c.name }}" required>
+              <button class="small">Save</button>
+            </form>
+          </td>
+          <td class="nowrap">
+            <button type="button" class="lnk" onclick="toggleCompanyRename({{ c.id }})">Edit</button>
+            <form method="post" action="/admin/companies/{{ c.id }}/toggle" class="inline">
+              <button type="submit" class="lnk danger">{{ 'Deactivate' if c.active else 'Reactivate' }}</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted small">No companies yet — bulk-upload above or add one here.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2 style="margin-top:0">Client Names (Individuals)</h2></div>
+    <p class="small muted" style="margin-top:-4px">Grows on its own the moment an employee types a new
+    individual name on a Case Type project's Client field — no approval needed. Use this to pre-seed a
+    few names or fix a typo later; there's no bulk upload for this list.</p>
+    <form method="post" action="/admin/client-names/add" class="formrow" style="margin-bottom:12px">
+      <div style="flex:1"><input name="name" placeholder="New client (individual) name" style="width:100%" required></div>
+      <div><button class="small">Add</button></div>
+    </form>
+    {% if client_names %}
+    <table>
+      <thead><tr><th>Name</th><th></th></tr></thead>
+      <tbody>
+        {% for cl in client_names %}
+        <tr {% if not cl.active %}style="opacity:.5"{% endif %}>
+          <td>
+            {{ cl.name }}{% if not cl.active %} <span class="muted small">(inactive)</span>{% endif %}
+            <form method="post" action="/admin/client-names/{{ cl.id }}/rename" class="inline-form"
+                  id="client-rename-{{ cl.id }}" hidden style="margin-top:6px">
+              <input name="name" value="{{ cl.name }}" required>
+              <button class="small">Save</button>
+            </form>
+          </td>
+          <td class="nowrap">
+            <button type="button" class="lnk" onclick="toggleClientRename({{ cl.id }})">Edit</button>
+            <form method="post" action="/admin/client-names/{{ cl.id }}/toggle" class="inline">
+              <button type="submit" class="lnk danger">{{ 'Deactivate' if cl.active else 'Reactivate' }}</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted small">No client names yet — they'll appear automatically as employees type new ones.</p>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+function toggleCompanyRename(id) {
+  var f = document.getElementById('company-rename-' + id);
+  if (f) f.hidden = !f.hidden;
+}
+function toggleClientRename(id) {
+  var f = document.getElementById('client-rename-' + id);
+  if (f) f.hidden = !f.hidden;
+}
+</script>
 {% endblock %}

@@ -395,6 +395,84 @@ class Department(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
 
+class Company(Base):
+    """Bulk-uploadable list of company/employer names for the Case Type
+    "Company" field (Ganesh, 2026-09-09: "i am having 600+ company names,
+    data i want to upload them so that employees can select the client
+    name from the drop down and even search").
+
+    This is DISTINCT from Project (~300 rows, the internal time-tracking
+    bucket picked on every Today entry) — Company is who a Case Type
+    project's work is actually FOR (e.g. the sponsoring employer on an
+    H-1B), which is a separate, much larger namespace (600+ real
+    companies) that doesn't map 1:1 onto Project at all. Before this,
+    that company name (plus a beneficiary name) was typed by hand into
+    the single free-text TaskEntry.client/ActiveTaskTimer.client/
+    PlannedTask.client column — see that column's docstring below, which
+    this feature relabels "Company" in every template but does NOT
+    rename or migrate; the underlying `client` column is unchanged and
+    keeps holding whatever an employee types into the (now-labeled)
+    Company field, exactly as it always has.
+
+    Same simple shape as Department (id/name/active/created_by/
+    created_at), and the same two ways it grows: (1) an admin bulk-
+    uploads a spreadsheet of real company names via Projects & Tasks ->
+    Bulk upload (kind="company", see app/lists_bulk_upload.py) — this is
+    how the initial 600+ get seeded; (2) same as ClientName below, an
+    employee typing a genuinely new company name into the Company field
+    (Today's Add Task/Auto time capture/Plan for the Day, or an admin's
+    Assign-a-task form) silently adds it here too, with NO approval step
+    (Ganesh's own explicit choice, 2026-09-09 — "same like company name
+    from dropdown" for how Client below should behave, confirmed via
+    AskUserQuestion this applies symmetrically to Company) — so the
+    dropdown/autocomplete list only ever grows, it never blocks an entry
+    on a name not yet being in it. See
+    app/routes/employee.py's _ensure_lookup_name().
+
+    A Super Admin can Rename/Deactivate an entry here (same tier as
+    Department's own management — see this project's "Client cleanup"
+    AskUserQuestion, 2026-09-09), on the same Projects & Tasks -> Bulk
+    upload page. Renaming only changes what shows in the autocomplete
+    list going forward — it does NOT retroactively rewrite any
+    TaskEntry.client text already saved under the old name, same
+    "names are display strings, not the join key" limitation Department
+    itself documents (this column is plain free text, never an FK)."""
+
+    __tablename__ = "companies"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class ClientName(Base):
+    """Individual (beneficiary) name autocomplete list for the new Case
+    Type "Client" field (Ganesh, 2026-09-09 — see Company's docstring
+    above for the fuller feature story and TaskEntry.client_individual
+    below for where this is actually stored per row).
+
+    Deliberately grow-only and unreviewed: the moment an employee types a
+    name into the Client field that doesn't already match one here
+    (case-insensitively), it's added automatically — "so once they
+    entered individual name if its not existed in data base it will
+    store in data base from next time they can select that individual
+    person name also same like company name from drop down" (Ganesh's
+    own words, confirmed via AskUserQuestion: instant, no approval,
+    unlike the Project/TaskType suggestion workflow above). A Super Admin
+    can still Rename/Deactivate an entry here later (same table/page as
+    Company) to clean up a typo — same caveat as Company's docstring:
+    renaming only changes the autocomplete list, it never rewrites
+    already-saved TaskEntry.client_individual text."""
+
+    __tablename__ = "client_names"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
 class Project(Base):
     __tablename__ = "projects"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -649,18 +727,40 @@ class TaskEntry(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
     task_type_id: Mapped[int] = mapped_column(ForeignKey("task_types.id"))
     details: Mapped[str] = mapped_column(Text, default="")
-    # Case Type / Client (Ganesh, 2026-08-28) — see Project.is_case_type's
-    # docstring for the full feature. Free text, one field (not split into
-    # company/individual) per Ganesh's own answer: either an individual's
-    # name, or "Company Name - Beneficiary Name". Blank/unused for every
-    # row logged against a non-case-type project, which is most of them —
-    # same "blank means not applicable" convention as
-    # LeaveRecord.relation (Bereavement-only). Required at entry time (not
-    # here — enforced in app/routes/employee.py's add_entry/
-    # start_task_timer/add_plan, not in app/validation.py's validate_entry,
-    # since this is a simple presence check tied to which project was
-    # picked, not a PRD §4 entry rule like overlap/gap/cap/backdate).
+    # Case Type / Company (Ganesh, 2026-08-28; relabeled "Company" and
+    # split 2026-09-09) — see Project.is_case_type's docstring for the
+    # full feature. Originally one free-text field labeled "Client" (an
+    # individual's name, or "Company Name - Beneficiary Name" typed by
+    # hand); as of 2026-09-09 this column's ROLE narrows to just the
+    # Company half — the label in every template changed from "Client" to
+    # "Company", backed by the new Company autocomplete list (see that
+    # model's docstring in this file) instead of a bare free-typed string.
+    # The column itself is UNCHANGED (still plain Text, still just
+    # whatever was typed/picked) — this is a relabel + autocomplete
+    # source, not a schema rename or a data migration, so every
+    # historical row already here (including old "Company - Beneficiary"
+    # combined strings) reads back exactly as before. See
+    # client_individual below for the new, separate "Client" (individual/
+    # beneficiary name) field this was split from. Blank/unused for every
+    # row logged against a non-case-type project, which is most of them.
+    # Required-ness: as of 2026-09-09, a Case Type project needs AT LEAST
+    # ONE of this column or client_individual filled in, not necessarily
+    # both (Ganesh, confirmed via AskUserQuestion) — enforced in
+    # app/routes/employee.py's _client_required_error(), same
+    # not-in-validate_entry reasoning as before (a simple presence check
+    # tied to which project was picked, not a PRD §4 entry rule).
     client: Mapped[str] = mapped_column(Text, default="")
+    # Case Type / Client — individual/beneficiary name (Ganesh, 2026-09-09
+    # — see Company/client's docstrings above and ClientName's own
+    # docstring for the fuller feature). New, separate free-text column,
+    # additive (Text, default="", same zero-backfill-needed convention as
+    # `client` itself and every other optional Text column in this file —
+    # NULL/blank both read as "not applicable"). Backed by the ClientName
+    # autocomplete list, which grows automatically the instant an
+    # employee types a name not already on it — no approval step, unlike
+    # a Project/TaskType suggestion (see ClientName's own docstring and
+    # app/routes/employee.py's _ensure_lookup_name()).
+    client_individual: Mapped[str] = mapped_column(Text, default="")
     start_minute: Mapped[int] = mapped_column(Integer)  # minutes since midnight
     end_minute: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
@@ -785,13 +885,17 @@ class ActiveTaskTimer(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
     task_type_id: Mapped[int] = mapped_column(ForeignKey("task_types.id"))
     details: Mapped[str] = mapped_column(Text, default="")
-    # Case Type / Client (Ganesh, 2026-08-28) — see TaskEntry.client's
-    # docstring. Carried the same way `details` already is: set at Start
-    # (or copied from PlannedTask.client when a plan's Start/Resume opens
-    # this timer — see start_plan below), optionally topped up at Stop,
-    # and copied verbatim into TaskEntry.client the moment
-    # _finish_task_timer() closes this timer into a real row.
+    # Case Type / Company (Ganesh, 2026-08-28; relabeled + split 2026-09-09)
+    # — see TaskEntry.client's docstring for the full story. Carried the
+    # same way `details` already is: set at Start (or copied from
+    # PlannedTask.client when a plan's Start/Resume opens this timer —
+    # see start_plan below), and copied verbatim into TaskEntry.client the
+    # moment _finish_task_timer() closes this timer into a real row.
     client: Mapped[str] = mapped_column(Text, default="")
+    # Case Type / Client — individual/beneficiary name (Ganesh, 2026-09-09)
+    # — see TaskEntry.client_individual's docstring. Carried the same way
+    # `client`/`details` already are.
+    client_individual: Mapped[str] = mapped_column(Text, default="")
     # Business-timezone clock-face minute at Start (util.now_local(), NOT
     # started_at below) — same split BreakEntry/PunchSession already use:
     # this is what becomes TaskEntry.start_minute when the timer stops, so
@@ -887,16 +991,20 @@ class PlannedTask(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
     task_type_id: Mapped[int] = mapped_column(ForeignKey("task_types.id"))
     details: Mapped[str] = mapped_column(Text, default="")
-    # Case Type / Client (Ganesh, 2026-08-28) — see TaskEntry.client's
-    # docstring. Captured once, at add_plan() time (same as Project/Task
-    # themselves — not editable afterward via edit_plan(), which stays
-    # scoped to just the plan text; delete-and-re-add is the path for a
-    # wrong Client, same precedent Project/Task already set). Copied
-    # verbatim into ActiveTaskTimer.client every time this plan's Start/
-    # Resume opens a fresh segment (see start_plan below), so it flows
-    # through to every TaskEntry that segment produces with no repeated
-    # typing.
+    # Case Type / Company (Ganesh, 2026-08-28; relabeled + split 2026-09-09)
+    # — see TaskEntry.client's docstring. Captured once, at add_plan()
+    # time (same as Project/Task themselves — not editable afterward via
+    # the employee's own edit_plan(), which stays scoped to just the plan
+    # text; an admin's admin_edit_plan() CAN change it, same as Project/
+    # Task/Date there). Copied verbatim into ActiveTaskTimer.client every
+    # time this plan's Start/Resume opens a fresh segment (see start_plan
+    # below), so it flows through to every TaskEntry that segment
+    # produces with no repeated typing.
     client: Mapped[str] = mapped_column(Text, default="")
+    # Case Type / Client — individual/beneficiary name (Ganesh, 2026-09-09)
+    # — see TaskEntry.client_individual's docstring. Same capture-once/
+    # carry-through-to-ActiveTaskTimer treatment as `client` above.
+    client_individual: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(20), default=PLAN_PLANNED)
     created_by_employee_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("employees.id"), nullable=True

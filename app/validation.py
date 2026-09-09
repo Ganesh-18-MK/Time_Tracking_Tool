@@ -57,19 +57,27 @@ def project_allowed_for_department(db: Session, project_id: int, department: str
     employee's department is one of them. Shared by validate_entry() (the
     real gate) and add_plan() (lighter-weight, immediate feedback) so the
     two can't drift apart, same reasoning task_allowed_for_project()'s own
-    docstring gives."""
-    has_any_link = db.execute(
-        select(m.ProjectDepartment.id).where(m.ProjectDepartment.project_id == project_id)
-    ).first() is not None
-    if not has_any_link:
+    docstring gives.
+
+    Matched case/whitespace-insensitively (Ganesh, 2026-09-09 bugfix — an
+    employee whose Roster Department was set before the Department managed
+    list existed, 2026-09-02, could carry a raw `Employee.department` string
+    with stray leading/trailing whitespace or different casing than the
+    clean `Department.name` an admin actually checked in "Manage
+    departments" — e.g. "Legal " vs "Legal" — which the old exact `==`
+    comparison treated as two different departments, so a real employee in
+    a real linked department was silently excluded. `Department.name`
+    itself is deduped case-sensitively (see ensure_departments_backfill()'s
+    own docstring) and an admin's "Manage departments" checkbox values are
+    always clean canonical names, so this only ever needed to tolerate a
+    stale/legacy Employee.department value, not the ProjectDepartment side)."""
+    rows = db.execute(
+        select(m.ProjectDepartment.department).where(m.ProjectDepartment.project_id == project_id)
+    ).scalars().all()
+    if not rows:
         return True
-    dept = department or "—"
-    return db.execute(
-        select(m.ProjectDepartment.id).where(
-            m.ProjectDepartment.project_id == project_id,
-            m.ProjectDepartment.department == dept,
-        )
-    ).first() is not None
+    dept_norm = (department or "—").strip().casefold()
+    return any((d or "").strip().casefold() == dept_norm for d in rows)
 
 
 def earliest_allowed_date(

@@ -212,6 +212,36 @@ form.inline { display: inline; }
    bug, just never surfaced since it sits inside a collapsed <details>. */
 .formrow > div[hidden] { display: none; }
 
+/* Case Type Company+Client fields wrapper (Ganesh, 2026-09-09, two bugfixes
+   same day). First bugfix: this pair of fields used to carry `display:flex`
+   as an INLINE style alongside the `hidden` attribute (today.html's
+   #client-plan/#client-timer/#client-addrow, admin/person.html +
+   admin/assignments.html's #client-assign). An inline style attribute always
+   wins over a stylesheet rule (short of `!important`), so that inline
+   `display:flex` silently overrode `hidden` itself — the fields showed for
+   every project, not just Case Type ones. Fixed by moving the flex layout
+   into a `.client-fields-wrap` class instead of an inline style.
+
+   Second bugfix, same day: that first fix wasn't enough on its own — the
+   wrapper is a direct child of `.formrow`, and `.formrow > div` above
+   (line 200) sets `display: flex; flex-direction: column`. `.formrow > div`
+   (class+type, specificity 0,1,1) beats a bare `.client-fields-wrap` (class
+   only, 0,1,0), so `flex-direction: column` kept winning — the two inner
+   Company/Client divs (each `flex:1 1 140px`) became COLUMN flex items,
+   i.e. stacked vertically and stretched to fill the card's leftover height,
+   producing the huge vertical gaps Ganesh screenshotted ("both company and
+   client field should open in same line"). Fixed by scoping the selector to
+   `.formrow > div.client-fields-wrap` (0,2,1 — now beats plain
+   `.formrow > div`) and explicitly setting `flex-direction: row`, plus
+   `flex: 0 1 300px` (no flex-grow) so the wrapper doesn't stretch to fill
+   all the row's leftover width the way `flex: 1 1 300px` did — that's what
+   made each input balloon to ~440px wide in the screenshot. The `[hidden]`
+   override is its own separate, even-more-specific rule (0,3,1) rather than
+   relying on cascade order, so it always wins regardless of where either
+   rule sits in the file. */
+.formrow > div.client-fields-wrap { display: flex; flex-direction: row; flex-wrap: wrap; gap: 8px; flex: 0 1 300px; }
+.formrow > div.client-fields-wrap[hidden] { display: none; }
+
 .badge { display: inline-block; border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 600; }
 .b-complete { background: var(--ok-bg); color: var(--ok); }
 .b-partial { background: var(--warn-bg); color: var(--warn); }

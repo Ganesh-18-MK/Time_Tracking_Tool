@@ -15,13 +15,21 @@ from app import bulk_upload, compensation, engine, holiday_bulk_upload, leave_bu
 from app.auth import Forbidden, admin_department_scope, require_admin, require_super_admin
 from app.db import get_db
 # TK-04 (Ganesh, 2026-08-28) — _client_required_error() is the one rule
-# that decides whether a Case Type project needs its Client field filled
-# in; imported rather than duplicated so the admin-side Assign-a-task form
-# (admin_add_plan/admin_edit_plan below) can't quietly drift from the
-# employee-side rule add_plan()/start_task_timer()/add_entry() already
-# enforce. No circular import risk — app/routes/employee.py never imports
-# from this module.
-from app.routes.employee import _client_required_error, _parse_estimated_minutes
+# that decides whether a Case Type project needs its Company/Client
+# fields filled in; imported rather than duplicated so the admin-side
+# Assign-a-task form (admin_add_plan/admin_edit_plan below) can't quietly
+# drift from the employee-side rule add_plan()/start_task_timer()/
+# add_entry() already enforce. No circular import risk — app/routes/
+# employee.py never imports from this module. _active_names()/
+# _ensure_lookup_name() (Ganesh, 2026-09-09) are the same reasoning
+# applied to the new Company/Client autocomplete lists — see their own
+# docstrings in app/routes/employee.py.
+from app.routes.employee import (
+    _active_names,
+    _client_required_error,
+    _ensure_lookup_name,
+    _parse_estimated_minutes,
+)
 from app.validation import task_allowed_for_project
 from app.templating import (
     HOLIDAY_MANAGEMENT_ENABLED,
@@ -461,6 +469,10 @@ def person(
             "emp": emp,
             "plan_project_items": plan_project_items,
             "plan_task_items": plan_task_items,
+            # Case Type / Company+Client autocomplete (Ganesh, 2026-09-09) —
+            # see _active_names()'s own docstring in app/routes/employee.py.
+            "companies": _active_names(db, m.Company),
+            "client_names": _active_names(db, m.ClientName),
             "assigned_plans": assigned_plans,
             "statuses": statuses,
             "pending_unlocks_by_date": pending_unlocks_by_date,
@@ -604,6 +616,7 @@ def admin_add_plan(
     date: str = Form(...),
     details: str = Form(""),
     client: str = Form(""),
+    client_individual: str = Form(""),
     estimated_minutes: str = Form(""),
     ym: str = Form(""),
     return_to: str = Form(""),
@@ -652,7 +665,7 @@ def admin_add_plan(
     if not task_allowed_for_project(db, project_id, task_type_id):
         flash(request, f"'{task.name}' isn't set up for '{project.name}' — link them under Lists first.", "err")
         return RedirectResponse(dest, status_code=303)
-    client_err = _client_required_error(project, client)
+    client_err = _client_required_error(project, client, client_individual)
     if client_err:
         flash(request, client_err, "err")
         return RedirectResponse(dest, status_code=303)
@@ -669,11 +682,17 @@ def admin_add_plan(
 
     plan = m.PlannedTask(
         employee_id=emp_id, date=d, project_id=project_id, task_type_id=task_type_id,
-        details=capitalize_first(details.strip()), client=client.strip(), status=m.PLAN_PLANNED,
+        details=capitalize_first(details.strip()), client=client.strip(),
+        client_individual=client_individual.strip(), status=m.PLAN_PLANNED,
         created_by_employee_id=admin.id, estimated_minutes=est_minutes,
     )
     db.add(plan)
     db.commit()
+    # Company/Client autocomplete growth (Ganesh, 2026-09-09) — see
+    # _ensure_lookup_name()'s own docstring; applies to an admin assigning
+    # work on someone's behalf too, not just the employee's own entry.
+    _ensure_lookup_name(db, m.Company, client, admin.name)
+    _ensure_lookup_name(db, m.ClientName, client_individual, admin.name)
     audit(
         db, admin.name, "assign_plan", "PlannedTask", str(plan.id),
         {"employee_id": emp_id, "date": d.isoformat(), "project": project.name, "task": task.name},
@@ -691,6 +710,7 @@ def admin_edit_plan(
     date: str = Form(...),
     details: str = Form(""),
     client: str = Form(""),
+    client_individual: str = Form(""),
     estimated_minutes: str = Form(""),
     ym: str = Form(""),
     return_to: str = Form(""),
@@ -730,7 +750,7 @@ def admin_edit_plan(
     if not task_allowed_for_project(db, project_id, task_type_id):
         flash(request, f"'{task.name}' isn't set up for '{project.name}' — link them under Lists first.", "err")
         return RedirectResponse(dest, status_code=303)
-    client_err = _client_required_error(project, client)
+    client_err = _client_required_error(project, client, client_individual)
     if client_err:
         flash(request, client_err, "err")
         return RedirectResponse(dest, status_code=303)
@@ -744,7 +764,12 @@ def admin_edit_plan(
     plan.date = d
     plan.details = capitalize_first(details.strip())
     plan.client = client.strip()
+    plan.client_individual = client_individual.strip()
     plan.estimated_minutes = est_minutes
+    # Company/Client autocomplete growth (Ganesh, 2026-09-09) — see
+    # _ensure_lookup_name()'s own docstring.
+    _ensure_lookup_name(db, m.Company, client, admin.name)
+    _ensure_lookup_name(db, m.ClientName, client_individual, admin.name)
     if plan.created_by_employee_id is not None and plan.created_by_employee_id != plan.employee_id:
         plan.assigned_notified_at = None
     db.commit()
@@ -1689,6 +1714,164 @@ def department_toggle(
 
 
 # --------------------------------------------------------------------------
+# Company / Client (individual) autocomplete lists (Ganesh, 2026-09-09) —
+# see Company/ClientName's own docstrings in app/models.py. Same simple
+# shape and same Super-Admin-only tier as Department's own add/rename/
+# toggle trio above — deliberately two more copies of that pattern rather
+# than a third kind bolted onto lists_add/lists_toggle/lists_rename below
+# (those three have a lot of Project/TaskType-specific behavior — Case
+# Type, category, department/project linking — that a plain flat list
+# like this one doesn't need any of). Live on the Projects & Tasks ->
+# Bulk upload page (`/admin/lists/bulk-upload`, admin/lists_bulk_upload.html's
+# "Client & Company Names" card) rather than Roster -> Bulk upload
+# (Department's own page) — that's where Ganesh's own 600+-company-names
+# bulk-upload ask started, and Company's own spreadsheet upload already
+# lives there too (kind="company", reusing lists_bulk_upload_page/sample/
+# existing/POST — see app/lists_bulk_upload.py), so the one-at-a-time
+# Add/Rename/Deactivate table sits right next to it instead of on a
+# separate page.
+# --------------------------------------------------------------------------
+@router.post("/companies/add")
+def company_add(
+    request: Request,
+    name: str = Form(...),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    name = name.strip()
+    if not name:
+        return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+    exists = db.execute(
+        select(m.Company).where(func.lower(m.Company.name) == name.lower())
+    ).scalar_one_or_none()
+    if exists is not None:
+        flash(request, f"'{exists.name}' already exists.", "err")
+        return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+    db.add(m.Company(name=name, created_by=admin.name))
+    db.commit()
+    audit(db, admin.name, "add_company", "company", name, {})
+    flash(request, f"'{name}' added.", "ok")
+    return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+
+
+@router.post("/companies/{company_id}/rename")
+def company_rename(
+    company_id: int,
+    request: Request,
+    name: str = Form(...),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    # Renaming is safe on a live value — same "names are display strings,
+    # not the join key" limitation Department's own rename route
+    # documents: TaskEntry.client is a plain free-text copy, never
+    # re-pointed automatically here. See Company's own docstring.
+    company = db.get(m.Company, company_id)
+    if company is None:
+        return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+    new_name = name.strip()
+    if not new_name:
+        flash(request, "Enter a name.", "err")
+        return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+    clash = db.execute(
+        select(m.Company).where(func.lower(m.Company.name) == new_name.lower(), m.Company.id != company.id)
+    ).scalar_one_or_none()
+    if clash is not None:
+        flash(request, f"'{clash.name}' already exists — pick a different name.", "err")
+        return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+    old_name = company.name
+    if old_name != new_name:
+        company.name = new_name
+        db.commit()
+        audit(db, admin.name, "rename_company", "company", new_name, {"from": old_name})
+    return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+
+
+@router.post("/companies/{company_id}/toggle")
+def company_toggle(
+    company_id: int,
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    company = db.get(m.Company, company_id)
+    if company is not None:
+        company.active = not company.active
+        db.commit()
+        audit(db, admin.name, "toggle_company", "company", company.name, {"active": company.active})
+    return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+
+
+@router.post("/client-names/add")
+def clientname_add(
+    request: Request,
+    name: str = Form(...),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Manual Add for a Client (individual) name — mostly these grow on
+    their own via _ensure_lookup_name() the moment an employee types a
+    new one (see ClientName's own docstring), but a Super Admin can still
+    pre-seed a few or fix a gap here."""
+    name = name.strip()
+    if not name:
+        return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+    exists = db.execute(
+        select(m.ClientName).where(func.lower(m.ClientName.name) == name.lower())
+    ).scalar_one_or_none()
+    if exists is not None:
+        flash(request, f"'{exists.name}' already exists.", "err")
+        return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+    db.add(m.ClientName(name=name, created_by=admin.name))
+    db.commit()
+    audit(db, admin.name, "add_client_name", "client_name", name, {})
+    flash(request, f"'{name}' added.", "ok")
+    return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+
+
+@router.post("/client-names/{client_id}/rename")
+def clientname_rename(
+    client_id: int,
+    request: Request,
+    name: str = Form(...),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    client_row = db.get(m.ClientName, client_id)
+    if client_row is None:
+        return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+    new_name = name.strip()
+    if not new_name:
+        flash(request, "Enter a name.", "err")
+        return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+    clash = db.execute(
+        select(m.ClientName).where(func.lower(m.ClientName.name) == new_name.lower(), m.ClientName.id != client_row.id)
+    ).scalar_one_or_none()
+    if clash is not None:
+        flash(request, f"'{clash.name}' already exists — pick a different name.", "err")
+        return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+    old_name = client_row.name
+    if old_name != new_name:
+        client_row.name = new_name
+        db.commit()
+        audit(db, admin.name, "rename_client_name", "client_name", new_name, {"from": old_name})
+    return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+
+
+@router.post("/client-names/{client_id}/toggle")
+def clientname_toggle(
+    client_id: int,
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    client_row = db.get(m.ClientName, client_id)
+    if client_row is not None:
+        client_row.active = not client_row.active
+        db.commit()
+        audit(db, admin.name, "toggle_client_name", "client_name", client_row.name, {"active": client_row.active})
+    return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
+
+
+# --------------------------------------------------------------------------
 # Lists (Project/Employer + Task dropdowns)
 # --------------------------------------------------------------------------
 @router.get("/lists")
@@ -2049,13 +2232,34 @@ def lists_project_departments(
 # Bulk upload (Projects & Tasks -> Bulk upload) — one column per sheet,
 # add-only; parsing rules live in app/lists_bulk_upload.py
 # --------------------------------------------------------------------------
+def _all_companies(db: Session):
+    """Every Company row, active and inactive, name-ordered — for the
+    "Client & Company Names" card's Company table (Ganesh, 2026-09-09),
+    same "full picture, not just active" reasoning Roster -> Bulk
+    upload's own Departments card uses (see _all_departments() above)."""
+    return list(db.execute(select(m.Company).order_by(m.Company.name)).scalars())
+
+
+def _all_client_names(db: Session):
+    """Every ClientName row, active and inactive — see _all_companies()
+    above; same card, second table."""
+    return list(db.execute(select(m.ClientName).order_by(m.ClientName.name)).scalars())
+
+
 @router.get("/lists/bulk-upload")
 def lists_bulk_upload_page(
     request: Request,
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return render(request, "admin/lists_bulk_upload.html", {"user": admin, "result": None, "result_kind": None}, db=db)
+    return render(
+        request, "admin/lists_bulk_upload.html",
+        {
+            "user": admin, "result": None, "result_kind": None,
+            "companies": _all_companies(db), "client_names": _all_client_names(db),
+        },
+        db=db,
+    )
 
 
 @router.get("/lists/bulk-upload/sample.xlsx")
@@ -2070,7 +2274,12 @@ def lists_bulk_upload_sample(
     # lists_bulk_upload.build_sample_workbook()'s docstring.
     lists_bulk_upload.build_sample_workbook(kind, db).save(buf)
     buf.seek(0)
-    filename = "projects_upload_template.xlsx" if kind == "project" else "tasks_upload_template.xlsx"
+    filenames = {
+        "project": "projects_upload_template.xlsx",
+        "task": "tasks_upload_template.xlsx",
+        "company": "companies_upload_template.xlsx",
+    }
+    filename = filenames.get(kind, "upload_template.xlsx")
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2087,7 +2296,12 @@ def lists_bulk_upload_existing(
     buf = io.BytesIO()
     lists_bulk_upload.build_existing_workbook(db, kind).save(buf)
     buf.seek(0)
-    filename = "existing_projects.xlsx" if kind == "project" else "existing_tasks.xlsx"
+    filenames = {
+        "project": "existing_projects.xlsx",
+        "task": "existing_tasks.xlsx",
+        "company": "existing_companies.xlsx",
+    }
+    filename = filenames.get(kind, "existing.xlsx")
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2103,8 +2317,8 @@ def lists_bulk_upload_post(
     admin: m.Employee = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    if kind not in ("project", "task"):
-        flash(request, "Unknown list — use the Projects or Tasks upload form.", "err")
+    if kind not in ("project", "task", "company"):
+        flash(request, "Unknown list — use the Projects, Tasks, or Company Names upload form.", "err")
         return RedirectResponse("/admin/lists/bulk-upload", status_code=303)
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
         flash(request, "Please upload an .xlsx file — use the sample template.", "err")
@@ -2130,7 +2344,8 @@ def lists_bulk_upload_post(
     if anything_added:
         audit(db, admin.name, f"lists_bulk_upload_{kind}", kind, "",
               {"added": result["added"], "department_links_added": dept_links_added, "skipped": len(result["skipped"])})
-    label = "project(s)" if kind == "project" else "task(s)"
+    labels = {"project": "project(s)", "task": "task(s)", "company": "company name(s)"}
+    label = labels.get(kind, "item(s)")
     summary = f"{result['added']} {label} added."
     if dept_links_added:
         summary += f" {dept_links_added} department link(s) added."
@@ -2139,7 +2354,11 @@ def lists_bulk_upload_post(
     flash(request, summary, "ok" if anything_added else "err")
     return render(
         request, "admin/lists_bulk_upload.html",
-        {"user": admin, "result": result, "result_kind": kind}, db=db,
+        {
+            "user": admin, "result": result, "result_kind": kind,
+            "companies": _all_companies(db), "client_names": _all_client_names(db),
+        },
+        db=db,
     )
 
 
@@ -2584,6 +2803,7 @@ def assignments_page(
             "projects": projects, "tasks": tasks,
             "assigned_project_ids": assigned_project_ids, "assigned_task_ids": assigned_task_ids,
             "plan_project_items": plan_project_items, "plan_task_items": plan_task_items,
+            "companies": _active_names(db, m.Company), "client_names": _active_names(db, m.ClientName),
             "assigned_plans": assigned_plans, "today": today_local(),
         },
         db=db,
