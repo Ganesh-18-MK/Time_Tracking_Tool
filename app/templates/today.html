@@ -401,7 +401,7 @@
         <input type="text" name="client" list="company-names" placeholder="Type or pick a company" style="width:100%">
       </div>
       <div style="flex:1 1 140px">
-        <label>Client</label>
+        <label>Beneficiary</label>
         <input type="text" name="client_individual" list="client-names" placeholder="Type or pick a name" style="width:100%">
       </div>
     </div>
@@ -523,7 +523,7 @@
         {% endif %}
       </div>
       {% if p.client %}<div class="small muted">Company: {{ p.client }}</div>{% endif %}
-      {% if p.client_individual %}<div class="small muted">Client: {{ p.client_individual }}</div>{% endif %}
+      {% if p.client_individual %}<div class="small muted">Beneficiary: {{ p.client_individual }}</div>{% endif %}
       <div class="small" style="white-space:pre-wrap">{{ p.details }}{%- if p.status in ('planned', 'paused') -%}
         <details class="details-edit" style="display:inline-block">
           <summary class="small muted">✎ edit</summary>
@@ -601,7 +601,7 @@
         {% endif %}
       </div>
       {% if p.client %}<div class="small muted">Company: {{ p.client }}</div>{% endif %}
-      {% if p.client_individual %}<div class="small muted">Client: {{ p.client_individual }}</div>{% endif %}
+      {% if p.client_individual %}<div class="small muted">Beneficiary: {{ p.client_individual }}</div>{% endif %}
       <div class="small" style="white-space:pre-wrap">{{ p.details }}</div>
     </div>
   </div>
@@ -632,7 +632,7 @@
   {% if active_timer %}
   <div class="totalbar">
     <span class="big" id="tasktimer">00:00</span>
-    <span class="muted">{{ active_timer.project.name }} · {{ active_timer.task_type.name }}{% if active_timer.client %} · Company: {{ active_timer.client }}{% endif %}{% if active_timer.client_individual %} · Client: {{ active_timer.client_individual }}{% endif %} — started {{ active_timer.start_minute|clock }}</span>
+    <span class="muted">{{ active_timer.project.name }} · {{ active_timer.task_type.name }}{% if active_timer.client %} · Company: {{ active_timer.client }}{% endif %}{% if active_timer.client_individual %} · Beneficiary: {{ active_timer.client_individual }}{% endif %} — started {{ active_timer.start_minute|clock }}</span>
     {% if active_timer.planned_task_id %}
     {# This timer belongs to a running plan (Ganesh, 2026-08-22) — Pause/
        Stop here post straight to the same /plan/{id}/pause|stop routes
@@ -719,7 +719,7 @@
         <input type="text" name="client" list="company-names" placeholder="Type or pick a company" style="width:100%">
       </div>
       <div style="flex:1 1 140px">
-        <label>Client</label>
+        <label>Beneficiary</label>
         <input type="text" name="client_individual" list="client-names" placeholder="Type or pick a name" style="width:100%">
       </div>
     </div>
@@ -762,7 +762,7 @@
         <input type="text" name="client" list="company-names" placeholder="Type or pick a company" style="width:100%" value="{{ reopen_client or '' }}">
       </div>
       <div style="flex:1 1 140px">
-        <label>Client</label>
+        <label>Beneficiary</label>
         <input type="text" name="client_individual" list="client-names" placeholder="Type or pick a name" style="width:100%" value="{{ reopen_client_individual or '' }}">
       </div>
     </div>
@@ -845,7 +845,7 @@
           <strong class="dur-hint" title="{{ e.start_minute|clock }} – {{ e.end_minute|clock }}">{{ e.duration_minutes|hm }}</strong>
           {% if flags.get(e.id) %}<div class="gapflag">⚠ {{ flags[e.id]|hm }} gap before</div>{% endif %}
         </td>
-        <td>{{ e.project.name }}{% if e.client %}<div class="small muted">Company: {{ e.client }}</div>{% endif %}{% if e.client_individual %}<div class="small muted">Client: {{ e.client_individual }}</div>{% endif %}</td>
+        <td>{{ e.project.name }}{% if e.client %}<div class="small muted">Company: {{ e.client }}</div>{% endif %}{% if e.client_individual %}<div class="small muted">Beneficiary: {{ e.client_individual }}</div>{% endif %}</td>
         <td>{{ e.task_type.name }}</td>
         <td style="white-space:pre-wrap">{{ e.details }}{%- if e.id and day == today and not day_locked -%}
           <details class="details-edit">

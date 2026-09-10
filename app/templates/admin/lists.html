@@ -10,7 +10,7 @@
     <span class="tree-car">▶</span>
     <span class="tree-proj-nm">{{ p.name }}</span>
     {% if p.status == 'pending' %}<span class="badge b-pending" title="Suggested by an employee — not yet reviewed on the Suggestions page">pending approval</span>{% endif %}
-    {% if p.is_case_type %}<span class="badge b-plan-not-started" title="Employees see a Client field for this project">Case Type</span>{% endif %}
+    {% if p.is_case_type %}<span class="badge b-plan-not-started" title="Employees see Company and Beneficiary fields for this project">Case Type</span>{% endif %}
     {% if not p.active %}<span class="badge b-missing">Inactive</span>{% endif %}
     <span class="tree-meta">{{ 'every department' if not p_depts else p_depts|join(', ') }} · {{ p_task_ids|length }} task(s) linked</span>
     {% if user.is_super_admin %}
@@ -153,7 +153,7 @@ available to everyone; see "Manage departments" on a project to narrow it.</p>
     </div>
     <div><button class="small">Add</button></div>
   </form>
-  <p class="small muted" style="margin:2px 0 0">Case Type — when picked on the Today page, employees get an extra Client field to record who the case is for. Leave the departments dropdown untouched to make this project available to every department, or pick one or more to narrow it now — either way it can still be changed later via "departments — manage" below.</p>
+  <p class="small muted" style="margin:2px 0 0">Case Type — when picked on the Today page, employees get extra Company and Beneficiary fields to record who the case is for. Leave the departments dropdown untouched to make this project available to every department, or pick one or more to narrow it now — either way it can still be changed later via "departments — manage" below.</p>
 </div>
 
 <div class="tree-toolbar">
@@ -275,7 +275,7 @@ available to everyone; see "Manage departments" on a project to narrow it.</p>
   {% for p in inactive_projects %}
   <div class="tree-task-row">
     <span>· {{ p.name }}</span>
-    {% if p.is_case_type %}<span class="badge b-plan-not-started" title="Employees see a Client field for this project">Case Type</span>{% endif %}
+    {% if p.is_case_type %}<span class="badge b-plan-not-started" title="Employees see Company and Beneficiary fields for this project">Case Type</span>{% endif %}
     {% if p.status == 'pending' %}<span class="badge b-pending" title="Suggested by an employee — not yet reviewed on the Suggestions page">pending approval</span>{% endif %}
     {% if user.is_super_admin %}
     <span class="tree-task-acts">

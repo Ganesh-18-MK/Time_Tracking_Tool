@@ -81,7 +81,7 @@ function empTreeFilter() {
       {% for p in assigned_plans %}
       <tr>
         <td class="nowrap">{{ p.date|mdy }}</td>
-        <td>{{ p.project.name }}{% if p.client %}<div class="small muted">Company: {{ p.client }}</div>{% endif %}{% if p.client_individual %}<div class="small muted">Client: {{ p.client_individual }}</div>{% endif %}</td>
+        <td>{{ p.project.name }}{% if p.client %}<div class="small muted">Company: {{ p.client }}</div>{% endif %}{% if p.client_individual %}<div class="small muted">Beneficiary: {{ p.client_individual }}</div>{% endif %}</td>
         <td>{{ p.task_type.name }}</td>
         <td class="small" style="white-space:pre-wrap">{{ p.details }}</td>
         <td class="small muted">{% if p.estimated_minutes %}{{ p.estimated_minutes|hm }}{% else %}—{% endif %}</td>
@@ -110,7 +110,7 @@ function empTreeFilter() {
               </div>
               <div><label>Date</label><input type="date" name="date" value="{{ p.date.isoformat() }}" required></div>
               <div><label>Company</label><input name="client" list="company-names" value="{{ p.client }}"></div>
-              <div><label>Client</label><input name="client_individual" list="client-names" value="{{ p.client_individual }}"></div>
+              <div><label>Beneficiary</label><input name="client_individual" list="client-names" value="{{ p.client_individual }}"></div>
               <div style="flex:1 1 200px"><label>Note</label><input name="details" value="{{ p.details }}" style="width:100%"></div>
               <div style="width:100px"><label>Est. min</label><input type="number" name="estimated_minutes" min="0" max="1440" value="{{ p.estimated_minutes or '' }}"></div>
               <div><button class="small">Save</button></div>
@@ -155,7 +155,7 @@ function empTreeFilter() {
         <input type="text" name="client" list="company-names" placeholder="Type or pick a company" style="width:100%">
       </div>
       <div style="flex:1 1 140px">
-        <label>Client</label>
+        <label>Beneficiary</label>
         <input type="text" name="client_individual" list="client-names" placeholder="Type or pick a name" style="width:100%">
       </div>
     </div>

@@ -1104,7 +1104,7 @@ def _client_required_error(
     if project is not None and project.is_case_type and not (
         (company or "").strip() or (client_individual or "").strip()
     ):
-        return f"'{project.name}' is a Case Type project — enter a Company or a Client."
+        return f"'{project.name}' is a Case Type project — enter a Company or a Beneficiary."
     return None
 
 

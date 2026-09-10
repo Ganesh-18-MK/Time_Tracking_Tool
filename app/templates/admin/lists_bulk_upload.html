@@ -139,12 +139,12 @@ duplicated; nothing here renames or deactivates a value.</p>
   </div>
 
   <div class="card">
-    <div class="card-head"><h2 style="margin-top:0">Client Names (Individuals)</h2></div>
+    <div class="card-head"><h2 style="margin-top:0">Beneficiary Names (Individuals)</h2></div>
     <p class="small muted" style="margin-top:-4px">Grows on its own the moment an employee types a new
-    individual name on a Case Type project's Client field — no approval needed. Use this to pre-seed a
+    individual name on a Case Type project's Beneficiary field — no approval needed. Use this to pre-seed a
     few names or fix a typo later; there's no bulk upload for this list.</p>
     <form method="post" action="/admin/client-names/add" class="formrow" style="margin-bottom:12px">
-      <div style="flex:1"><input name="name" placeholder="New client (individual) name" style="width:100%" required></div>
+      <div style="flex:1"><input name="name" placeholder="New beneficiary name" style="width:100%" required></div>
       <div><button class="small">Add</button></div>
     </form>
     {% if client_names %}
@@ -172,7 +172,7 @@ duplicated; nothing here renames or deactivates a value.</p>
       </tbody>
     </table>
     {% else %}
-    <p class="muted small">No client names yet — they'll appear automatically as employees type new ones.</p>
+    <p class="muted small">No beneficiary names yet — they'll appear automatically as employees type new ones.</p>
     {% endif %}
   </div>
 </div>
