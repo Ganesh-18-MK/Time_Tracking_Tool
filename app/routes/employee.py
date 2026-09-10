@@ -38,6 +38,7 @@ from app.util import (
 from app.validation import (
     EntryError,
     all_gap_windows,
+    break_overrun_windows_for_date,
     earliest_allowed_date,
     earliest_gap_window,
     entry_details_edit_error,
@@ -195,20 +196,53 @@ class _GapLogRow:
         return self.end_minute - self.start_minute
 
 
-def _merge_entries_and_breaks(entries, breaks, gaps=None) -> list:
+class _BreakOverrunLogRow:
+    """Read-only placeholder row for a still-unfilled break-overrun window
+    (Ganesh, 2026-09-10 — see BreakOverrunFlag's own docstring in
+    app/models.py). Same `id = None` display-only convention as
+    _GapLogRow/_BreakLogRow above — every place that keys off entry.id
+    (edit/delete controls, gap_flags' dict lookup, the overtime-row
+    coloring loop) treats this as a no-op for free. Unlike an ordinary
+    _GapLogRow, this one also carries `flag_id` (the real BreakOverrunFlag
+    row's own id, needed to post a fill request against it) and `status`
+    (None/"requested"/"approved"/"rejected") so today.html can render the
+    right control — Request to fill / Awaiting approval / Fill — instead
+    of the plain "Fill" every ordinary gap always gets.
+
+    Only ever added to display_entries for the live "today, not yet
+    submitted" view (see _day_context's day_unlocked_today), same as
+    _GapLogRow — a past day, or today once locked, has nowhere left to
+    post a fill/fill-request to."""
+
+    def __init__(self, window: dict):
+        self.id = None
+        self.is_break_overrun = True
+        self.flag_id = window["id"]
+        self.status = window["status"]
+        self.start_minute = window["start"]
+        self.end_minute = window["end"]
+
+    @property
+    def duration_minutes(self) -> int:
+        return self.end_minute - self.start_minute
+
+
+def _merge_entries_and_breaks(entries, breaks, gaps=None, overrun_windows=None) -> list:
     """Combine real TaskEntry rows with completed BreakEntry rows (and,
-    optionally, fillable gap placeholder rows — see _GapLogRow above) into
-    one chronological, display-only list. Callers keep using the original
-    `entries`/`breaks` lists, unchanged, for every accounting purpose (day
-    total, target, gap_flags, compensation, overtime, strikes) — this
-    merged list exists purely for what the employee sees in the task log
-    table / My Month's per-day expand. `gaps` defaults to None (existing
-    My Month call site is unaffected) — only today_page's live view passes
-    it, and only when day_unlocked_today (see _day_context)."""
+    optionally, fillable gap and break-overrun placeholder rows — see
+    _GapLogRow/_BreakOverrunLogRow above) into one chronological,
+    display-only list. Callers keep using the original `entries`/`breaks`
+    lists, unchanged, for every accounting purpose (day total, target,
+    gap_flags, compensation, overtime, strikes) — this merged list exists
+    purely for what the employee sees in the task log table / My Month's
+    per-day expand. `gaps`/`overrun_windows` default to None (existing My
+    Month call site is unaffected) — only today_page's live view passes
+    them, and only when day_unlocked_today (see _day_context)."""
     rows = (
         list(entries)
         + [_BreakLogRow(b) for b in breaks if b.end_minute is not None]
         + [_GapLogRow(g) for g in (gaps or ())]
+        + [_BreakOverrunLogRow(w) for w in (overrun_windows or ())]
     )
     rows.sort(key=lambda r: r.start_minute)
     return rows
@@ -343,6 +377,16 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
         if day_unlocked_today else []
     )
 
+    # Break-overrun fillable placeholder rows (Ganesh, 2026-09-10) — same
+    # live-only-while-unlocked convention as gap_windows just above (see
+    # break_overrun_windows_for_date()'s own docstring in
+    # app/validation.py); a past day or a locked today just keeps showing
+    # whatever was already logged, with no interactive row for time that
+    # was never approved to fill.
+    overrun_windows = (
+        break_overrun_windows_for_date(db, emp.id, date) if day_unlocked_today else []
+    )
+
     # Overtime-colored task log rows (Ganesh, 2026-08-21) — a row is styled
     # differently once the running total of everything logged BEFORE it
     # already reached the day's target, so hours worked past the (leave/
@@ -399,7 +443,7 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
 
     return {
         "entries": entries,
-        "display_entries": _merge_entries_and_breaks(entries, completed_breaks, gap_windows),
+        "display_entries": _merge_entries_and_breaks(entries, completed_breaks, gap_windows, overrun_windows),
         "total": total,
         "sub": sub,
         "pending_unlock_request": pending_unlock_request,
@@ -1408,6 +1452,53 @@ def delete_break_entry(
     return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
 
 
+@router.post("/break-overrun/{flag_id}/request")
+def request_break_overrun_fill(
+    flag_id: int,
+    request: Request,
+    note: str = Form(""),
+    user: m.Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Employee side of the break-overrun auto-split + admin-approved fill
+    feature (Ganesh, 2026-09-10 — see BreakOverrunFlag's own docstring in
+    app/models.py for the full design). Clicking "Request to fill" on a
+    flagged leftover-time row posts here — sets status to LEAVE_REQUESTED
+    so it shows up in the admin queue (Dashboard's Needs Attention +
+    Person Detail, both department-scoped) instead of letting the
+    employee log a task into that window directly, unlike an ordinary
+    gap's instant, no-approval Fill.
+
+    Deliberately allows re-requesting after a REJECTED decision (Ganesh,
+    confirmed via AskUserQuestion — rejecting doesn't permanently forfeit
+    the window, it just means try again) by simply resetting status back
+    to LEAVE_REQUESTED and clearing the prior decision, rather than
+    creating a second row for the same window. A no-op (silent redirect)
+    if the flag doesn't exist, isn't this employee's, or is already
+    LEAVE_APPROVED — nothing useful to do in any of those cases."""
+    flag = db.get(m.BreakOverrunFlag, flag_id)
+    if flag is None or flag.employee_id != user.id:
+        return RedirectResponse("/today", status_code=303)
+    day = flag.date
+    sub = db.execute(
+        select(m.DaySubmission).where(
+            m.DaySubmission.employee_id == flag.employee_id, m.DaySubmission.date == day
+        )
+    ).scalar_one_or_none()
+    if sub is not None and sub.locked:
+        flash(request, "Day is locked — ask an admin to unlock it.", "err")
+        return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
+    if flag.status != m.LEAVE_APPROVED:
+        flag.status = m.LEAVE_REQUESTED
+        flag.note = (note or "").strip()
+        flag.requested_at = dt.datetime.utcnow()
+        flag.decided_by = ""
+        flag.decided_at = None
+        db.commit()
+        flash(request, "Fill request sent — an admin will review it.", "ok")
+    return RedirectResponse(f"/today?date={day.isoformat()}", status_code=303)
+
+
 @router.post("/break/start")
 def start_break(
     request: Request,
@@ -1488,6 +1579,7 @@ def end_break(
         )
     ).scalar_one_or_none()
     if active is not None:
+        cfg = engine.get_config(db)
         # Per-employee clock timezone (Ganesh, 2026-09-04) — same employee
         # whose start_minute above was stamped from now_for_employee(), so
         # the end must come from the same clock or the duration would be
@@ -1495,17 +1587,68 @@ def end_break(
         now = now_for_employee(user)
         active.end_minute = clamp_break_end(active.start_minute, now.hour * 60 + now.minute)
         active.ended_at = dt.datetime.utcnow()
+        overran = _cap_break_and_flag_overrun(db, cfg, active, user)
         db.commit()
-        flash(
-            request,
-            f"Break ended — {fmt_time(active.start_minute)}–{fmt_time(active.end_minute)} "
-            f"({active.duration_minutes} min).",
-            "ok",
-        )
+        if overran:
+            flash(
+                request,
+                f"Break ended — capped at {fmt_time(active.start_minute)}–"
+                f"{fmt_time(active.end_minute)} ({active.duration_minutes} min). The extra "
+                f"time is flagged below — click Request to fill once you're ready to log it.",
+                "ok",
+            )
+        else:
+            flash(
+                request,
+                f"Break ended — {fmt_time(active.start_minute)}–{fmt_time(active.end_minute)} "
+                f"({active.duration_minutes} min).",
+                "ok",
+            )
     return RedirectResponse("/today", status_code=303)
 
 
-def _end_current_break_if_any(db: Session, user: m.Employee) -> None:
+def _cap_break_and_flag_overrun(db: Session, cfg: dict, brk: m.BreakEntry, emp: m.Employee) -> bool:
+    """Break-overrun auto-split + admin-approved fill (Ganesh, 2026-09-10)
+    — called right after end_break()/_end_current_break_if_any() compute a
+    break's raw end_minute (via clamp_break_end()), before either commits.
+    If the break's raw duration is over the applicable cutoff, caps
+    brk.end_minute back down to that length and creates a
+    BreakOverrunFlag for the leftover time (see that model's own
+    docstring in app/models.py) — a no-op (returns False) for any
+    ordinary break under the cutoff, which is every break before this
+    feature existed and the vast majority going forward. Never calls
+    db.commit() itself — both call sites already commit right after, same
+    "one commit per caller" convention the rest of this file uses.
+    Returns True when a flag was created, so callers can tailor their own
+    flash message (end_break() does; _end_current_break_if_any() doesn't
+    flash at all, being a silent auto-close).
+
+    `emp` is the same employee `brk` belongs to (both call sites already
+    have it in scope) — used for the per-employee expected-gap override
+    (Ganesh, 2026-09-10, see Employee.expected_gap_minutes' own docstring
+    in app/models.py): a planned recurring gap (e.g. a split IST/CST
+    shift's daily gap between blocks) can be set higher than the org-wide
+    Config.normal_break_minutes default so it doesn't get capped/flagged
+    every single day. NULL (everyone before this feature, and anyone an
+    admin hasn't explicitly set it for) falls straight back to the
+    org-wide Config value, unchanged."""
+    normal = (
+        emp.expected_gap_minutes if emp.expected_gap_minutes is not None
+        else engine.cfg_int(cfg, "normal_break_minutes")
+    )
+    raw_end = brk.end_minute
+    if raw_end - brk.start_minute <= normal:
+        return False
+    capped_end = brk.start_minute + normal
+    db.add(m.BreakOverrunFlag(
+        employee_id=brk.employee_id, break_id=brk.id, date=brk.date,
+        start_minute=capped_end, end_minute=raw_end,
+    ))
+    brk.end_minute = capped_end
+    return True
+
+
+def _end_current_break_if_any(db: Session, user: m.Employee, cfg: dict) -> None:
     """Symmetric counterpart to _stop_current_timer_if_any below (Ganesh,
     2026-09-03 bugfix — see start_break()'s own docstring for the full
     incident this pair of helpers fixes): whatever Break is currently
@@ -1516,7 +1659,13 @@ def _end_current_break_if_any(db: Session, user: m.Employee) -> None:
     plain function (not a route) with no return value: unlike a task
     timer, ending a break can't itself fail validation, so there's no
     (ok, error) pair to propagate back to the caller. A no-op when no
-    break is currently running."""
+    break is currently running.
+
+    Also runs the same break-overrun cap/flag step end_break() itself
+    does (Ganesh, 2026-09-10) — an auto-ended break can run just as long
+    as a manually-ended one, so it needs the identical cap; this path
+    just has no request/flash to tailor around it, the flag row simply
+    shows up on the employee's next page load like any other."""
     today = today_local()
     active = db.execute(
         select(m.BreakEntry).where(
@@ -1529,6 +1678,7 @@ def _end_current_break_if_any(db: Session, user: m.Employee) -> None:
     now = now_for_employee(user)  # 2026-09-04 — same clock its own start came from
     active.end_minute = clamp_break_end(active.start_minute, now.hour * 60 + now.minute)
     active.ended_at = dt.datetime.utcnow()
+    _cap_break_and_flag_overrun(db, cfg, active, user)
     db.commit()
 
 
@@ -1847,7 +1997,7 @@ def start_task_timer(
     cfg = engine.get_config(db)
     today = today_local()
 
-    _end_current_break_if_any(db, user)
+    _end_current_break_if_any(db, user, cfg)
 
     ok, error = _stop_current_timer_if_any(db, user, cfg)
     if not ok:
@@ -2244,7 +2394,7 @@ def start_plan(
         flash(request, "That plan's Project/Task is no longer active — edit it first.", "err")
         return RedirectResponse("/today", status_code=303)
 
-    _end_current_break_if_any(db, user)
+    _end_current_break_if_any(db, user, cfg)
 
     ok, error = _stop_current_timer_if_any(db, user, cfg)
     if not ok:

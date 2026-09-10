@@ -230,6 +230,40 @@ class Employee(Base):
     # until an admin explicitly overrides one person's probation length).
     probation_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # Expected daily gap override, in minutes (Ganesh, 2026-09-10 — from a
+    # real production case: an employee working split IST-daytime/
+    # CST-daytime shifts with a genuine ~4-hour gap between the two blocks,
+    # logged as a Personal Break, was showing a false shortfall on My Month
+    # because Config.max_break_minutes' break-excess rule (see
+    # engine.compute_day()'s own docstring) stretched her day's target by
+    # the full length of that gap beyond the org-wide 30-minute default —
+    # and the newly-built break-overrun auto-split feature would otherwise
+    # ALSO cap that same break and flag the leftover for daily admin
+    # approval, neither of which is right for a planned, recurring gap.
+    # NULL (the default, every existing employee) means "use the two
+    # org-wide Config cutoffs exactly as before" — nothing changes for
+    # anyone until an admin explicitly sets this on a specific employee's
+    # record (Roster -> Edit, Super-Admin-only, same tier as the
+    # probation_days override above). When set, this ONE number replaces
+    # BOTH cutoffs for that employee only: engine.recompute_employee()
+    # uses it instead of Config.max_break_minutes when computing that
+    # day's break-excess/target-extension, and
+    # app/routes/employee.py's _cap_break_and_flag_overrun() uses it
+    # instead of Config.normal_break_minutes when deciding whether a
+    # single break needs capping/flagging. A break at or under this
+    # length is therefore fully normal for this employee — no target
+    # stretch, no cap, no admin-approval flag; a break longer than this
+    # (a genuine forgot-to-stop-the-timer case) still gets capped/flagged/
+    # extended exactly as it would for anyone else, just measured against
+    # this employee's own number instead of the shared default. Reusing
+    # ONE override for both mechanisms, rather than two separate fields,
+    # matches how Ganesh actually described the fix ("expected daily gap")
+    # and keeps the two already-related-but-distinct Config cutoffs (see
+    # CONFIG_DEFAULTS' own comments on max_break_minutes vs.
+    # normal_break_minutes) in sync for the one employee who needs both
+    # raised together.
+    expected_gap_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     entries = relationship("TaskEntry", back_populates="employee")
     # remote_side=[id]: tells SQLAlchemy this is the "many" side pointing at
     # the "one" parent row on the same table (self-referencing FK) — without
@@ -1186,6 +1220,71 @@ class UnlockRequest(Base):
     employee = relationship("Employee")
 
 
+class BreakOverrunFlag(Base):
+    """Break-overrun auto-split + admin-approved fill (Ganesh, 2026-09-10) —
+    "some time employees forgetting to stop the break time so they
+    actually took only 30 min but became of they forgotten the timer went
+    off to 2 hours... if any employee forgotten to stop the break time,
+    and if it went off to 2 hrs then... it will log 30 minutes break time
+    and remaining 1 hours should be flag and they can fill that time with
+    different tasks by splitting it but here they should get admin
+    approval." Same "gap that can be filled" mechanism
+    validation.all_gap_windows() already gives an ordinary unexplained
+    gap — except an ordinary gap can be filled instantly with zero
+    approval, and this leftover window deliberately cannot be, since it
+    came from a break running long rather than nothing being logged at
+    all.
+
+    Created the moment a break is capped (see
+    app/routes/employee.py's end_break()/_end_current_break_if_any(),
+    both of which call the same shared _cap_break_and_flag_overrun()
+    helper right after clamp_break_end() computes the raw end_minute) —
+    start_minute/end_minute here are the LEFTOVER window (from the cap
+    point to the break's true, uncapped end), not the break's own
+    (now-capped) start/end. Purely additive/informational until the
+    employee actually clicks "Request to fill" — status is None ("just
+    flagged, nobody's asked yet") until then, at which point it becomes
+    one of the same generic LEAVE_REQUESTED/LEAVE_APPROVED/LEAVE_REJECTED
+    strings every other employee-request-then-admin-decides flow in this
+    app already reuses (UnlockRequest, CompensationLink) rather than a
+    fifth parallel status enum. A rejected request can be re-requested
+    (Ganesh, confirmed via AskUserQuestion) — request_break_overrun_fill()
+    in app/routes/employee.py simply resets status back to
+    LEAVE_REQUESTED and clears decided_by/decided_at/note rather than
+    creating a second row for the same window, so rejecting doesn't
+    permanently forfeit the leftover time, it just means try again
+    (e.g. with more context in the note).
+
+    Deliberately does NOT extend that day's target/compliance math either
+    way — an ordinary break under Config.max_break_minutes never did (see
+    that Config key's own comment above), and this feature only decides
+    WHETHER a TaskEntry can be logged into the leftover window
+    (validation.py's break_overrun_windows_for_date()/validate_entry()),
+    never touches engine.py's break-excess or target calculations."""
+
+    __tablename__ = "break_overrun_flags"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True)
+    break_id: Mapped[int] = mapped_column(ForeignKey("break_entries.id"), index=True)
+    date: Mapped[dt.date] = mapped_column(Date, index=True)
+    start_minute: Mapped[int] = mapped_column(Integer)
+    end_minute: Mapped[int] = mapped_column(Integer)
+    # None = flagged, not yet requested; then LEAVE_REQUESTED/_APPROVED/_REJECTED.
+    status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    requested_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    decided_by: Mapped[str] = mapped_column(String(120), default="")
+    decided_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+
+    employee = relationship("Employee")
+
+    @property
+    def duration_minutes(self) -> int:
+        return self.end_minute - self.start_minute
+
+
 class LeaveRecord(Base):
     __tablename__ = "leave_records"
 
@@ -1709,4 +1808,17 @@ CONFIG_DEFAULTS = {
     # are untouched either way — this only controls whether the section is
     # shown, never deletes or blocks what's already on file.
     "employment_details_enabled": "0",
+    # Break-overrun auto-split + admin-approved fill (Ganesh, 2026-09-10) —
+    # a single break longer than this many minutes gets capped at this
+    # length (end_break()/_end_current_break_if_any() in
+    # app/routes/employee.py do the actual capping); the leftover time
+    # becomes a fillable-but-gated row (see BreakOverrunFlag below), same
+    # spirit as max_break_minutes above but a fundamentally different
+    # concept — max_break_minutes is a per-DAY TOTAL allowance (feeds
+    # break_excess, which extends that day's target), while this is a
+    # per-SINGLE-BREAK "normal duration" cutoff with no effect on the
+    # day's target either way (see BreakOverrunFlag's own docstring).
+    # Shared by both break types (Personal and Lunch/Dinner) rather than
+    # two separate cutoffs, per Ganesh's own confirmed answer.
+    "normal_break_minutes": "30",
 }

@@ -812,6 +812,33 @@
           <button type="button" class="small secondary" onclick="fillGapRow({{ e.start_minute }}, {{ e.end_minute }})">Fill</button>
         </td>
       </tr>
+      {% elif e.is_break_overrun %}
+      {#- Break-overrun fillable-but-gated row (Ganesh, 2026-09-10) — same
+         dashed gap-row look as an ordinary unlogged gap above, but the
+         action column shows Request-to-fill / awaiting-approval / Fill
+         depending on e.status, instead of an instant no-approval Fill.
+         See BreakOverrunFlag's own docstring in app/models.py. -#}
+      <tr class="gap-row break-overrun-row">
+        <td class="nowrap"><span class="dur-hint" title="{{ e.start_minute|clock }} – {{ e.end_minute|clock }}">{{ e.duration_minutes|hm }}</span></td>
+        <td colspan="3" class="small muted">
+          Leftover from a long break — needs admin approval before you can log a task here.
+          {% if e.status == 'requested' %}<span class="badge b-pending">⏳ awaiting admin approval</span>
+          {% elif e.status == 'rejected' %}<span class="small muted">— request declined, you can ask again</span>{% endif %}
+        </td>
+        <td class="nowrap">
+          {% if e.status == 'approved' %}
+          <button type="button" class="small secondary" onclick="fillGapRow({{ e.start_minute }}, {{ e.end_minute }})">Fill</button>
+          {% elif e.status != 'requested' %}
+          <details class="details-edit" style="display:inline-block">
+            <summary class="small muted">{{ 'Request again' if e.status == 'rejected' else 'Request to fill' }}</summary>
+            <form method="post" action="/break-overrun/{{ e.flag_id }}/request" style="margin-top:6px;display:flex;gap:6px;align-items:flex-start">
+              <input type="text" name="note" placeholder="Optional note" style="flex:1;min-width:140px">
+              <button class="small">Send</button>
+            </form>
+          </details>
+          {% endif %}
+        </td>
+      </tr>
       {% else %}
       <tr class="{{ 'muted' if not e.id else '' }}{{ ' overtime-row' if e.is_overtime else '' }}" {% if e.is_overtime %}title="Logged after today's target was already reached"{% endif %}>
         <td class="nowrap">

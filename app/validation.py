@@ -299,6 +299,46 @@ def validate_entry(
                     f"before logging a row that overlaps that time."
                 )
 
+        # --- no logging into an unresolved break-overrun window --------------
+        # Break-overrun auto-split + admin-approved fill (Ganesh, 2026-09-10)
+        # — when a break ran longer than Config.normal_break_minutes, the
+        # leftover time becomes a BreakOverrunFlag row (see its own
+        # docstring in app/models.py). Unlike an ordinary unlogged gap
+        # (which all_gap_windows() lets an employee fill instantly, no
+        # approval needed), this leftover window specifically needs an
+        # admin's sign-off first — enforced here, not just in the UI, so a
+        # fresh Add Task/timer-finish can't slip a row into that window
+        # before it's approved. acting_admin bypasses this the same way it
+        # bypasses every other employee-only restriction above. Skipped
+        # when closing_existing=True too, same reasoning as the
+        # department/task-scoping bypasses above it — a timer that was
+        # already running before a break-overrun flag appeared underneath
+        # it shouldn't become permanently un-closeable because of a flag
+        # it had nothing to do with.
+        if not acting_admin and not closing_existing:
+            overrun_flags = db.execute(
+                select(m.BreakOverrunFlag).where(
+                    m.BreakOverrunFlag.employee_id == emp.id,
+                    m.BreakOverrunFlag.date == date,
+                )
+            ).scalars()
+            for f in overrun_flags:
+                if f.status == m.LEAVE_APPROVED:
+                    continue
+                if start_minute < f.end_minute and f.start_minute < end_minute:
+                    if f.status is None:
+                        state = "not yet requested"
+                    elif f.status == m.LEAVE_REQUESTED:
+                        state = "awaiting admin approval"
+                    else:
+                        state = "was rejected — you can request it again"
+                    errors.append(
+                        f"That time ({fmt_minute(f.start_minute)}–{fmt_minute(f.end_minute)}) is "
+                        f"leftover from a long break and needs admin approval before you can log a "
+                        f"task there ({state}) — see the flagged row in your task log."
+                    )
+                    break
+
     if errors:
         raise EntryError(errors)
 
@@ -363,6 +403,22 @@ def suggest_non_overlapping_start(
     ).scalar_one_or_none()
     if active_timer is not None and active_timer.start_minute < end_minute:
         conflict_end = max(conflict_end or 0, 1440)
+
+    # An unresolved break-overrun window (Ganesh, 2026-09-10) — same
+    # conflict shape validate_entry() now checks above, duplicated here
+    # for the same reason this function already duplicates every other
+    # condition rather than calling validate_entry() (see this function's
+    # own docstring).
+    overrun_flags = db.execute(
+        select(m.BreakOverrunFlag).where(
+            m.BreakOverrunFlag.employee_id == emp.id, m.BreakOverrunFlag.date == date,
+        )
+    ).scalars()
+    for f in overrun_flags:
+        if f.status == m.LEAVE_APPROVED:
+            continue
+        if start_minute < f.end_minute and f.start_minute < end_minute:
+            conflict_end = max(conflict_end or 0, f.end_minute)
 
     return conflict_end
 
@@ -458,6 +514,77 @@ def all_gap_windows(
         remaining = gap - min(covered, gap)
         if remaining > gap_minutes:
             windows.append({"start": prev.end_minute, "end": cur.start_minute, "minutes": remaining})
+    return windows
+
+
+def _subtract_intervals(start: int, end: int, entries) -> List[tuple]:
+    """The sub-ranges of [start, end) not covered by any of `entries`'
+    (start_minute, end_minute) spans — merged and sorted. Shared helper
+    for break_overrun_windows_for_date() below; a plain interval
+    subtraction, nothing app-specific about it."""
+    busy = sorted(
+        (max(start, e.start_minute), min(end, e.end_minute))
+        for e in entries
+        if e.start_minute < end and e.end_minute > start
+    )
+    free = []
+    cursor = start
+    for b_start, b_end in busy:
+        if b_start > cursor:
+            free.append((cursor, b_start))
+        cursor = max(cursor, b_end)
+    if cursor < end:
+        free.append((cursor, end))
+    return free
+
+
+def break_overrun_windows_for_date(db: Session, employee_id: int, date: dt.date) -> List[dict]:
+    """Every still-fillable leftover window from a capped break that day
+    (see BreakOverrunFlag's own docstring in app/models.py) — "still
+    fillable" meaning not yet fully covered by a logged TaskEntry, same
+    "net out what's already explained" instinct all_gap_windows() above
+    already applies to an ordinary gap. Logging a task into part of a
+    flagged window (once approved) naturally shrinks or removes it on the
+    next load — there's no separate "mark this resolved" step, filling
+    the time IS resolving it, exactly like an ordinary gap.
+
+    A window whose flag was REJECTED still returns (so the employee can
+    see it and click "Request to fill" again — see BreakOverrunFlag's own
+    docstring on why rejection isn't final) — only an APPROVED-and-fully-
+    logged window disappears.
+
+    Returns a list of {"id", "start", "end", "minutes", "status"} dicts,
+    ordered chronologically by start — "start"/"end"/"minutes" match
+    all_gap_windows()'s own shape; "id" is the BreakOverrunFlag's own id
+    (needed to post a fill request against a specific row), "status" is
+    the flag's raw status (None/"requested"/"approved"/"rejected") for
+    the template to pick the right control. A single flag can produce
+    more than one window in the rare case an employee already logged a
+    task into the MIDDLE of the leftover time (approved or not) — same
+    "whatever's left just becomes its own row" idea as an ordinary gap
+    split into pieces, just applied to a fixed-size window instead of a
+    between-two-rows one."""
+    flags = db.execute(
+        select(m.BreakOverrunFlag).where(
+            m.BreakOverrunFlag.employee_id == employee_id,
+            m.BreakOverrunFlag.date == date,
+        )
+    ).scalars().all()
+    if not flags:
+        return []
+    entries = db.execute(
+        select(m.TaskEntry).where(
+            m.TaskEntry.employee_id == employee_id, m.TaskEntry.date == date
+        )
+    ).scalars().all()
+    windows = []
+    for f in flags:
+        for start, end in _subtract_intervals(f.start_minute, f.end_minute, entries):
+            windows.append({
+                "id": f.id, "start": start, "end": end, "minutes": end - start,
+                "status": f.status,
+            })
+    windows.sort(key=lambda w: w["start"])
     return windows
 
 

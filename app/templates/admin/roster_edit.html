@@ -93,6 +93,18 @@
       ({{ leave_probation_days_default }} days). Planned Time isn't earned or usable until probation ends;
       every other leave type is available immediately regardless.</p>
     {% endif %}
+    <div class="formrow" style="margin-top:10px">
+      <div>
+        <label>Expected daily gap override (minutes)</label>
+        <input name="expected_gap_minutes"
+               value="{{ emp.expected_gap_minutes if emp.expected_gap_minutes is not none else '' }}"
+               style="width:100px" placeholder="company default">
+      </div>
+    </div>
+    <p class="small muted" style="margin:4px 0 0">For a planned, recurring gap in this person's day (e.g. a
+      split-shift schedule) — blank = use the company defaults (30 min). When set, a single break up to this
+      length never stretches their target and never gets auto-capped/flagged for admin approval; a break
+      longer than this still does, measured against this number instead of the default.</p>
     <div style="margin-top:14px">
       <button>Save</button>
       <a class="btn secondary" href="/admin/roster">Cancel</a>

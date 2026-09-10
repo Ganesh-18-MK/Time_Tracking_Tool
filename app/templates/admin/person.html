@@ -217,9 +217,10 @@
     <div class="card-head"><h2>Breaks ({{ month_label(year, month) }})</h2></div>
     <p class="small muted">Allowance: {{ max_break_minutes }} min/day — time over it extends that day's target.</p>
     <table>
-      <thead><tr><th>Date</th><th>Type</th><th>When</th><th>Duration</th>{% if user.is_super_admin %}<th></th>{% endif %}</tr></thead>
+      <thead><tr><th>Date</th><th>Type</th><th>When</th><th>Duration</th><th>Overrun</th>{% if user.is_super_admin %}<th></th>{% endif %}</tr></thead>
       <tbody>
         {% for b in breaks[:40] %}
+        {% set flag = break_overrun_flags_by_break_id.get(b.id) %}
         <tr>
           <td class="nowrap">{{ b.date|mdy }}</td>
           <td>{{ b.break_type }}</td>
@@ -227,6 +228,36 @@
             {{ b.start_minute|clock }}–{{ b.end_minute|clock if b.end_minute is not none else 'in progress' }}
           </td>
           <td>{{ b.duration_minutes|hm if b.duration_minutes is not none else '—' }}</td>
+          <td class="small">
+            {# Break-overrun fill request (Ganesh, 2026-09-10) — a break
+               only ever has a flag row here if it was capped for running
+               over Config.normal_break_minutes (see BreakOverrunFlag's
+               own docstring). Any admin in scope can Approve/Reject
+               (require_admin + admin_department_scope, not the
+               require_super_admin tier Delete just to the right uses). #}
+            {% if flag %}
+              {{ flag.duration_minutes|hm }} leftover —
+              {% if flag.status == 'approved' %}
+                <span class="badge b-complete">approved</span>{% if flag.decided_by %} by {{ flag.decided_by }}{% endif %}
+              {% elif flag.status == 'rejected' %}
+                <span class="badge b-missing">rejected</span>{% if flag.decided_by %} by {{ flag.decided_by }}{% endif %}
+              {% elif flag.status == 'requested' %}
+                <span class="badge b-pending">awaiting decision</span>{% if flag.note %} — "{{ flag.note[:40] }}{% if flag.note|length > 40 %}…{% endif %}"{% endif %}
+                <form method="post" action="/admin/break-overrun/{{ flag.id }}/approve" class="inline" style="margin-top:4px">
+                  <input type="hidden" name="ym" value="{{ ym }}">
+                  <button class="small" type="submit">Approve</button>
+                </form>
+                <form method="post" action="/admin/break-overrun/{{ flag.id }}/reject" class="inline">
+                  <input type="hidden" name="ym" value="{{ ym }}">
+                  <button class="small secondary" type="submit">Reject</button>
+                </form>
+              {% else %}
+                <span class="muted">not yet requested</span>
+              {% endif %}
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
           {% if user.is_super_admin %}
           <td>
             <form method="post" action="/admin/person/{{ emp.id }}/break/{{ b.id }}/delete" class="inline"
@@ -238,7 +269,7 @@
           {% endif %}
         </tr>
         {% else %}
-        <tr><td colspan="{{ 5 if user.is_super_admin else 4 }}" class="muted">No breaks logged.</td></tr>
+        <tr><td colspan="{{ 6 if user.is_super_admin else 5 }}" class="muted">No breaks logged.</td></tr>
         {% endfor %}
       </tbody>
     </table>

@@ -634,7 +634,15 @@ def recompute_employee(
             )
         ).scalars()
     )
-    max_break = cfg_int(cfg, "max_break_minutes")
+    # Per-employee expected-gap override (Ganesh, 2026-09-10) — see
+    # Employee.expected_gap_minutes' own docstring in app/models.py. NULL
+    # (every employee before this feature, and everyone an admin hasn't
+    # explicitly set it for) falls straight back to the org-wide Config
+    # value, so this is a no-op for the vast majority of employees.
+    max_break = (
+        emp.expected_gap_minutes if emp.expected_gap_minutes is not None
+        else cfg_int(cfg, "max_break_minutes")
+    )
     break_totals: Dict[dt.date, int] = {}
     for b in db.execute(
         select(m.BreakEntry).where(

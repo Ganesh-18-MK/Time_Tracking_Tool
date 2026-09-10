@@ -456,6 +456,95 @@ class TestRecomputeEmployeeAutoCountsLoggedHours:
         assert row is None  # pending — same as before this feature
 
 
+class TestExpectedGapOverride:
+    """Per-employee expected-gap override (Ganesh, 2026-09-10) — a real
+    production case: an employee working split IST-daytime/CST-daytime
+    shifts logs the ~4-hour gap between blocks as a Personal Break, and
+    Config.max_break_minutes' break-excess rule (see TestBreakExcess above)
+    was stretching her day's target by the full length of that gap, making
+    a genuinely full day of real work read as a shortfall. See
+    Employee.expected_gap_minutes' own docstring in app/models.py —
+    recompute_employee() prefers this per-employee override over the
+    org-wide Config.max_break_minutes default whenever it's set."""
+
+    def test_no_override_behaves_exactly_as_before(self, attendance_db):
+        s = attendance_db
+        e = _mkemp(s, 1, work_days="0,1,2,3,4,5,6")
+        s.add(m.TaskEntry(
+            employee_id=e.id, date=MON, project_id=1, task_type_id=1,
+            details="normal day's work", start_minute=540, end_minute=1020,  # 480 min
+        ))
+        s.add(m.BreakEntry(employee_id=e.id, date=MON, start_minute=1020, end_minute=1020 + 246))
+        s.commit()
+        from app.engine import recompute_employee
+        recompute_employee(s, e, MON, MON, m.CONFIG_DEFAULTS, today=TODAY)
+        row = s.execute(
+            select(m.DayStatus).where(m.DayStatus.employee_id == e.id, m.DayStatus.date == MON)
+        ).scalar_one()
+        # 246-min break, 30-min default allowance -> 216 min excess -> target 696
+        assert row.target_minutes == 480 + 216
+        assert row.status == m.PARTIAL  # false shortfall — the bug this feature fixes
+
+    def test_override_covering_the_real_gap_removes_the_false_shortfall(self, attendance_db):
+        s = attendance_db
+        e = _mkemp(s, 1, work_days="0,1,2,3,4,5,6")
+        e.expected_gap_minutes = 250  # comfortably covers her real 246-min gap
+        s.add(m.TaskEntry(
+            employee_id=e.id, date=MON, project_id=1, task_type_id=1,
+            details="split IST/CST day", start_minute=540, end_minute=1020,  # 480 min
+        ))
+        s.add(m.BreakEntry(employee_id=e.id, date=MON, start_minute=1020, end_minute=1020 + 246))
+        s.commit()
+        from app.engine import recompute_employee
+        recompute_employee(s, e, MON, MON, m.CONFIG_DEFAULTS, today=TODAY)
+        row = s.execute(
+            select(m.DayStatus).where(m.DayStatus.employee_id == e.id, m.DayStatus.date == MON)
+        ).scalar_one()
+        assert row.target_minutes == 480  # no stretch — the gap is fully within her own allowance
+        assert row.status == m.COMPLETE
+
+    def test_override_smaller_than_the_gap_still_flags_the_excess(self, attendance_db):
+        s = attendance_db
+        e = _mkemp(s, 1, work_days="0,1,2,3,4,5,6")
+        e.expected_gap_minutes = 200  # less than the real 246-min gap
+        s.add(m.TaskEntry(
+            employee_id=e.id, date=MON, project_id=1, task_type_id=1,
+            details="split IST/CST day", start_minute=540, end_minute=1020,
+        ))
+        s.add(m.BreakEntry(employee_id=e.id, date=MON, start_minute=1020, end_minute=1020 + 246))
+        s.commit()
+        from app.engine import recompute_employee
+        recompute_employee(s, e, MON, MON, m.CONFIG_DEFAULTS, today=TODAY)
+        row = s.execute(
+            select(m.DayStatus).where(m.DayStatus.employee_id == e.id, m.DayStatus.date == MON)
+        ).scalar_one()
+        assert row.target_minutes == 480 + 46  # only the 46 min beyond her own allowance
+
+    def test_override_does_not_affect_a_different_employee(self, attendance_db):
+        s = attendance_db
+        e1 = _mkemp(s, 1, work_days="0,1,2,3,4,5,6")
+        e1.expected_gap_minutes = 250
+        e2 = _mkemp(s, 2, work_days="0,1,2,3,4,5,6")
+        for e in (e1, e2):
+            s.add(m.TaskEntry(
+                employee_id=e.id, date=MON, project_id=1, task_type_id=1,
+                details="work", start_minute=540, end_minute=1020,
+            ))
+            s.add(m.BreakEntry(employee_id=e.id, date=MON, start_minute=1020, end_minute=1020 + 246))
+        s.commit()
+        from app.engine import recompute_employee
+        recompute_employee(s, e1, MON, MON, m.CONFIG_DEFAULTS, today=TODAY)
+        recompute_employee(s, e2, MON, MON, m.CONFIG_DEFAULTS, today=TODAY)
+        row1 = s.execute(
+            select(m.DayStatus).where(m.DayStatus.employee_id == e1.id, m.DayStatus.date == MON)
+        ).scalar_one()
+        row2 = s.execute(
+            select(m.DayStatus).where(m.DayStatus.employee_id == e2.id, m.DayStatus.date == MON)
+        ).scalar_one()
+        assert row1.target_minutes == 480  # e1's own override exempts the gap
+        assert row2.target_minutes == 480 + 216  # e2 still uses the org-wide default
+
+
 class TestCompanyWideHolidays:
     """Holiday management (Ganesh, 2026-08-12, reverted to one shared list
     on 2026-08-14 — see Holiday's docstring in app/models.py). Holidays now

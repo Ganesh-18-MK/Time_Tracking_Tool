@@ -156,10 +156,25 @@
 <div class="cols">
   <div class="card">
     <div class="card-head"><h2>Needs attention</h2></div>
-    {% if not pending_leave_rows and not open_support_rows and not violations and not unlock_requests %}
+    {% if not pending_leave_rows and not open_support_rows and not violations and not unlock_requests and not break_overrun_requests %}
     <p class="muted small" style="margin:0">Nothing pending — you're all caught up.</p>
     {% else %}
     <ul class="namelist" style="padding-left:0;list-style:none;margin-top:0">
+      {% if break_overrun_requests %}
+      {# Break-overrun fill requests (Ganesh, 2026-09-10) — unlike Unlock
+         requests below (super-admin-only), this one is department-visible
+         to any admin (see admin.dashboard()'s own comment on why
+         break_overrun_requests is computed alongside `violations`, not
+         gated by `scope is None`). Approve/Reject happens on Person
+         Detail's Breaks table, not here — this is just the notification,
+         same "link, don't act" convention Unlock requests already set. #}
+      <li class="needslist-group">Break-overrun fill requests ({{ break_overrun_requests|length }})</li>
+      {% for f in break_overrun_requests %}
+      <li style="margin-bottom:6px"><span class="badge b-pending">break</span>
+        <a href="/admin/person/{{ f.employee_id }}?ym={{ f.date.strftime('%Y-%m') }}">{{ f.employee.name if f.employee else f.employee_id }}</a>
+        wants to fill {{ f.duration_minutes|hm }} on {{ f.date|mdy }}{% if f.note %} — "{{ f.note[:50] }}{% if f.note|length > 50 %}…{% endif %}"{% endif %}</li>
+      {% endfor %}
+      {% endif %}
       {% if unlock_requests %}
       {# Unlock requests (Ganesh, 2026-08-27) — super-admin-only preview,
          same as Support tickets below; approving/declining happens on

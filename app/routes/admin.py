@@ -140,6 +140,7 @@ def dashboard(
     # Configuration -> Audit Logs for anyone who needs it; this was just a
     # preview widget, not the only way to see this data.
     pending_leave_rows, open_support_rows, violations, unlock_requests = [], [], [], []
+    break_overrun_requests = []
     if not show_grid:
         # Leave Management is now Super-Admin-only (Ganesh, 2026-08-28 —
         # narrowed the department-scoped Team Lead's access to 5 specific
@@ -196,6 +197,27 @@ def dashboard(
                 violations.append((e, e_strikes, e_strikes >= threshold))
         violations.sort(key=lambda row: (not row[2], -row[1]))
         violations = violations[:8]
+
+        # Break-overrun fill requests (Ganesh, 2026-09-10) — department-
+        # visible to any admin (Team Lead or Super Admin), unlike Leave/
+        # Overtime/Unlock requests above, which are super-admin-only
+        # (confirmed via AskUserQuestion). `all_emps` is already narrowed
+        # to the admin's own department when scope is not None (see the
+        # filter right after admin_department_scope() above), so this one
+        # query naturally scopes correctly for both tiers with no extra
+        # branching — same "department-visible" pattern `violations`
+        # itself already follows just above.
+        break_overrun_requests = list(
+            db.execute(
+                select(m.BreakOverrunFlag)
+                .where(
+                    m.BreakOverrunFlag.status == m.LEAVE_REQUESTED,
+                    m.BreakOverrunFlag.employee_id.in_([e.id for e in all_emps]),
+                )
+                .order_by(m.BreakOverrunFlag.requested_at)
+                .limit(5)
+            ).scalars()
+        )
 
     # "Compliance Trend" card (Ganesh, 2026-08-30, from a pasted mockup) —
     # landing-view only, like Needs Attention/Recent activity above, and
@@ -292,6 +314,7 @@ def dashboard(
             "open_support_rows": open_support_rows,
             "violations": violations,
             "unlock_requests": unlock_requests,
+            "break_overrun_requests": break_overrun_requests,
             "compliance_trend": compliance_trend,
             "projects_progression": projects_progression,
             "dept": dept or "",
@@ -441,6 +464,22 @@ def person(
             .order_by(m.BreakEntry.date.desc(), m.BreakEntry.start_minute)
         ).scalars()
     )
+    # Break-overrun fill requests (Ganesh, 2026-09-10) — keyed by the
+    # capped BreakEntry's own id (one flag per capped break, see
+    # BreakOverrunFlag's docstring) so the Breaks table can show the
+    # leftover window's status/Approve-Reject controls right next to that
+    # row, same "surface it in context, not a separate list" instinct
+    # pending_unlocks_by_date above already established for Unlock
+    # requests.
+    break_overrun_flags_by_break_id = {
+        f.break_id: f
+        for f in db.execute(
+            select(m.BreakOverrunFlag).where(
+                m.BreakOverrunFlag.employee_id == emp.id,
+                m.BreakOverrunFlag.date.between(first, last),
+            )
+        ).scalars()
+    }
     comp_erases = cfg.get("comp_erases_strike") == "1"
     strikes = engine.strikes_in(statuses, comp_erases)
     shortfalls, surpluses = _shortfalls_surpluses(statuses, comp_erases)
@@ -482,6 +521,7 @@ def person(
             "by_day": sorted(by_day.items(), reverse=True),
             "leaves": leaves,
             "breaks": breaks,
+            "break_overrun_flags_by_break_id": break_overrun_flags_by_break_id,
             "max_break_minutes": engine.cfg_int(cfg, "max_break_minutes"),
             "links": [
                 (lk, [dt.date.fromisoformat(x) for x in json.loads(lk.surplus_dates or "[]")])
@@ -959,6 +999,91 @@ def delete_break(
     return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
 
 
+def _break_overrun_redirect(emp_id: int, ym: str, return_to: str) -> str:
+    """Where the break-overrun approve/reject routes below send the admin
+    back to — same return_to convention as _complink_redirect()/
+    _plan_redirect() above it, since this queue is reachable from both
+    Person Detail (default) and the Dashboard's Needs Attention card
+    (return_to=dashboard, no employee/month context to preserve)."""
+    if return_to == "dashboard":
+        return "/admin"
+    return f"/admin/person/{emp_id}?ym={ym}"
+
+
+@router.post("/break-overrun/{flag_id}/approve")
+def approve_break_overrun(
+    flag_id: int,
+    request: Request,
+    ym: str = Form(""),
+    return_to: str = Form(""),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Admin side of the break-overrun auto-split + admin-approved fill
+    feature (Ganesh, 2026-09-10 — see BreakOverrunFlag's own docstring in
+    app/models.py). Any admin can act — department-scoped Team Lead or
+    Super Admin (Ganesh, confirmed via AskUserQuestion) — same
+    admin_department_scope() department-string check delete_plan()/
+    admin_add_plan() above already use for a similarly-scoped action, not
+    the require_super_admin tier Unlock Requests/Overtime/Leave use.
+    Approving doesn't itself log anything — it just lets the employee's
+    next Fill/Add Task into that window succeed (validate_entry()'s new
+    break-overrun check in app/validation.py only blocks a non-approved
+    window)."""
+    flag = db.get(m.BreakOverrunFlag, flag_id)
+    if flag is None:
+        raise HTTPException(404)
+    led = admin_department_scope(admin)
+    emp = db.get(m.Employee, flag.employee_id)
+    if emp is None or (led is not None and (emp.department or "—") != led):
+        raise Forbidden()
+    flag.status = m.LEAVE_APPROVED
+    flag.decided_by = admin.name
+    flag.decided_at = dt.datetime.utcnow()
+    db.commit()
+    audit(
+        db, admin.name, "approve_break_overrun", "BreakOverrunFlag", str(flag.id),
+        {"employee_id": flag.employee_id, "date": flag.date.isoformat()},
+    )
+    flash(request, "Break-overrun fill request approved.", "ok")
+    return RedirectResponse(_break_overrun_redirect(flag.employee_id, ym, return_to), status_code=303)
+
+
+@router.post("/break-overrun/{flag_id}/reject")
+def reject_break_overrun(
+    flag_id: int,
+    request: Request,
+    ym: str = Form(""),
+    return_to: str = Form(""),
+    admin: m.Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Decline a break-overrun fill request — same department-scoped
+    access as approve_break_overrun() above. Not final (Ganesh, confirmed
+    via AskUserQuestion): the employee can click "Request to fill" again
+    later, e.g. with more context in the note — see
+    request_break_overrun_fill()'s own docstring in
+    app/routes/employee.py for how that re-request resets this same row
+    rather than creating a new one."""
+    flag = db.get(m.BreakOverrunFlag, flag_id)
+    if flag is None:
+        raise HTTPException(404)
+    led = admin_department_scope(admin)
+    emp = db.get(m.Employee, flag.employee_id)
+    if emp is None or (led is not None and (emp.department or "—") != led):
+        raise Forbidden()
+    flag.status = m.LEAVE_REJECTED
+    flag.decided_by = admin.name
+    flag.decided_at = dt.datetime.utcnow()
+    db.commit()
+    audit(
+        db, admin.name, "reject_break_overrun", "BreakOverrunFlag", str(flag.id),
+        {"employee_id": flag.employee_id, "date": flag.date.isoformat()},
+    )
+    flash(request, "Break-overrun fill request declined.", "ok")
+    return RedirectResponse(_break_overrun_redirect(flag.employee_id, ym, return_to), status_code=303)
+
+
 def _complink_redirect(emp_id: int, ym: str, return_to: str) -> str:
     """Where add_complink sends the admin back to. Defaults to Person Detail
     (the original, still-used flow) — Overtime Management's quick-link form
@@ -1320,7 +1445,7 @@ def _emp_from_form(
     db: Session, emp: m.Employee, name, email, department, designation, target_hours,
     work_days, start_date, active, tracked, role, dob="", phone="", country_code="",
     reports_to_id="", is_developer=False, location=None,
-    is_on_pip=None, probation_days="",
+    is_on_pip=None, probation_days="", expected_gap_minutes="",
 ):
     emp.name = name.strip()
     # Work location / country (Ganesh, 2026-08-12) — admin-set here as an
@@ -1424,6 +1549,25 @@ def _emp_from_form(
             if pd < 0:
                 raise FormError("Probation days can't be negative.")
             emp.probation_days = pd
+    # Expected daily gap override (Ganesh, 2026-09-10) — see
+    # Employee.expected_gap_minutes' own docstring in app/models.py.
+    # Unconditional (unlike is_on_pip/probation_days above, which are
+    # gated behind LEAVE_MANAGEMENT_V2_ENABLED): this field has nothing to
+    # do with Leave Management, roster_add() simply never passes it so a
+    # brand-new employee's default stays None either way.
+    expected_gap_minutes = (expected_gap_minutes or "").strip()
+    if expected_gap_minutes == "":
+        emp.expected_gap_minutes = None  # explicit blank -> "use the company defaults"
+    else:
+        try:
+            egm = int(expected_gap_minutes)
+        except ValueError:
+            raise FormError(
+                "Expected daily gap must be a whole number of minutes (blank = use the company defaults)."
+            )
+        if egm < 0:
+            raise FormError("Expected daily gap can't be negative.")
+        emp.expected_gap_minutes = egm
 
 
 @router.post("/roster/add")
@@ -1553,6 +1697,7 @@ def roster_edit(
     location: str = Form(m.DEFAULT_LOCATION),
     is_on_pip: str = Form(""),
     probation_days: str = Form(""),
+    expected_gap_minutes: str = Form(""),
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
@@ -1565,6 +1710,7 @@ def roster_edit(
         "active": emp.active, "tracked": emp.tracked, "is_admin": emp.is_admin,
         "is_super_admin": emp.is_super_admin, "is_developer": emp.is_developer,
         "location": emp.location, "is_on_pip": emp.is_on_pip, "probation_days": emp.probation_days,
+        "expected_gap_minutes": emp.expected_gap_minutes,
     }
     try:
         _emp_from_form(db, emp, name, email, department, designation, target_hours,
@@ -1582,7 +1728,7 @@ def roster_edit(
                        # while the flag is off means _emp_from_form leaves
                        # both untouched instead of resetting them.
                        (is_on_pip == "1") if LEAVE_MANAGEMENT_V2_ENABLED else None,
-                       probation_days)
+                       probation_days, expected_gap_minutes)
     except FormError as e:
         flash(request, e.message, "err")
         return RedirectResponse("/admin/roster", status_code=303)
@@ -3917,6 +4063,7 @@ def config_save(
     gap_flag_minutes: str = Form("15"),
     min_details_chars: str = Form("5"),
     max_break_minutes: str = Form("30"),
+    normal_break_minutes: str = Form("30"),
     comp_erases_strike: str = Form(""),
     employment_details_enabled: str = Form(""),
     live_start_date: str = Form(""),
@@ -3933,6 +4080,7 @@ def config_save(
             "gap_flag_minutes": str(parse_int_field(gap_flag_minutes, "Gap flag minutes")),
             "min_details_chars": str(parse_int_field(min_details_chars, "Minimum details length")),
             "max_break_minutes": str(parse_int_field(max_break_minutes, "Break allowance")),
+            "normal_break_minutes": str(parse_int_field(normal_break_minutes, "Single break cutoff")),
             "comp_erases_strike": "1" if comp_erases_strike == "1" else "0",
             "employment_details_enabled": "1" if employment_details_enabled == "1" else "0",
             "live_start_date": live_start_date.strip(),

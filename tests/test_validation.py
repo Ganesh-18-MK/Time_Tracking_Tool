@@ -10,6 +10,7 @@ from app import models as m
 from app.util import today_local
 from app.validation import (
     EntryError,
+    break_overrun_windows_for_date,
     earliest_allowed_date,
     earliest_gap_window,
     entry_details_edit_error,
@@ -682,3 +683,155 @@ class TestEntryDetailsEditGuard:
         sub = m.DaySubmission(employee_id=1, date=TODAY, locked=True)
         err = entry_details_edit_error(brk_today, emp, TODAY, sub)
         assert err is not None and "locked" in err.lower()
+
+
+class TestBreakOverrunWindow:
+    """Break-overrun auto-split + admin-approved fill (Ganesh, 2026-09-10)
+    — a break capped at Config.normal_break_minutes leaves a
+    BreakOverrunFlag row for the leftover time; unlike an ordinary gap,
+    logging a task into that window is blocked until the flag is
+    LEAVE_APPROVED. See app/models.py's BreakOverrunFlag docstring and
+    app/routes/employee.py's _cap_break_and_flag_overrun()."""
+
+    def test_unrequested_window_blocks_a_new_entry(self, db):
+        s, emp = db
+        brk = m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_PERSONAL,
+                            start_minute=600, end_minute=630)
+        s.add(brk)
+        s.commit()
+        s.add(m.BreakOverrunFlag(employee_id=1, break_id=brk.id, date=TODAY,
+                                  start_minute=630, end_minute=690))
+        s.commit()
+        msg = errs(s, emp, start_minute=640, end_minute=700)
+        assert "needs admin approval" in msg
+
+    def test_requested_window_still_blocks(self, db):
+        s, emp = db
+        brk = m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_PERSONAL,
+                            start_minute=600, end_minute=630)
+        s.add(brk)
+        s.commit()
+        s.add(m.BreakOverrunFlag(employee_id=1, break_id=brk.id, date=TODAY,
+                                  start_minute=630, end_minute=690, status=m.LEAVE_REQUESTED))
+        s.commit()
+        msg = errs(s, emp, start_minute=640, end_minute=700)
+        assert "awaiting admin approval" in msg
+
+    def test_rejected_window_still_blocks_but_says_try_again(self, db):
+        s, emp = db
+        brk = m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_PERSONAL,
+                            start_minute=600, end_minute=630)
+        s.add(brk)
+        s.commit()
+        s.add(m.BreakOverrunFlag(employee_id=1, break_id=brk.id, date=TODAY,
+                                  start_minute=630, end_minute=690, status=m.LEAVE_REJECTED))
+        s.commit()
+        msg = errs(s, emp, start_minute=640, end_minute=700)
+        assert "request it again" in msg
+
+    def test_approved_window_allows_logging(self, db):
+        s, emp = db
+        brk = m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_PERSONAL,
+                            start_minute=600, end_minute=630)
+        s.add(brk)
+        s.commit()
+        s.add(m.BreakOverrunFlag(employee_id=1, break_id=brk.id, date=TODAY,
+                                  start_minute=630, end_minute=690, status=m.LEAVE_APPROVED))
+        s.commit()
+        v(s, emp, start_minute=640, end_minute=700)  # no error raised
+
+    def test_acting_admin_bypasses_the_block(self, db):
+        s, emp = db
+        brk = m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_PERSONAL,
+                            start_minute=600, end_minute=630)
+        s.add(brk)
+        s.commit()
+        s.add(m.BreakOverrunFlag(employee_id=1, break_id=brk.id, date=TODAY,
+                                  start_minute=630, end_minute=690))
+        s.commit()
+        v(s, emp, start_minute=640, end_minute=700, acting_admin=True)
+
+    def test_non_overlapping_time_is_unaffected(self, db):
+        s, emp = db
+        brk = m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_PERSONAL,
+                            start_minute=600, end_minute=630)
+        s.add(brk)
+        s.commit()
+        s.add(m.BreakOverrunFlag(employee_id=1, break_id=brk.id, date=TODAY,
+                                  start_minute=630, end_minute=690))
+        s.commit()
+        v(s, emp, start_minute=700, end_minute=760)  # after the flagged window
+
+
+class TestBreakOverrunWindowsForDate:
+    def test_no_flags_returns_empty(self, db):
+        s, emp = db
+        assert break_overrun_windows_for_date(s, 1, TODAY) == []
+
+    def test_unfilled_window_returned_in_full(self, db):
+        s, emp = db
+        brk = m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_PERSONAL,
+                            start_minute=600, end_minute=630)
+        s.add(brk)
+        s.commit()
+        s.add(m.BreakOverrunFlag(employee_id=1, break_id=brk.id, date=TODAY,
+                                  start_minute=630, end_minute=690))
+        s.commit()
+        windows = break_overrun_windows_for_date(s, 1, TODAY)
+        assert len(windows) == 1
+        assert windows[0]["start"] == 630 and windows[0]["end"] == 690
+        assert windows[0]["status"] is None
+
+    def test_partially_filled_window_shrinks(self, db):
+        s, emp = db
+        brk = m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_PERSONAL,
+                            start_minute=600, end_minute=630)
+        s.add(brk)
+        s.commit()
+        s.add(m.BreakOverrunFlag(employee_id=1, break_id=brk.id, date=TODAY,
+                                  start_minute=630, end_minute=690, status=m.LEAVE_APPROVED))
+        s.commit()
+        # employee filled the front 30 minutes once approved
+        s.add(m.TaskEntry(employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                          details="filled it", start_minute=630, end_minute=660))
+        s.commit()
+        windows = break_overrun_windows_for_date(s, 1, TODAY)
+        assert len(windows) == 1
+        assert windows[0]["start"] == 660 and windows[0]["end"] == 690
+
+    def test_fully_filled_window_disappears(self, db):
+        s, emp = db
+        brk = m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_PERSONAL,
+                            start_minute=600, end_minute=630)
+        s.add(brk)
+        s.commit()
+        s.add(m.BreakOverrunFlag(employee_id=1, break_id=brk.id, date=TODAY,
+                                  start_minute=630, end_minute=690, status=m.LEAVE_APPROVED))
+        s.commit()
+        s.add(m.TaskEntry(employee_id=1, date=TODAY, project_id=1, task_type_id=1,
+                          details="filled all of it", start_minute=630, end_minute=690))
+        s.commit()
+        assert break_overrun_windows_for_date(s, 1, TODAY) == []
+
+    def test_rejected_flag_still_returned_for_re_request(self, db):
+        s, emp = db
+        brk = m.BreakEntry(employee_id=1, date=TODAY, break_type=m.BREAK_PERSONAL,
+                            start_minute=600, end_minute=630)
+        s.add(brk)
+        s.commit()
+        s.add(m.BreakOverrunFlag(employee_id=1, break_id=brk.id, date=TODAY,
+                                  start_minute=630, end_minute=690, status=m.LEAVE_REJECTED))
+        s.commit()
+        windows = break_overrun_windows_for_date(s, 1, TODAY)
+        assert len(windows) == 1 and windows[0]["status"] == m.LEAVE_REJECTED
+
+    def test_scoped_to_the_right_employee_and_date(self, db):
+        s, emp = db
+        brk = m.BreakEntry(employee_id=2, date=TODAY, break_type=m.BREAK_PERSONAL,
+                            start_minute=600, end_minute=630)
+        s.add(brk)
+        s.commit()
+        s.add(m.BreakOverrunFlag(employee_id=2, break_id=brk.id, date=TODAY,
+                                  start_minute=630, end_minute=690))
+        s.commit()
+        assert break_overrun_windows_for_date(s, 1, TODAY) == []  # employee 1, not 2
