@@ -21,6 +21,26 @@
   <strong style="margin-left:8px">{{ month_label(year, month) }}</strong>
 </p>
 
+{% if active_timer and user.is_super_admin %}
+{# Stuck-timer force-cancel (Ganesh, 2026-09-14, real incident — see
+   admin_cancel_timer()'s own docstring in app/routes/admin.py). Shown
+   whenever this employee has ANY running Auto time capture timer, not
+   just a visibly-stuck one — Force-clear is a deliberate, confirmed
+   action either way, and a normal, healthy timer just won't need it. #}
+<div class="lockbanner" style="background:var(--warn-bg);color:var(--warn)">
+  ⚠ Auto time capture is currently running for {{ emp.name }} — {{ active_timer.project.name }} ·
+  {{ active_timer.task_type.name }}, started {{ active_timer.start_minute|clock }} on {{ active_timer.date|mdy }}.
+  If it's stuck (won't Stop, or running far past a normal day), you can clear it here — this discards
+  the timer with nothing logged, same as the employee's own Cancel; log any real time worked
+  separately via Assign a task / Add Task.
+  <form method="post" action="/admin/person/{{ emp.id }}/timer/cancel" class="inline"
+        onsubmit="return confirm('Force-clear this timer? No entry will be logged for it.')">
+    <input type="hidden" name="ym" value="{{ ym }}">
+    <button class="small danger">Force-clear timer</button>
+  </form>
+</div>
+{% endif %}
+
 <div class="kpis">
   <div class="kpi {{ 'badk' if strikes >= threshold else '' }}">
     <div class="n">{{ strikes }}</div>

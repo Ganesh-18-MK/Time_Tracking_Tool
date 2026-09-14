@@ -630,6 +630,24 @@
 <div class="card compact-card" id="autocapture">
   <div class="card-head"><h2>Auto time capture</h2></div>
   {% if active_timer %}
+  {% if timer_close_failed %}
+  {# Bug fix (Ganesh, 2026-09-14, real incident) — this timer already
+     crossed the cap/a midnight and the server's own auto-close attempt
+     (see _timer_is_past_boundary/_auto_split_timer_if_over_cap in
+     app/routes/employee.py) couldn't finish it, most likely because the
+     day it needs to log its one segment into is locked or otherwise
+     failed validation. Without this banner + the matching JS guard below,
+     the page just kept silently auto-reloading forever the moment it
+     detected "still over cap" — which is exactly what happened live
+     (Immanuel B's timer ran 150+ hours; clicking Stop just reloaded the
+     page instead of showing why). This tells the employee what's
+     actually going on instead of leaving them stuck in a reload loop. #}
+  <div class="lockbanner" style="background:var(--warn-bg);color:var(--warn)">
+    ⚠ This timer couldn't close itself automatically — it's stuck past its normal cutoff and needs
+    an admin to sort it out (Person Detail can force-clear it). Clicking Stop is safe to try, but may
+    show an error until an admin steps in.
+  </div>
+  {% endif %}
   <div class="totalbar">
     <span class="big" id="tasktimer">00:00</span>
     <span class="muted">{{ active_timer.project.name }} · {{ active_timer.task_type.name }}{% if active_timer.client %} · Company: {{ active_timer.client }}{% endif %}{% if active_timer.client_individual %} · Beneficiary: {{ active_timer.client_individual }}{% endif %} — started {{ active_timer.start_minute|clock }}</span>
@@ -645,15 +663,34 @@
        running instead of offering a second, timer-only set of controls
        that could desync from it. #}
     <span class="small muted">Running from your plan below.</span>
+    {# Details top-up (Ganesh, 2026-09-14 bugfix, real incident) — a
+       plan-linked timer's Details is copied from the plan's own text at
+       Start, and add_plan() never enforced validate_entry's 5-char
+       minimum on it (a plan named e.g. "LCA" is a real case that's
+       happened) — Pause/Stop here used to have no way to fix that at
+       all: edit_plan() refuses to touch Details while the plan is
+       running, so a too-short plan name permanently stuck this timer
+       with the employee unable to do anything about it (see
+       _finish_plan_segment's own docstring). Same textarea/placeholder
+       pattern as the ad-hoc Stop form below. #}
+    {# Ganesh, 2026-09-14: one shared Details box instead of a separate one
+       per button — Pause and Stop used to each have their own identical-
+       looking textarea (since each posts to a different route, they were
+       two separate <form>s), which just looked like the same box shown
+       twice. Details can always be topped up again later via the task
+       log's own edit toggle once a row is actually saved, so there's no
+       need for two live copies here — one shared textarea plus formaction
+       on each button (routes it to /pause or /stop without needing a
+       second <form> or any JS) keeps the exact same top-up behavior with
+       one box instead of two. #}
     <form method="post" action="/plan/{{ active_timer.planned_task_id }}/pause" class="inline">
-      <button class="small warn">Pause</button>
-    </form>
-    <form method="post" action="/plan/{{ active_timer.planned_task_id }}/stop" class="inline" onsubmit="return confirm('Mark this plan done? You can\'t resume it after.')">
-      <button class="small danger">Stop</button>
+      <textarea name="details" placeholder="{% if active_timer.details and active_timer.details|length >= 5 %}Optional (already set){% else %}Details (min 5 chars){% endif %}" rows="1" style="width:200px; resize:vertical; vertical-align:middle"></textarea>
+      <button class="small warn" formaction="/plan/{{ active_timer.planned_task_id }}/pause">Pause</button>
+      <button class="small danger" formaction="/plan/{{ active_timer.planned_task_id }}/stop" onclick="return confirm('Mark this plan done? You can\'t resume it after.')">Stop</button>
     </form>
     {% else %}
     <form method="post" action="/task-timer/stop" class="inline">
-      <textarea name="details" placeholder="{% if active_timer.details %}Optional (already set){% else %}Details (min 5 chars){% endif %}" rows="1" style="width:240px; resize:vertical; vertical-align:middle"></textarea>
+      <textarea name="details" placeholder="{% if active_timer.details and active_timer.details|length >= 5 %}Optional (already set){% else %}Details (min 5 chars){% endif %}" rows="1" style="width:240px; resize:vertical; vertical-align:middle"></textarea>
       <button class="small">Stop &amp; Log</button>
     </form>
     <form method="post" action="/task-timer/cancel" class="inline" onsubmit="return confirm('Discard this timer — nothing gets logged?')">
@@ -683,12 +720,23 @@
     // reaches the cap, regardless of whether the timer was already over
     // cap the instant this page loaded.
     const capSec = {{ max_row_minutes }} * 60;
+    // Bug fix (Ganesh, 2026-09-14) — closeFailed means the server already
+    // tried to auto-close this exact timer on THIS page load and couldn't
+    // (see timer_close_failed in _day_context, app/routes/employee.py).
+    // Reloading again would just hit the identical failure and reload
+    // again forever — that infinite loop, not the underlying timer itself,
+    // is what made Immanuel B's stuck timer un-Stoppable (the page never
+    // stayed still long enough to show the real error). Once we know a
+    // reload can't fix it, stop trying — the banner above already told the
+    // employee what's going on, and the ticking display below still runs
+    // fine on its own, it just never triggers a reload.
+    const closeFailed = {{ 'true' if timer_close_failed else 'false' }};
     let reloaded = false;
     function tick() {
       const elapsedSec = Math.max(0, Math.floor((Date.now() - startEpoch) / 1000));
       const h = Math.floor(elapsedSec / 3600), mi = Math.floor((elapsedSec % 3600) / 60), s = elapsedSec % 60;
       el.textContent = (h ? h + ':' : '') + String(mi).padStart(2, '0') + ':' + String(s).padStart(2, '0');
-      if (elapsedSec >= capSec && !reloaded) {
+      if (!closeFailed && elapsedSec >= capSec && !reloaded) {
         reloaded = true;
         location.reload();
       }

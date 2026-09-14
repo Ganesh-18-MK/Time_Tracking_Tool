@@ -500,6 +500,14 @@ def person(
             .order_by(m.PlannedTask.date)
         ).scalars()
     )
+    # Stuck-timer force-cancel (Ganesh, 2026-09-14) — surfaced here so a
+    # Super Admin can see and clear a running Auto time capture timer
+    # without needing to know it exists ahead of time. See
+    # admin_cancel_timer()'s own docstring above for the incident this
+    # came from.
+    active_timer = db.execute(
+        select(m.ActiveTaskTimer).where(m.ActiveTaskTimer.employee_id == emp.id)
+    ).scalar_one_or_none()
     return render(
         request,
         "admin/person.html",
@@ -513,6 +521,7 @@ def person(
             "companies": _active_names(db, m.Company),
             "client_names": _active_names(db, m.ClientName),
             "assigned_plans": assigned_plans,
+            "active_timer": active_timer,
             "statuses": statuses,
             "pending_unlocks_by_date": pending_unlocks_by_date,
             "ledger": ledger,
@@ -996,6 +1005,66 @@ def delete_break(
     db.delete(brk)
     db.commit()
     flash(request, f"Break entry for {break_date} removed.", "ok")
+    return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+
+
+@router.post("/person/{emp_id}/timer/cancel")
+def admin_cancel_timer(
+    emp_id: int,
+    request: Request,
+    ym: str = Form(""),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Super-Admin-only force-clear for an employee's stuck Auto time
+    capture timer (Ganesh, 2026-09-14, from a live incident — Immanuel B's
+    timer ran 150+ hours across a weekend; the server's own auto-close
+    (_auto_split_timer_if_over_cap, app/routes/employee.py) tried and
+    failed to log its one bounded segment — most likely because the
+    original day it needs to log into had already been submitted/locked
+    by the time the close was attempted — and with no way to log
+    anything, the timer was left running forever with nothing an employee
+    could do about it: Stop just re-ran the same failing close attempt on
+    every click (see _day_context's timer_close_failed flag, and
+    today.html's matching reload-loop fix, added the same day).
+
+    There was previously no admin-side way to touch an ActiveTaskTimer at
+    all. This mirrors the employee's own /task-timer/cancel exactly —
+    delete the row outright, no attempt to log anything, same "this was a
+    mistake, discard it" semantics — rather than trying to guess a correct
+    end time or force a segment through validate_entry a second time; if
+    the timer failed to close safely once, retrying the same write from
+    the admin side wouldn't fix whatever made it fail in the first place.
+    Whatever real time the employee is owed for is a manual conversation
+    (add a task entry for that day directly, or an Override), not
+    something this route tries to reconstruct.
+
+    Same plan-interrupted-not-finished side effect cancel_task_timer()
+    already has: a plan-linked timer goes back to PLAN_PAUSED (not
+    PLAN_DONE) so Resume is still offered, rather than left stuck showing
+    "running" with nothing behind it."""
+    timer = db.execute(
+        select(m.ActiveTaskTimer).where(m.ActiveTaskTimer.employee_id == emp_id)
+    ).scalar_one_or_none()
+    if timer is None:
+        flash(request, "No timer is currently running for this employee.", "err")
+        return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
+    audit(
+        db, admin.name, "admin_cancel_timer", "ActiveTaskTimer", str(timer.id),
+        {
+            "date": timer.date.isoformat(), "start_minute": timer.start_minute,
+            "project_id": timer.project_id, "task_type_id": timer.task_type_id,
+            "planned_task_id": timer.planned_task_id,
+        },
+    )
+    plan_id = timer.planned_task_id
+    db.delete(timer)
+    if plan_id is not None:
+        plan = db.get(m.PlannedTask, plan_id)
+        if plan is not None and plan.status == m.PLAN_RUNNING:
+            plan.status = m.PLAN_PAUSED
+    db.commit()
+    flash(request, "Timer force-cleared — no entry was logged for it.", "ok")
     return RedirectResponse(f"/admin/person/{emp_id}?ym={ym}", status_code=303)
 
 

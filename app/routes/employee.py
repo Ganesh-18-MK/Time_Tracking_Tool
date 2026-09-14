@@ -278,9 +278,29 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
         select(m.ActiveTaskTimer).where(m.ActiveTaskTimer.employee_id == emp.id)
     ).scalar_one_or_none()
     timer_auto_stopped = False
+    timer_close_failed = False
     if active_timer is not None and date == today_local():
         active_timer = _auto_split_timer_if_over_cap(db, emp, active_timer, cfg)
         timer_auto_stopped = active_timer is None
+        # Bug fix (Ganesh, 2026-09-14, real incident — Immanuel B's Auto
+        # time capture timer ran 150+ hours and Stop just kept reloading
+        # the page instead of closing it) — the line above always GIVES
+        # the timer a chance to auto-close, but doesn't tell us whether
+        # that attempt actually succeeded. If it's still here AND it's
+        # still past the exact boundary that should have closed it
+        # (_timer_is_past_boundary, a read-only mirror of
+        # _auto_split_timer_if_over_cap's own boundary check — see that
+        # function's own "leave it alone and stop" fallback for why this
+        # can happen: the one bounded segment it tried to log failed
+        # validate_entry for some other reason, e.g. the original day is
+        # now locked), the close attempt genuinely failed, not just
+        # "hasn't been tried yet." today.html uses this to stop trying to
+        # auto-reload the page forever (the old behavior, and the direct
+        # cause of the reload loop Immanuel hit) and show a plain "needs
+        # an admin" message instead.
+        if active_timer is not None:
+            cap = engine.cfg_int(cfg, "max_row_minutes")
+            timer_close_failed = cap > 0 and _timer_is_past_boundary(emp, active_timer, cap)
 
     entries = list(
         db.execute(
@@ -462,6 +482,7 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
         "punch_overtime": punch_overtime,
         "active_timer": active_timer,
         "timer_auto_stopped": timer_auto_stopped,
+        "timer_close_failed": timer_close_failed,
         "plans": plans,
         "past_plans": past_plans,
     }
@@ -1754,6 +1775,23 @@ def _log_timer_as_entry(db: Session, user: m.Employee, timer: m.ActiveTaskTimer,
     return True, None
 
 
+def _timer_is_past_boundary(user: m.Employee, timer: m.ActiveTaskTimer, cap: int) -> bool:
+    """Read-only mirror of the boundary test _auto_split_timer_if_over_cap
+    uses to decide a running timer NEEDS to close (past Config.max_row_minutes,
+    or crossed a midnight) — used by _day_context (Ganesh, 2026-09-14 bugfix)
+    to tell "the auto-close hasn't been attempted yet" apart from "it was
+    attempted and failed, this timer is genuinely stuck." Deliberately a
+    separate, independent check rather than a return value threaded through
+    _auto_split_timer_if_over_cap's own (many) call sites — this one is
+    read-only and never mutates anything, so it's safe to call purely for
+    display purposes without touching that already-delicate function."""
+    if timer.date != today_local():
+        return True
+    now_for_emp = now_for_employee(user)
+    now_minute = now_for_emp.hour * 60 + now_for_emp.minute
+    return (now_minute - timer.start_minute) > cap
+
+
 def _auto_split_timer_if_over_cap(db: Session, user: m.Employee, timer: Optional[m.ActiveTaskTimer], cfg: dict) -> Optional[m.ActiveTaskTimer]:
     """Max single-row duration auto-CLOSE, not auto-continue (Ganesh,
     2026-09-08, replacing the 2026-08-28 auto-split-and-keep-running design
@@ -2415,12 +2453,27 @@ def start_plan(
     return RedirectResponse("/today", status_code=303)
 
 
-def _finish_plan_segment(db: Session, user: m.Employee, plan: m.PlannedTask, cfg: dict):
+def _finish_plan_segment(db: Session, user: m.Employee, plan: m.PlannedTask, cfg: dict, details: str = ""):
     """Shared by pause_plan/stop_plan below: if this plan currently has the
     active timer, close that segment into a real TaskEntry via the same
     _finish_task_timer every ad-hoc Stop already uses. Returns (ok, error)
     — (True, None) with nothing to do if the plan has no running segment
-    (e.g. Stop pressed on an already-paused plan, nothing to finalize)."""
+    (e.g. Stop pressed on an already-paused plan, nothing to finalize).
+
+    `details` top-up (Ganesh, 2026-09-14 bugfix, real incident) — a
+    plan-linked timer's ActiveTaskTimer.details is copied straight from
+    PlannedTask.details at Start (see start_plan() above), and add_plan()
+    only requires it to be non-blank, never >= validate_entry's own 5-char
+    minimum (a plan named e.g. "LCA" is a real, already-seen case) — so a
+    plan-linked timer can get permanently stuck exactly like the ad-hoc
+    /task-timer/stop form's own "top up Details at Stop time" comment
+    already describes, except pause_plan/stop_plan previously had no way
+    to supply one at all: edit_plan() explicitly refuses to touch Details
+    while status is `running` (see its own docstring), and this function
+    is the only other path that ever finalizes that segment. Same
+    "blank means leave whatever's already there" convention
+    stop_task_timer's own top-up uses — a blank submission never clobbers
+    a value that was already long enough."""
     timer = db.execute(
         select(m.ActiveTaskTimer).where(
             m.ActiveTaskTimer.employee_id == user.id, m.ActiveTaskTimer.planned_task_id == plan.id
@@ -2428,6 +2481,8 @@ def _finish_plan_segment(db: Session, user: m.Employee, plan: m.PlannedTask, cfg
     ).scalar_one_or_none()
     if timer is None:
         return True, None
+    if details.strip():
+        timer.details = details.strip()
     return _finish_task_timer(db, user, timer, cfg)
 
 
@@ -2435,6 +2490,7 @@ def _finish_plan_segment(db: Session, user: m.Employee, plan: m.PlannedTask, cfg
 def pause_plan(
     plan_id: int,
     request: Request,
+    details: str = Form(""),
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -2444,7 +2500,7 @@ def pause_plan(
         return RedirectResponse("/today", status_code=303)
     if plan.status != m.PLAN_RUNNING:
         return RedirectResponse("/today", status_code=303)
-    ok, error = _finish_plan_segment(db, user, plan, cfg)
+    ok, error = _finish_plan_segment(db, user, plan, cfg, details)
     if not ok:
         flash(request, error, "err")
         return RedirectResponse("/today", status_code=303)
@@ -2458,6 +2514,7 @@ def pause_plan(
 def stop_plan(
     plan_id: int,
     request: Request,
+    details: str = Form(""),
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -2467,7 +2524,7 @@ def stop_plan(
         return RedirectResponse("/today", status_code=303)
     if plan.status not in (m.PLAN_RUNNING, m.PLAN_PAUSED):
         return RedirectResponse("/today", status_code=303)
-    ok, error = _finish_plan_segment(db, user, plan, cfg)
+    ok, error = _finish_plan_segment(db, user, plan, cfg, details)
     if not ok:
         flash(request, error, "err")
         return RedirectResponse("/today", status_code=303)
