@@ -3,7 +3,7 @@ lists, leave + compensation, config, audit."""
 import datetime as dt
 import io
 import json
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse, StreamingResponse
@@ -11,7 +11,7 @@ from openpyxl import load_workbook
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app import bulk_upload, compensation, engine, holiday_bulk_upload, leave_bulk_upload, lists_bulk_upload, models as m, reports
+from app import bulk_upload, compensation, engine, holiday_bulk_upload, leave_bulk_upload, leave_records_bulk_upload, lists_bulk_upload, models as m, reports
 from app.auth import Forbidden, admin_department_scope, require_admin, require_super_admin
 from app.db import get_db
 # TK-04 (Ganesh, 2026-08-28) — _client_required_error() is the one rule
@@ -3358,6 +3358,91 @@ def leave_bulk_upload_post(
         summary += f" {len(result['skipped'])} row(s) skipped — see details below."
     flash(request, summary, "ok" if result["updated"] else "err")
     return render(request, "admin/leave_bulk_upload.html", {"user": admin, "result": result}, db=db)
+
+
+# --------------------------------------------------------------------------
+# Bulk import of ALREADY-TAKEN leave (Leave -> Bulk import taken leave,
+# Ganesh, 2026-09-15) — a distinct feature from "Bulk assign leaves" above.
+# That one only ever patches annual entitlement NUMBERS and never creates a
+# leave record; this one creates real, already-approved LeaveRecord rows
+# from historical dates (e.g. a spreadsheet from management of casual/sick
+# leave already taken this year), so Planned/Unplanned Time balances under
+# Leave Management V2 come out correct. Parsing rules live in
+# app/leave_records_bulk_upload.py.
+# --------------------------------------------------------------------------
+def _leave_taken_valid_types() -> Tuple[str, ...]:
+    """Every leave type this sheet can record against, in the order shown
+    in the Type dropdown/Instructions sheet. Special Paid Time is excluded
+    on purpose — same rule leave_add() already enforces — since it's only
+    ever created via a SpecialPaidGrant ("Grant Special Paid Time"), not a
+    plain LeaveRecord."""
+    if LEAVE_MANAGEMENT_V2_ENABLED:
+        return tuple(t for t in m.LEAVE_TYPES_V2 if t != m.LEAVE_SPECIAL_PAID)
+    return m.LEAVE_TYPES
+
+
+@router.get("/leave/bulk-import")
+def leave_taken_bulk_upload_page(
+    request: Request,
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    return render(
+        request, "admin/leave_taken_bulk_upload.html",
+        {"user": admin, "result": None, "valid_types": _leave_taken_valid_types()}, db=db,
+    )
+
+
+@router.get("/leave/bulk-import/sample.xlsx")
+def leave_taken_bulk_upload_sample(admin: m.Employee = Depends(require_super_admin)):
+    buf = io.BytesIO()
+    leave_records_bulk_upload.build_sample_workbook(_leave_taken_valid_types()).save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="leave_taken_template.xlsx"'},
+    )
+
+
+@router.post("/leave/bulk-import")
+def leave_taken_bulk_upload_post(
+    request: Request,
+    file: UploadFile = File(...),
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
+        flash(request, "Please upload an .xlsx file — use the sample template.", "err")
+        return RedirectResponse("/admin/leave/bulk-import", status_code=303)
+    try:
+        wb = load_workbook(io.BytesIO(file.file.read()), data_only=True)
+    except Exception:
+        flash(request, "Couldn't read that file — is it a valid, unprotected .xlsx?", "err")
+        return RedirectResponse("/admin/leave/bulk-import", status_code=303)
+
+    valid_types = _leave_taken_valid_types()
+    result = leave_records_bulk_upload.process_upload(db, wb, valid_types, admin.name)
+    if result["header_error"]:
+        flash(request, result["header_error"], "err")
+        return RedirectResponse("/admin/leave/bulk-import", status_code=303)
+    if result["added"]:
+        audit(db, admin.name, "leave_taken_bulk_upload", "LeaveRecord", "",
+              {"added": result["added"], "skipped": len(result["skipped"])})
+        # Recompute so DayStatus/strikes reflect the newly-imported leave
+        # immediately, same as leave_add()'s single-row equivalent below.
+        for emp_id, (start, end) in result["recompute_ranges"].items():
+            emp = db.get(m.Employee, emp_id)
+            if emp is not None:
+                engine.recompute_employee(db, emp, start, min(end, today_local()))
+    summary = f"{result['added']} leave record(s) added."
+    if result["skipped"]:
+        summary += f" {len(result['skipped'])} row(s) skipped — see details below."
+    flash(request, summary, "ok" if result["added"] else "err")
+    return render(
+        request, "admin/leave_taken_bulk_upload.html",
+        {"user": admin, "result": result, "valid_types": valid_types}, db=db,
+    )
 
 
 @router.post("/leave/{leave_id}/approve")

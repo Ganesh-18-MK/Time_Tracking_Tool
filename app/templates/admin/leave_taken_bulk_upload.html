@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% set active_nav = 'admin_leave' %}
+{% block title %}Bulk import taken leave · MK Timekeeping{% endblock %}
+{% block content %}
+<h1>Bulk import taken leave</h1>
+<p class="muted small"><a href="/admin/leave">← Back to Leave</a></p>
+<p class="small muted" style="max-width:640px">
+  This is different from <a href="/admin/leave/bulk-upload">Bulk assign leaves</a> — that sheet only
+  sets annual entitlement numbers. This one creates real, already-approved leave records from dates
+  already taken (e.g. a spreadsheet from management), so Planned/Unplanned Time balances reflect them.
+</p>
+
+<div class="card" style="max-width:480px">
+  <div class="card-head"><h2 style="margin-top:0">Blank template</h2></div>
+  <p class="small muted">Employee ID, Start/End Date, Type, Hours/day (blank = full day), Note. Employee ID
+  must match an existing employee — this sheet never creates new ones.</p>
+  <a class="btn secondary" href="/admin/leave/bulk-import/sample.xlsx">Download blank template</a>
+</div>
+
+<div class="card" style="max-width:640px">
+  <div class="card-head"><h2 style="margin-top:0">Upload your sheet</h2></div>
+  <p class="small muted">Each row becomes one already-approved leave record, same as using "Record leave"
+  on the Leave page once per row. Re-uploading the same sheet is safe — a row that exactly matches an
+  employee + date range + type already on file is skipped instead of creating a duplicate.</p>
+  <form method="post" action="/admin/leave/bulk-import" enctype="multipart/form-data" class="formrow">
+    <div><input type="file" name="file" accept=".xlsx" required></div>
+    <div><button>Upload</button></div>
+  </form>
+</div>
+
+{% if result %}
+<div class="card" style="max-width:760px">
+  <div class="card-head"><h2 style="margin-top:0">Result</h2></div>
+  <p>{{ result.added }} leave record(s) added.</p>
+  {% if result.skipped %}
+  <table>
+    <thead><tr><th>Row</th><th>Name / ID</th><th>Reason skipped</th></tr></thead>
+    <tbody>
+      {% for s in result.skipped %}
+      <tr><td>{{ s.row }}</td><td>{{ s.name }}</td><td class="small">{{ s.reason }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

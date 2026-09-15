@@ -163,6 +163,11 @@
                 onsubmit="return confirm('Withdraw this request?')">
             <button class="small secondary">Withdraw</button>
           </form>
+          {% elif lv.status == 'approved' and lv.start_date > today %}
+          <form method="post" action="/leave/{{ lv.id }}/cancel" class="inline"
+                onsubmit="return confirm('Withdraw this approved leave? It hasn\'t started yet, so nothing has been logged against it.')">
+            <button class="small secondary">Withdraw</button>
+          </form>
           {% endif %}
         </td>
       </tr>

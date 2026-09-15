@@ -3133,16 +3133,56 @@ def cancel_leave_request(
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    """Employees may withdraw their own still-pending request. Anything
-    already approved/rejected needs an admin (it's already been acted on)."""
+    """Employees may withdraw their own still-pending request outright, no
+    restriction. An already-APPROVED request can also be self-withdrawn now
+    (Ganesh, 2026-09-15, "can we withdraw the approved leave" — confirmed
+    via AskUserQuestion: self-service, but only before it starts), since
+    nothing has actually been logged/compliance-affected for a day that
+    hasn't happened yet. Once its start_date has arrived — or it was
+    already rejected — this route refuses, same as before this change, and
+    the employee needs an admin (leave_delete() in app/routes/admin.py,
+    Super-Admin-only, works on a leave in any status/any date).
+
+    One more guard on the approved+not-started path: if this leave already
+    has a CompensationLink pointing at it (pending_leave_id — see the
+    2026-09-04 deferred Sick-hour compensation feature), deleting the leave
+    out from under that link would orphan it (a dangling FK, and a link
+    with nothing left to explain). Blocked with a clear message instead —
+    an admin needs to clear the link first (Overtime Management's
+    "Missed Hours and Compensation" card)."""
     lv = db.get(m.LeaveRecord, leave_id)
-    if lv is None or lv.employee_id != user.id or lv.status != m.LEAVE_REQUESTED:
+    if lv is None or lv.employee_id != user.id:
         flash(request, "That request can no longer be withdrawn.", "err")
         return RedirectResponse("/leave", status_code=303)
+
+    today = today_local()
+    if lv.status == m.LEAVE_REQUESTED:
+        pass  # always withdrawable — nothing's been approved yet
+    elif lv.status == m.LEAVE_APPROVED:
+        if lv.start_date <= today:
+            flash(request, "This leave has already started — ask an admin to remove it.", "err")
+            return RedirectResponse("/leave", status_code=303)
+        has_link = db.execute(
+            select(m.CompensationLink.id).where(m.CompensationLink.pending_leave_id == lv.id)
+        ).first()
+        if has_link is not None:
+            flash(request, "This leave has a compensation match linked to it — ask an admin to remove that first.", "err")
+            return RedirectResponse("/leave", status_code=303)
+    else:
+        flash(request, "That request can no longer be withdrawn.", "err")
+        return RedirectResponse("/leave", status_code=303)
+
+    was_status = lv.status
+    start_date, end_date = lv.start_date, lv.end_date
     db.delete(lv)
     db.commit()
-    audit(db, user.name, "leave_request_withdrawn", "LeaveRecord", leave_id, {})
-    flash(request, "Request withdrawn.", "ok")
+    audit(db, user.name, "leave_request_withdrawn", "LeaveRecord", leave_id, {"was_status": was_status})
+    # Future-dated leave means recompute_employee() is a no-op (it bails
+    # out when start > end, see its own docstring) — called anyway as
+    # cheap insurance, same convention leave_delete()'s admin-side
+    # equivalent already follows.
+    engine.recompute_employee(db, user, start_date, min(end_date, today))
+    flash(request, "Leave withdrawn." if was_status == m.LEAVE_APPROVED else "Request withdrawn.", "ok")
     return RedirectResponse("/leave", status_code=303)
 
 
