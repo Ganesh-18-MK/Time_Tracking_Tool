@@ -13,7 +13,24 @@
       <label>Password</label>
       <input type="password" name="password" required style="width:100%">
     </div>
-    <div><button>Sign in</button></div>
+    {# Forgot password (Ganesh, 2026-09-15) — points at the same /signup
+       page+route "First time here?" below already used; that route now
+       doubles as a reset (see signup()'s own comment in app/routes/auth.py)
+       since it always overwrites whatever password_hash is already there,
+       no admin/email verification either way. Same row as Sign in, link on
+       the left, button on the right, per the requested layout.
+       Bugfix, same day: the parent <form> has class="formrow", and
+       `.formrow > div { flex-direction: column }` (app.css) still applied
+       to this div even with `display:flex` set inline, since the inline
+       style below never declared its own flex-direction — CSS only
+       overrides a property the higher-specificity rule actually sets, it
+       doesn't override the whole shorthand-adjacent group. That silently
+       stacked "Forgot password?" above "Sign in" instead of placing them
+       side by side. Fixed by declaring flex-direction:row inline too. #}
+    <div style="width:100%; display:flex; flex-direction:row; justify-content:space-between; align-items:center">
+      <a href="/signup" class="small">Forgot password?</a>
+      <button>Sign in</button>
+    </div>
   </form>
   <p class="muted small" style="margin-top:14px">
     First time here? <a href="/signup">Set up your account</a> with your work email.

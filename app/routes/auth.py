@@ -20,6 +20,7 @@ from app.auth import AUTH_MODE, authenticate, current_user, find_by_email, login
 from app.db import get_db
 from app.security import hash_password
 from app.templating import flash, render
+from app.util import audit
 
 MIN_PASSWORD_LEN = 8
 
@@ -188,8 +189,16 @@ def signup(
     if not emp.active:
         flash(request, "This account is deactivated. Contact an admin.", "err")
         return RedirectResponse("/signup", status_code=303)
-    if emp.password_hash:
-        flash(request, "This account already has a password — use Sign in, or ask an admin to reset it.", "err")
+    # Self-service reset is Employee-Login-only by design (Ganesh,
+    # 2026-09-15 — confirmed via AskUserQuestion): admin accounts keep
+    # requiring another admin to reset them, since they carry more access.
+    # The "Forgot password?" link only ever appears on Employee Login, but
+    # /signup itself was never role-gated, so without this check an admin
+    # who already has a password could still reach the same overwrite by
+    # navigating here directly — this keeps that promise true rather than
+    # relying on the link's placement alone.
+    if emp.is_admin and emp.password_hash:
+        flash(request, "Admin accounts can't self-reset — ask another admin to reset your password.", "err")
         return RedirectResponse("/login", status_code=303)
     if len(password) < MIN_PASSWORD_LEN:
         flash(request, f"Password must be at least {MIN_PASSWORD_LEN} characters.", "err")
@@ -197,9 +206,31 @@ def signup(
     if password != confirm:
         flash(request, "Passwords don't match.", "err")
         return RedirectResponse("/signup", status_code=303)
+    # Self-service Forgot Password (Ganesh, 2026-09-15) — this same page/
+    # route now also serves as the reset flow: a "Forgot password?" link on
+    # Employee Login points straight here, same as "First time here?"
+    # already did. Deliberately no email verification and no admin
+    # approval, matching the trust model this route already had for a
+    # brand-new signup (confirmed with Ganesh — accepted risk for a small
+    # internal team, not an oversight): anyone who knows an employee's own
+    # work email can set a new password for that email, whether or not one
+    # already existed. is_reset only changes which flash message is shown
+    # and what gets written to the audit log — the write itself
+    # (emp.password_hash = ...) is identical either way, always overwriting
+    # whatever was there before (or wasn't).
+    is_reset = emp.password_hash is not None
     emp.password_hash = hash_password(password)
     db.commit()
-    flash(request, "Account set up — sign in below.", "ok")
+    audit(
+        db, emp.name, "self_reset_password" if is_reset else "self_setup_password",
+        "Employee", emp.id, {},
+    )
+    flash(
+        request,
+        "Password reset — sign in with your new password below." if is_reset
+        else "Account set up — sign in below.",
+        "ok",
+    )
     return RedirectResponse("/login", status_code=303)
 
 

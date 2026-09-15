@@ -1689,10 +1689,15 @@ def roster_reset_password(
     admin: m.Employee = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
-    """Clears the stored hash so the employee can re-run /signup. Stand-in
-    for a self-service reset flow until there's an email service to send
-    reset links from (AUTH_MODE=password only has meaning if there's a
-    password to clear)."""
+    """Clears the stored hash so the employee can re-run /signup. Employees
+    now also have their own self-service "Forgot password?" link on
+    Employee Login (Ganesh, 2026-09-15 — see signup() in app/routes/auth.py)
+    that overwrites an existing password directly with no admin step at
+    all, so this admin-side route is no longer the only way to reset one —
+    it's still useful when an admin wants to force a reset proactively
+    (e.g. a suspected compromised account) without waiting for the
+    employee to notice or act (AUTH_MODE=password only has meaning if
+    there's a password to clear)."""
     emp = db.get(m.Employee, emp_id)
     if emp is None:
         return RedirectResponse("/admin/roster", status_code=303)
