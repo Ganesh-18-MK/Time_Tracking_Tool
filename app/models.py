@@ -591,6 +591,35 @@ class TaskType(Base):
     # pre-existing row also needs an explicit backfill rather than relying
     # on this default (SQLite ADD COLUMN never backfills existing rows).
     category: Mapped[str] = mapped_column(String(60), default="General")
+    # "Doesn't count toward the day's total" (Ganesh, 2026-09-17) — for a
+    # task like "Break" under General: someone forgot to start the real
+    # Break timer and wants to log it manually via Add Task instead, but
+    # it should never count as worked time the way an ordinary TaskEntry
+    # does. A per-task flag rather than matching on the literal name
+    # "Break" (AskUserQuestion, confirmed: "New checkbox on the Task
+    # itself") — reusable for any future task that needs the same
+    # treatment, and survives a rename since it's keyed by id like every
+    # other per-task setting in this file, not by name. Deliberately
+    # narrow in scope (AskUserQuestion): only the compliance/target total
+    # excludes a TaskEntry logged against a flagged task — see
+    # engine.recompute_employee()'s `task_totals` query (drives
+    # DayStatus.actual_minutes, hence strikes/My Month/Today's progress
+    # bar) and app/routes/employee.py's `_day_context()` live `total` —
+    # Time by Project/Task, the Task Logs report, and My Month's own "By
+    # Project" bar chart are all UNCHANGED and still show this time
+    # normally, same as any other logged task (AskUserQuestion: "Just the
+    # compliance/target total"). Also deliberately does NOT get any
+    # break-excess treatment — logging more than the normal single-break
+    # cutoff under a flagged task has no effect on that day's target
+    # either way (AskUserQuestion: "No — just exclude it, nothing else"),
+    # unlike an unattended real Break, which can stretch the target via
+    # Config.max_break_minutes/normal_break_minutes. Admin-set via a
+    # toggle on the Lists page (lists_task_exclude_total_toggle,
+    # app/routes/admin.py), same Super-Admin-only tier as Case Type/
+    # Rename/Deactivate. Same "SQLite ADD COLUMN never backfills existing
+    # rows" gap as `category` above — see
+    # ensure_task_excludes_total_backfill (app/util.py).
+    excludes_from_total: Mapped[bool] = mapped_column(Boolean, default=False)
 
     created_by = relationship("Employee", foreign_keys=[created_by_employee_id])
 

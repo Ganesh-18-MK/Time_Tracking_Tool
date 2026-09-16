@@ -545,6 +545,70 @@ class TestExpectedGapOverride:
         assert row2.target_minutes == 480 + 216  # e2 still uses the org-wide default
 
 
+class TestTaskTypeExcludesFromTotal:
+    """A task flagged TaskType.excludes_from_total (Ganesh, 2026-09-17 —
+    e.g. a "Break" task under General, for someone who forgot to start
+    the real Break timer and wants to log it manually via Add Task
+    instead) never counts toward DayStatus.actual_minutes —
+    recompute_employee()'s task_totals query joins TaskType in and
+    excludes any TaskEntry logged against a flagged task. Deliberately
+    narrow (AskUserQuestion, confirmed): no effect on target/break-excess
+    math, only what counts as "logged."""
+
+    def test_flagged_task_time_excluded_from_actual_minutes(self, attendance_db):
+        s = attendance_db
+        s.add(m.TaskType(id=2, name="Break", excludes_from_total=True))
+        e = _mkemp(s, 1, work_days="0,1,2,3,4,5,6")
+        s.add(m.TaskEntry(
+            employee_id=e.id, date=MON, project_id=1, task_type_id=1,
+            details="real work", start_minute=540, end_minute=1020,  # 480 min
+        ))
+        s.add(m.TaskEntry(
+            employee_id=e.id, date=MON, project_id=1, task_type_id=2,
+            details="forgot to start the break timer", start_minute=1020, end_minute=1080,  # 60 min
+        ))
+        s.commit()
+        from app.engine import recompute_employee
+        recompute_employee(s, e, MON, MON, m.CONFIG_DEFAULTS, today=TODAY)
+        row = s.execute(
+            select(m.DayStatus).where(m.DayStatus.employee_id == e.id, m.DayStatus.date == MON)
+        ).scalar_one()
+        assert row.actual_minutes == 480  # the 60-min flagged Break entry never counted
+        assert row.status == m.COMPLETE
+
+    def test_day_with_only_flagged_task_time_reads_missing(self, attendance_db):
+        s = attendance_db
+        s.add(m.TaskType(id=2, name="Break", excludes_from_total=True))
+        e = _mkemp(s, 1, work_days="0,1,2,3,4,5,6")
+        s.add(m.TaskEntry(
+            employee_id=e.id, date=MON, project_id=1, task_type_id=2,
+            details="only a manually-logged break, no real work", start_minute=540, end_minute=570,
+        ))
+        s.commit()
+        from app.engine import recompute_employee
+        recompute_employee(s, e, MON, MON, m.CONFIG_DEFAULTS, today=TODAY)
+        row = s.execute(
+            select(m.DayStatus).where(m.DayStatus.employee_id == e.id, m.DayStatus.date == MON)
+        ).scalar_one()
+        assert row.actual_minutes == 0
+        assert row.status == m.MISSING  # matches the 2026-08-28 auto-count-logged-hours rule
+
+    def test_unflagged_task_counts_normally(self, attendance_db):
+        s = attendance_db  # task_type_id=1 has excludes_from_total default False
+        e = _mkemp(s, 1, work_days="0,1,2,3,4,5,6")
+        s.add(m.TaskEntry(
+            employee_id=e.id, date=MON, project_id=1, task_type_id=1,
+            details="ordinary work", start_minute=540, end_minute=1020,
+        ))
+        s.commit()
+        from app.engine import recompute_employee
+        recompute_employee(s, e, MON, MON, m.CONFIG_DEFAULTS, today=TODAY)
+        row = s.execute(
+            select(m.DayStatus).where(m.DayStatus.employee_id == e.id, m.DayStatus.date == MON)
+        ).scalar_one()
+        assert row.actual_minutes == 480  # no regression for the ordinary, non-flagged case
+
+
 class TestCompanyWideHolidays:
     """Holiday management (Ganesh, 2026-08-12, reverted to one shared list
     on 2026-08-14 — see Holiday's docstring in app/models.py). Holidays now

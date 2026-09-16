@@ -31,6 +31,7 @@ from app.util import (
     ensure_location_backfill,
     ensure_super_admin_backfill,
     ensure_task_category_backfill,
+    ensure_task_excludes_total_backfill,
 )
 
 # Most hosts (Azure App Service included) just capture stdout — a basic
@@ -167,6 +168,7 @@ def _startup() -> None:
         ensure_location_backfill(db)
         ensure_leave_v2_backfill(db)
         ensure_task_category_backfill(db)
+        ensure_task_excludes_total_backfill(db)
         ensure_client_text_backfill(db)
         ensure_lead_review_backfill(db)
         ensure_departments_backfill(db)

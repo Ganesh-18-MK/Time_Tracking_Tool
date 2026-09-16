@@ -617,11 +617,28 @@ def recompute_employee(
             )
         ).scalars()
     }
+    # "Doesn't count toward the total" tasks (Ganesh, 2026-09-17) — see
+    # TaskType.excludes_from_total's own docstring in app/models.py. A
+    # TaskEntry logged against a flagged task (e.g. a manually-logged
+    # "Break" entry for someone who forgot to start the real Break timer)
+    # is joined out of this sum entirely, so it never inflates
+    # DayStatus.actual_minutes — the one figure strikes/compliance/My
+    # Month/Today's progress bar are all ultimately built from.
+    # `.isnot(True)` deliberately matches both an explicit False AND a
+    # NULL row (pre-backfill) the same way — either one means "counts
+    # normally" here, unlike the narrower `.is_(None)` this app's various
+    # ensure_*_backfill() helpers use for a genuinely different purpose
+    # (finding ONLY the not-yet-migrated rows to fix).
     task_totals: Dict[dt.date, int] = {
         te_date: int(total or 0)
         for te_date, total in db.execute(
             select(m.TaskEntry.date, func.sum(m.TaskEntry.end_minute - m.TaskEntry.start_minute))
-            .where(m.TaskEntry.employee_id == emp.id, m.TaskEntry.date.between(start, end))
+            .join(m.TaskType, m.TaskType.id == m.TaskEntry.task_type_id)
+            .where(
+                m.TaskEntry.employee_id == emp.id,
+                m.TaskEntry.date.between(start, end),
+                m.TaskType.excludes_from_total.isnot(True),
+            )
             .group_by(m.TaskEntry.date)
         ).all()
     }

@@ -85,10 +85,14 @@
     <div class="tree-task-row" {% if not t.active %}style="opacity:.5"{% endif %}>
       <span>· {{ t.name }}</span>
       {% if t.status == 'pending' %}<span class="badge b-pending" title="Suggested by an employee — not yet reviewed on the Suggestions page">pending approval</span>{% endif %}
+      {% if t.excludes_from_total %}<span class="badge b-pending" title="Time logged under this task doesn't count toward the day's total/target">excluded from total</span>{% endif %}
       {% if not t.active %}<span class="muted">(inactive)</span>{% endif %}
       {% if user.is_super_admin %}
       <span class="tree-task-acts">
         <button type="button" class="lnk" onclick="treeToggleTaskRename(this)">Edit</button>
+        <form method="post" action="/admin/lists/task/{{ t.id }}/exclude-total/toggle" class="inline">
+          <button type="submit" class="lnk">{{ 'Count toward total' if t.excludes_from_total else 'Exclude from total' }}</button>
+        </form>
         <form method="post" action="/admin/lists/task/{{ t.id }}/toggle" class="inline">
           <button type="submit" class="lnk danger">{{ 'Deactivate' if t.active else 'Reactivate' }}</button>
         </form>
@@ -213,10 +217,14 @@ available to everyone; see "Manage departments" on a project to narrow it.</p>
   <div class="tree-task-row">
     <span>· {{ t.name }}</span>
     {% if t.status == 'pending' %}<span class="badge b-pending" title="Suggested by an employee — not yet reviewed on the Suggestions page">pending approval</span>{% endif %}
+    {% if t.excludes_from_total %}<span class="badge b-pending" title="Time logged under this task doesn't count toward the day's total/target">excluded from total</span>{% endif %}
     {% if user.is_super_admin %}
     <span class="tree-task-acts">
       <button type="button" class="lnk" onclick="treeToggleTaskRename(this)">Edit</button>
       <button type="button" class="lnk" onclick="treeToggleTaskProjects(this)">Manage projects</button>
+      <form method="post" action="/admin/lists/task/{{ t.id }}/exclude-total/toggle" class="inline">
+        <button type="submit" class="lnk">{{ 'Count toward total' if t.excludes_from_total else 'Exclude from total' }}</button>
+      </form>
       <form method="post" action="/admin/lists/task/{{ t.id }}/toggle" class="inline">
         <button type="submit" class="lnk danger">Deactivate</button>
       </form>
@@ -320,10 +328,14 @@ available to everyone; see "Manage departments" on a project to narrow it.</p>
   <div class="tree-task-row">
     <span>· {{ t.name }}</span>
     {% if t.status == 'pending' %}<span class="badge b-pending" title="Suggested by an employee — not yet reviewed on the Suggestions page">pending approval</span>{% endif %}
+    {% if t.excludes_from_total %}<span class="badge b-pending" title="Time logged under this task doesn't count toward the day's total/target">excluded from total</span>{% endif %}
     {% if user.is_super_admin %}
     <span class="tree-task-acts">
       <button type="button" class="lnk" onclick="treeToggleTaskRename(this)">Edit</button>
       <button type="button" class="lnk" onclick="treeToggleTaskProjects(this)">Manage projects</button>
+      <form method="post" action="/admin/lists/task/{{ t.id }}/exclude-total/toggle" class="inline">
+        <button type="submit" class="lnk">{{ 'Count toward total' if t.excludes_from_total else 'Exclude from total' }}</button>
+      </form>
       <form method="post" action="/admin/lists/task/{{ t.id }}/toggle" class="inline">
         <button type="submit" class="lnk">Reactivate</button>
       </form>

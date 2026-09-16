@@ -309,7 +309,13 @@ def _day_context(db: Session, emp: m.Employee, date: dt.date, cfg):
             .order_by(m.TaskEntry.start_minute)
         ).scalars()
     )
-    total = sum(e.duration_minutes for e in entries)
+    # "Doesn't count toward the total" tasks (Ganesh, 2026-09-17) — see
+    # TaskType.excludes_from_total's own docstring in app/models.py. Kept
+    # in step with the identical exclusion engine.recompute_employee()'s
+    # own task_totals query applies, so this live pre-submit total always
+    # matches what DayStatus.actual_minutes will read once the day is
+    # recomputed — never a number that quietly disagrees with My Month.
+    total = sum(e.duration_minutes for e in entries if not e.task_type.excludes_from_total)
     sub = db.execute(
         select(m.DaySubmission).where(
             m.DaySubmission.employee_id == emp.id, m.DaySubmission.date == date

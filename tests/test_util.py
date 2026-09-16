@@ -16,6 +16,7 @@ from app.util import (
     ensure_departments_backfill,
     ensure_list_status_backfill,
     ensure_task_category_backfill,
+    ensure_task_excludes_total_backfill,
     flags_to_role,
     mask_tail,
     normalize_title_case,
@@ -578,6 +579,53 @@ class TestEnsureTaskCategoryBackfill:
     def test_noop_when_nothing_to_backfill(self, db):
         # safe to call on every startup even with zero tasks
         ensure_task_category_backfill(db)
+        assert list(db.execute(select(m.TaskType)).scalars()) == []
+
+
+class TestEnsureTaskExcludesTotalBackfill:
+    """The TaskType.excludes_from_total column (Ganesh, 2026-09-17 — the
+    "Break task that doesn't count toward the total" feature). Same
+    SQLite-ADD-COLUMN-leaves-existing-rows-NULL gap as
+    TestEnsureTaskCategoryBackfill above — a NULL already behaves like
+    False in engine.recompute_employee()'s `.isnot(True)` filter, so this
+    isn't a correctness bug the way ensure_client_text_backfill was, but
+    it's still cleaned up so every row has a real boolean going forward."""
+
+    @pytest.fixture()
+    def db(self):
+        eng = create_engine("sqlite://")
+        Base.metadata.create_all(eng)
+        s = sessionmaker(bind=eng)()
+        yield s
+        s.close()
+
+    def test_backfills_null_to_false(self, db):
+        t = m.TaskType(name="Legacy Task", active=True)
+        db.add(t)
+        db.commit()
+        db.execute(update(m.TaskType.__table__).where(m.TaskType.__table__.c.id == t.id).values(excludes_from_total=None))
+        db.commit()
+        db.expire_all()
+        assert t.excludes_from_total is None  # sanity: really NULL in the DB
+
+        ensure_task_excludes_total_backfill(db)
+
+        db.refresh(t)
+        assert t.excludes_from_total is False
+
+    def test_noop_when_already_true(self, db):
+        # a task an admin already flagged must NOT get silently reset
+        break_task = m.TaskType(name="Break", active=True, excludes_from_total=True)
+        db.add(break_task)
+        db.commit()
+
+        ensure_task_excludes_total_backfill(db)
+
+        db.refresh(break_task)
+        assert break_task.excludes_from_total is True
+
+    def test_noop_when_nothing_to_backfill(self, db):
+        ensure_task_excludes_total_backfill(db)
         assert list(db.execute(select(m.TaskType)).scalars()) == []
 
 

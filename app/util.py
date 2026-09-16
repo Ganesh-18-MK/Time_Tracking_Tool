@@ -620,6 +620,30 @@ def ensure_task_category_backfill(db: Session) -> None:
     db.commit()
 
 
+def ensure_task_excludes_total_backfill(db: Session) -> None:
+    """Backfill for `TaskType.excludes_from_total`, added 2026-09-17 (see
+    that column's own docstring in app/models.py for the full "Break task
+    that doesn't count toward the total" feature). Same root cause as
+    every other ensure_*_backfill above: SQLite's ADD COLUMN gives every
+    existing row NULL, not the ORM-level `default=False` — left alone,
+    `engine.recompute_employee()`'s task_totals query already treats NULL
+    the same as False via `.isnot(True)` (both mean "counts normally"),
+    so this isn't a correctness bug the way `ensure_client_text_backfill`
+    was — but it's still cleaned up here for the same reason
+    `ensure_task_category_backfill` bothers with a purely-cosmetic
+    default: an explicit False is easier to reason about later than a
+    NULL that happens to behave like False today. A no-op once every row
+    already has a real boolean, safe on every startup."""
+    rows = list(
+        db.execute(select(m.TaskType).where(m.TaskType.excludes_from_total.is_(None))).scalars()
+    )
+    if not rows:
+        return
+    for t in rows:
+        t.excludes_from_total = False
+    db.commit()
+
+
 def ensure_bootstrap_admins(db: Session) -> None:
     """Creates the initial Super Admin account(s) from the BOOTSTRAP_ADMINS
     env var, but ONLY if the employees table is completely empty.

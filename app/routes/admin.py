@@ -2776,6 +2776,27 @@ def lists_task_category(
     return RedirectResponse("/admin/lists", status_code=303)
 
 
+@router.post("/lists/task/{task_id}/exclude-total/toggle")
+def lists_task_exclude_total_toggle(
+    task_id: int,
+    request: Request,
+    admin: m.Employee = Depends(require_super_admin),
+    db: Session = Depends(get_db),
+):
+    """Flip TaskType.excludes_from_total on an existing task (Ganesh,
+    2026-09-17 — see that column's own docstring for the full "Break task
+    that doesn't count toward the total" feature). Super-Admin-only, same
+    tier as lists_toggle/lists_project_case_type_toggle above — changing
+    how an existing task's logged time is counted is the same "corrects
+    existing behavior, not just adds new" category as those."""
+    task = db.get(m.TaskType, task_id)
+    if task is not None:
+        task.excludes_from_total = not task.excludes_from_total
+        db.commit()
+        audit(db, admin.name, "toggle_excludes_from_total", "TaskType", task.name, {"excludes_from_total": task.excludes_from_total})
+    return RedirectResponse("/admin/lists", status_code=303)
+
+
 # --------------------------------------------------------------------------
 # Suggestions (Ganesh, 2026-08-01) — employee/lead-suggested Projects/Tasks
 # awaiting review. Deliberately require_admin, not require_super_admin,
