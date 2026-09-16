@@ -1115,9 +1115,19 @@ def _client_required_error(
     hard rule. Called from every place a Company/Client value can first
     be set: add_entry, start_task_timer, and add_plan (both the
     employee's own and admin_add_plan/admin_edit_plan in
-    app/routes/admin.py) — NOT from _finish_task_timer, since by the time
-    a segment finishes, this was already required at whichever of those
-    entry points started it.
+    app/routes/admin.py) — and ALSO, as a safety net, from
+    _log_timer_as_entry right before a timer's segment gets logged
+    (corrected 2026-09-16 — this docstring previously and incorrectly
+    said "NOT from _finish_task_timer"). That second check is what
+    actually matters for a timer left running a while: it re-validates
+    against the project's CURRENT is_case_type flag, not the flag at
+    Start time, so a plan/timer that started fine can still get rejected
+    at Pause/Stop if the project was marked Case Type afterward, or if
+    Company/Beneficiary were left blank at creation and the project
+    already was Case Type. Before 2026-09-16 there was no way to fix
+    that at Pause/Stop — see _finish_plan_segment's and
+    stop_task_timer's own docstrings for the top-up fields that now
+    exist specifically to unblock this.
 
     `client_individual` defaults to "" so existing call sites that pass
     just `company` (none remain after 2026-09-09, but kept for safety)
@@ -2080,6 +2090,8 @@ def start_task_timer(
 def stop_task_timer(
     request: Request,
     details: str = Form(""),
+    client: str = Form(""),
+    client_individual: str = Form(""),
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -2094,6 +2106,20 @@ def stop_task_timer(
     # if the employee wasn't sure what to type until the work was done
     if details.strip():
         active.details = details.strip()
+    # Company/Beneficiary top-up (Ganesh, 2026-09-16 bugfix, real incident)
+    # — same reasoning as the Details top-up right above: the Start form's
+    # Case Type Company/Beneficiary fields may have been blank (or the
+    # project may have only been marked Case Type after Start), and
+    # _log_timer_as_entry's own _client_required_error check re-validates
+    # against the project's CURRENT is_case_type flag every time this
+    # timer tries to close, not just at Start — so without a way to
+    # supply one here, a timer like this could get permanently stuck the
+    # same way a too-short Details value already could (see
+    # _finish_plan_segment's matching docstring for the plan-linked case).
+    if client.strip():
+        active.client = client.strip()
+    if client_individual.strip():
+        active.client_individual = client_individual.strip()
     # Captured before _finish_task_timer deletes `active` below (Ganesh,
     # 2026-08-22) — today.html no longer offers this Stop&Log button for a
     # plan-linked timer (see the Auto time capture card, which shows
@@ -2453,7 +2479,10 @@ def start_plan(
     return RedirectResponse("/today", status_code=303)
 
 
-def _finish_plan_segment(db: Session, user: m.Employee, plan: m.PlannedTask, cfg: dict, details: str = ""):
+def _finish_plan_segment(
+    db: Session, user: m.Employee, plan: m.PlannedTask, cfg: dict,
+    details: str = "", client: str = "", client_individual: str = "",
+):
     """Shared by pause_plan/stop_plan below: if this plan currently has the
     active timer, close that segment into a real TaskEntry via the same
     _finish_task_timer every ad-hoc Stop already uses. Returns (ok, error)
@@ -2473,7 +2502,20 @@ def _finish_plan_segment(db: Session, user: m.Employee, plan: m.PlannedTask, cfg
     is the only other path that ever finalizes that segment. Same
     "blank means leave whatever's already there" convention
     stop_task_timer's own top-up uses — a blank submission never clobbers
-    a value that was already long enough."""
+    a value that was already long enough.
+
+    `client`/`client_individual` top-up (Ganesh, 2026-09-16 bugfix, real
+    incident — an 'I-140' plan got stuck the exact same way "LCA" did,
+    just for Company/Beneficiary instead of Details) — a plan can be
+    created (or its project can later be marked Case Type) with both
+    fields blank, and _log_timer_as_entry's own _client_required_error
+    check re-validates against the project's CURRENT is_case_type flag
+    every time a segment tries to close, not just at Start. Pause/Stop
+    had no way to supply a missing Company/Beneficiary either, for the
+    identical reason Details didn't: edit_plan() only ever touches
+    Details, never Project/Task/Company/Client (see its own docstring —
+    "changing Project/Task is a bigger change than what was asked for").
+    Same blank-means-leave-alone convention as `details` above."""
     timer = db.execute(
         select(m.ActiveTaskTimer).where(
             m.ActiveTaskTimer.employee_id == user.id, m.ActiveTaskTimer.planned_task_id == plan.id
@@ -2483,6 +2525,10 @@ def _finish_plan_segment(db: Session, user: m.Employee, plan: m.PlannedTask, cfg
         return True, None
     if details.strip():
         timer.details = details.strip()
+    if client.strip():
+        timer.client = client.strip()
+    if client_individual.strip():
+        timer.client_individual = client_individual.strip()
     return _finish_task_timer(db, user, timer, cfg)
 
 
@@ -2491,6 +2537,8 @@ def pause_plan(
     plan_id: int,
     request: Request,
     details: str = Form(""),
+    client: str = Form(""),
+    client_individual: str = Form(""),
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -2500,7 +2548,7 @@ def pause_plan(
         return RedirectResponse("/today", status_code=303)
     if plan.status != m.PLAN_RUNNING:
         return RedirectResponse("/today", status_code=303)
-    ok, error = _finish_plan_segment(db, user, plan, cfg, details)
+    ok, error = _finish_plan_segment(db, user, plan, cfg, details, client, client_individual)
     if not ok:
         flash(request, error, "err")
         return RedirectResponse("/today", status_code=303)
@@ -2515,6 +2563,8 @@ def stop_plan(
     plan_id: int,
     request: Request,
     details: str = Form(""),
+    client: str = Form(""),
+    client_individual: str = Form(""),
     user: m.Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -2524,7 +2574,7 @@ def stop_plan(
         return RedirectResponse("/today", status_code=303)
     if plan.status not in (m.PLAN_RUNNING, m.PLAN_PAUSED):
         return RedirectResponse("/today", status_code=303)
-    ok, error = _finish_plan_segment(db, user, plan, cfg, details)
+    ok, error = _finish_plan_segment(db, user, plan, cfg, details, client, client_individual)
     if not ok:
         flash(request, error, "err")
         return RedirectResponse("/today", status_code=303)

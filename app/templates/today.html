@@ -683,13 +683,30 @@
        on each button (routes it to /pause or /stop without needing a
        second <form> or any JS) keeps the exact same top-up behavior with
        one box instead of two. #}
+    {# Company/Beneficiary top-up (Ganesh, 2026-09-16 bugfix, real
+       incident — an 'I-140' plan got stuck the same way a too-short
+       Details value already could: the running project is Case Type but
+       Company/Beneficiary were left blank, and every Pause/Stop attempt
+       re-checks that against the project's CURRENT flag and rejects
+       with no way to fix it. Only shown when the running project is
+       actually Case Type — same "don't clutter a normal task" instinct
+       as the Details box always showing regardless of length. Either
+       field alone satisfies the rule (see _client_required_error). #}
     <form method="post" action="/plan/{{ active_timer.planned_task_id }}/pause" class="inline">
+      {% if active_timer.project.is_case_type %}
+      <input name="client" placeholder="{% if active_timer.client %}Optional (Company already set){% else %}Company{% endif %}" style="width:130px; vertical-align:middle">
+      <input name="client_individual" placeholder="{% if active_timer.client_individual %}Optional (Beneficiary already set){% else %}Beneficiary{% endif %}" style="width:130px; vertical-align:middle">
+      {% endif %}
       <textarea name="details" placeholder="{% if active_timer.details and active_timer.details|length >= 5 %}Optional (already set){% else %}Details (min 5 chars){% endif %}" rows="1" style="width:200px; resize:vertical; vertical-align:middle"></textarea>
       <button class="small warn" formaction="/plan/{{ active_timer.planned_task_id }}/pause">Pause</button>
       <button class="small danger" formaction="/plan/{{ active_timer.planned_task_id }}/stop" onclick="return confirm('Mark this plan done? You can\'t resume it after.')">Stop</button>
     </form>
     {% else %}
     <form method="post" action="/task-timer/stop" class="inline">
+      {% if active_timer.project.is_case_type %}
+      <input name="client" placeholder="{% if active_timer.client %}Optional (Company already set){% else %}Company{% endif %}" style="width:130px; vertical-align:middle">
+      <input name="client_individual" placeholder="{% if active_timer.client_individual %}Optional (Beneficiary already set){% else %}Beneficiary{% endif %}" style="width:130px; vertical-align:middle">
+      {% endif %}
       <textarea name="details" placeholder="{% if active_timer.details and active_timer.details|length >= 5 %}Optional (already set){% else %}Details (min 5 chars){% endif %}" rows="1" style="width:240px; resize:vertical; vertical-align:middle"></textarea>
       <button class="small">Stop &amp; Log</button>
     </form>
