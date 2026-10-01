@@ -1,11 +1,18 @@
 """Overtime pre-approval (Ganesh's manager, 2026-08-03): Team Lead routing
 (app/auth.py led_by()) and the Attendance Report's "approved overtime"
 figure (app/reports.py). Mirrors test_reports.py/test_compensation.py's
-pattern — an in-memory sqlite db, rows seeded directly, PunchSession rows
-to drive the overtime side. Route handlers (request/approve/reject/grant)
-aren't covered here, matching this suite's existing convention of testing
-the logic layer (app/auth.py, app/reports.py) rather than app/routes/*.py
-directly — there's no FastAPI TestClient anywhere else in this suite either.
+pattern — an in-memory sqlite db, rows seeded directly.
+
+2026-10-01: attendance_report()'s "overtime"/"overtime_minutes" switched
+from Punch In/Out-based to Task-Log-based (DayStatus.variance_minutes),
+to match task_log_overtime_report() and every other "overtime" figure in
+the app. `_status()` below now takes a `variance` param to drive this
+directly; `_punch()` is kept only for the one test that proves punch time
+no longer has any effect on this figure. Route handlers (request/approve/
+reject/grant) aren't covered here, matching this suite's existing
+convention of testing the logic layer (app/auth.py, app/reports.py)
+rather than app/routes/*.py directly — there's no FastAPI TestClient
+anywhere else in this suite either.
 """
 import datetime as dt
 
@@ -45,9 +52,10 @@ def _emp(db, id, name, department="Ops", is_admin=False, is_super_admin=False, r
     return e
 
 
-def _status(db, emp_id, date, target=480):
+def _status(db, emp_id, date, target=480, variance=0):
     db.add(m.DayStatus(employee_id=emp_id, date=date, status=m.COMPLETE,
-                        target_minutes=target, source="computed"))
+                        target_minutes=target, variance_minutes=variance,
+                        actual_minutes=target + variance, source="computed"))
 
 
 def _punch(db, emp_id, date, in_minute, out_minute):
@@ -106,8 +114,7 @@ class TestApprovedOvertimeInAttendanceReport:
     def test_day_inside_approved_range_counts_as_approved(self, db):
         emp = _emp(db, 1, "Asha")
         d = dt.date(FUTURE_YEAR, 6, 10)
-        _status(db, 1, d, target=480)
-        _punch(db, 1, d, 0, 600)  # 10h punched, 2h over 8h target
+        _status(db, 1, d, target=480, variance=120)  # 2h over target, Task-Log based
         _ot(db, 1, d, d, status=m.OT_APPROVED)
         db.commit()
         result = attendance_report(db, d, d, employee_id=1)
@@ -118,8 +125,7 @@ class TestApprovedOvertimeInAttendanceReport:
     def test_day_outside_any_approved_range_is_unapproved(self, db):
         emp = _emp(db, 1, "Asha")
         d = dt.date(FUTURE_YEAR, 6, 10)
-        _status(db, 1, d, target=480)
-        _punch(db, 1, d, 0, 600)
+        _status(db, 1, d, target=480, variance=120)
         # approval covers a different day entirely
         _ot(db, 1, dt.date(FUTURE_YEAR, 6, 1), dt.date(FUTURE_YEAR, 6, 2), status=m.OT_APPROVED)
         db.commit()
@@ -131,8 +137,7 @@ class TestApprovedOvertimeInAttendanceReport:
     def test_no_approval_at_all_is_unapproved(self, db):
         emp = _emp(db, 1, "Asha")
         d = dt.date(FUTURE_YEAR, 6, 10)
-        _status(db, 1, d, target=480)
-        _punch(db, 1, d, 0, 600)
+        _status(db, 1, d, target=480, variance=120)
         db.commit()
         result = attendance_report(db, d, d, employee_id=1)
         assert result["rows"][0]["approved_overtime"] == 0
@@ -140,8 +145,7 @@ class TestApprovedOvertimeInAttendanceReport:
     def test_pending_request_does_not_count_as_approved(self, db):
         emp = _emp(db, 1, "Asha")
         d = dt.date(FUTURE_YEAR, 6, 10)
-        _status(db, 1, d, target=480)
-        _punch(db, 1, d, 0, 600)
+        _status(db, 1, d, target=480, variance=120)
         _ot(db, 1, d, d, status=m.OT_REQUESTED)  # not yet approved
         db.commit()
         result = attendance_report(db, d, d, employee_id=1)
@@ -151,8 +155,7 @@ class TestApprovedOvertimeInAttendanceReport:
     def test_rejected_request_does_not_count_as_approved(self, db):
         emp = _emp(db, 1, "Asha")
         d = dt.date(FUTURE_YEAR, 6, 10)
-        _status(db, 1, d, target=480)
-        _punch(db, 1, d, 0, 600)
+        _status(db, 1, d, target=480, variance=120)
         _ot(db, 1, d, d, status=m.OT_REJECTED)
         db.commit()
         result = attendance_report(db, d, d, employee_id=1)
@@ -162,10 +165,8 @@ class TestApprovedOvertimeInAttendanceReport:
         emp = _emp(db, 1, "Asha")
         d1 = dt.date(FUTURE_YEAR, 6, 10)
         d2 = dt.date(FUTURE_YEAR, 6, 11)
-        _status(db, 1, d1, target=480)
-        _status(db, 1, d2, target=480)
-        _punch(db, 1, d1, 0, 600)
-        _punch(db, 1, d2, 0, 540)  # 1h over
+        _status(db, 1, d1, target=480, variance=120)
+        _status(db, 1, d2, target=480, variance=60)  # 1h over
         _ot(db, 1, d1, d2, status=m.OT_APPROVED)
         db.commit()
         result = attendance_report(db, d1, d2, employee_id=1)
@@ -177,10 +178,8 @@ class TestApprovedOvertimeInAttendanceReport:
         _emp(db, 1, "Asha")
         _emp(db, 2, "Priya")
         d = dt.date(FUTURE_YEAR, 6, 10)
-        _status(db, 1, d, target=480)
-        _status(db, 2, d, target=480)
-        _punch(db, 1, d, 0, 600)  # 2h overtime, approved
-        _punch(db, 2, d, 0, 600)  # 2h overtime, NOT approved
+        _status(db, 1, d, target=480, variance=120)  # 2h overtime, approved
+        _status(db, 2, d, target=480, variance=120)  # 2h overtime, NOT approved
         _ot(db, 1, d, d, status=m.OT_APPROVED)
         db.commit()
         result = attendance_report(db, d, d)  # no employee_id -> summary mode
@@ -200,11 +199,24 @@ class TestApprovedOvertimeInAttendanceReport:
         identical whether or not the day was pre-approved."""
         emp = _emp(db, 1, "Asha")
         d = dt.date(FUTURE_YEAR, 6, 10)
-        _status(db, 1, d, target=480)
-        _punch(db, 1, d, 0, 600)
+        _status(db, 1, d, target=480, variance=120)
         db.commit()  # no OvertimeApproval row at all
         result = attendance_report(db, d, d, employee_id=1)
         assert result["rows"][0]["overtime"] == 120  # fully intact, unapproved or not
+
+    def test_overtime_is_task_log_based_not_punch_based(self, db):
+        """2026-10-01: attendance_report()'s 'overtime' figure switched
+        from Punch In/Out time to Task Log time (DayStatus.variance_minutes),
+        to match task_log_overtime_report() and My Month's Compensation
+        credit KPI. A heavily-punched day with no real logged variance now
+        reads 0 overtime — Punch time no longer drives this figure at all."""
+        emp = _emp(db, 1, "Asha")
+        d = dt.date(FUTURE_YEAR, 6, 10)
+        _status(db, 1, d, target=480, variance=0)
+        _punch(db, 1, d, 0, 600)  # 10h punched — would've been 2h "overtime" under the old calc
+        db.commit()
+        result = attendance_report(db, d, d, employee_id=1)
+        assert result["rows"][0]["overtime"] == 0
 
 
 class TestOvertimeApprovalCovers:

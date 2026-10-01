@@ -474,11 +474,20 @@ def attendance_report(db: Session, start: dt.date, end: dt.date,
     percentage bar there; attendance_pct itself is untouched/still used by
     the XLSX export.
 
-    "overtime" / "overtime_minutes" comes from completed Punch In/Out
-    sessions vs. each day's already-computed target (DayStatus.target_minutes,
-    which already includes leave and break-allowance adjustments) — see
-    app/util.py overtime_minutes. Purely additive to the report; doesn't
-    change status/strike counting at all.
+    "overtime" / "overtime_minutes" (Ganesh, 2026-10-01: switched from
+    Punch In/Out based to Task Log based, to match every other "overtime"
+    figure in the app — Overtime Management's "Who worked overtime" table
+    (reports.task_log_overtime_report()) and My Month's Compensation
+    credit KPI both already read Task Log time via DayStatus.variance_minutes,
+    not Punch time; this report's own Overtime column was the one place
+    still showing the Punch-based number, which could silently disagree
+    with those others for the same employee/month). Now just
+    max(0, DayStatus.variance_minutes) per day, identical definition to
+    task_log_overtime_report() — summed from the same already-loaded
+    `by_emp` DayStatus rows, no new query. Punch-based `_punch_minutes_by_day()`/
+    `overtime_minutes()` are no longer used here (still used elsewhere,
+    not removed). Purely additive to the report; doesn't change
+    status/strike counting at all.
 
     "approved_overtime" / "approved_overtime_minutes" is the same overtime
     figure, but only counting days that fall inside one of that employee's
@@ -493,7 +502,6 @@ def attendance_report(db: Session, start: dt.date, end: dt.date,
     emps = _scope_employees(db, department, employee_id)
     emp_ids = [e.id for e in emps]
     by_emp = _rows_by_employee(db, start, end, emp_ids)
-    punch_by_day = _punch_minutes_by_day(db, start, end, emp_ids)
     approved_ranges = _approved_overtime_ranges(db, start, end, emp_ids)
 
     if employee_id and len(emps) == 1:
@@ -504,9 +512,9 @@ def attendance_report(db: Session, start: dt.date, end: dt.date,
             {
                 "date": r.date,
                 "status": r.effective_status(comp_erases),
-                "overtime": overtime_minutes(punch_by_day.get((emp.id, r.date), 0), r.target_minutes),
+                "overtime": max(0, r.variance_minutes or 0),
                 "approved_overtime": (
-                    overtime_minutes(punch_by_day.get((emp.id, r.date), 0), r.target_minutes)
+                    max(0, r.variance_minutes or 0)
                     if _date_is_approved(emp_ranges, r.date) else 0
                 ),
             }
@@ -535,7 +543,7 @@ def attendance_report(db: Session, start: dt.date, end: dt.date,
             eff = r.effective_status(comp_erases)
             if eff in counts:
                 counts[eff] += 1
-            day_overtime = overtime_minutes(punch_by_day.get((e.id, r.date), 0), r.target_minutes)
+            day_overtime = max(0, r.variance_minutes or 0)
             emp_overtime += day_overtime
             if _date_is_approved(emp_ranges, r.date):
                 emp_approved_overtime += day_overtime
