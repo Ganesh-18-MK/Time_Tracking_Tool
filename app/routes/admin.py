@@ -3882,7 +3882,12 @@ def overtime_page(
         links_q = links_q.limit(150)
     comp_link_rows = list(db.execute(links_q).scalars())
     if scope is not None:
-        comp_link_rows = [lk for lk in comp_link_rows if lk.employee_id in scope][:150]
+        # `scope` is a department NAME string here (admin_department_scope()),
+        # not an id set — the old `lk.employee_id in scope` raised TypeError
+        # (int in str) for every department-scoped admin since the
+        # 2026-09-01 led_by() -> department switch, 500-ing this page.
+        # Must test against scoped_ids instead.
+        comp_link_rows = [lk for lk in comp_link_rows if lk.employee_id in scoped_ids][:150]
     # same (link, parsed-surplus-dates) shape person() builds above, so the
     # template can reuse identical `{% for s in sdates %}{{ s|mdy }}` markup
     comp_links = [
