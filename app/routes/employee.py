@@ -2925,6 +2925,38 @@ def my_month(
     balance = ledger[-1]["balance"] if ledger else 0
     weekly_ledger = _weekly_ledger(ledger, comp_erases)
     comp = compensation.monthly_summary(db, user, year, month)
+
+    # Approved overtime hours this month (Ganesh, 2026-10-02) — the one
+    # payout-relevant figure, shown right after Compensation credit so an
+    # employee can see it without needing admin access to the Attendance
+    # Report. Deliberately a small self-contained query here rather than
+    # reaching into app/reports.py's underscore-prefixed
+    # _approved_overtime_ranges()/_date_is_approved() helpers (those are
+    # private to that module, used only by its own report functions) —
+    # same definition though: sum of each day's positive
+    # DayStatus.variance_minutes (Task-Log based, same as attendance_report's
+    # own "Overtime"/"Approved overtime" columns since the 2026-10-01
+    # Punch-to-Task-Log switch), restricted to dates covered by an
+    # OT_APPROVED OvertimeApproval range. Unlike Compensation credit, this
+    # has nothing to do with the compensation-link/strike-erasure system —
+    # it exists purely so an employee can see what portion of their
+    # overtime is actually payable.
+    approved_ranges = [
+        (ot.start_date, ot.end_date)
+        for ot in db.execute(
+            select(m.OvertimeApproval).where(
+                m.OvertimeApproval.employee_id == user.id,
+                m.OvertimeApproval.status == m.OT_APPROVED,
+                m.OvertimeApproval.start_date <= last,
+                m.OvertimeApproval.end_date >= first,
+            )
+        ).scalars()
+    ]
+    approved_overtime_minutes = sum(
+        max(0, r.variance_minutes or 0)
+        for d, r in rows.items()
+        if any(s <= d <= e for s, e in approved_ranges)
+    )
     # Simple "where did my hours go this month" bar chart (Ganesh,
     # 2026-09-03) — sits between the KPI tiles and the Hours ledger, see
     # reports.my_month_project_totals()'s own docstring for why this is a
@@ -2981,6 +3013,7 @@ def my_month(
             "balance": balance,
             "entries_by_date": entries_by_date,
             "comp": comp,
+            "approved_overtime_minutes": approved_overtime_minutes,
             "project_totals": project_totals,
             "prev_ym": f"{py}-{pm:02d}",
             "next_ym": f"{ny}-{nm:02d}",

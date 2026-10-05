@@ -25,6 +25,10 @@
       {% else %}compensation — all caught up{% endif %}
     </div>
   </div>
+  <div class="kpi {{ 'okk' if approved_overtime_minutes > 0 else '' }}" title="Overtime that's actually payable — only counts days covered by an Overtime Request an admin approved. This is different from the two figures above, which include overtime regardless of whether it was ever approved.">
+    <div class="n">{{ approved_overtime_minutes|hm }}</div>
+    <div class="l">approved overtime hours this month</div>
+  </div>
   {% for t, days in leave_totals.items() %}
   <div class="kpi"><div class="n">{{ '%.1f'|format(days) }}</div><div class="l">{{ t }} leave days</div></div>
   {% endfor %}

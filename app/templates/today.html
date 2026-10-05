@@ -865,13 +865,13 @@
   <div class="card-head"><h2>Today Tasks</h2></div>
   <table>
     <thead>
-      <tr><th>Duration</th><th>Project/Employer</th><th>Task</th><th>Details</th><th></th></tr>
+      <tr><th>Time</th><th>Project/Employer</th><th>Task</th><th>Details</th><th></th></tr>
     </thead>
     <tbody>
       {% for e in display_entries %}
       {% if e.is_gap %}
       <tr class="gap-row">
-        <td class="nowrap"><span class="dur-hint" title="{{ e.start_minute|clock }} – {{ e.end_minute|clock }}">{{ e.duration_minutes|hm }}</span></td>
+        <td class="nowrap"><span class="dur-hint" title="Duration: {{ e.duration_minutes|hm }}">{{ e.start_minute|clock }} – {{ e.end_minute|clock }}</span></td>
         <td colspan="3" class="small muted">Unlogged gap — nothing on your task log covers this stretch of time.</td>
         <td class="nowrap">
           <button type="button" class="small secondary" onclick="fillGapRow({{ e.start_minute }}, {{ e.end_minute }})">Fill</button>
@@ -884,7 +884,7 @@
          depending on e.status, instead of an instant no-approval Fill.
          See BreakOverrunFlag's own docstring in app/models.py. -#}
       <tr class="gap-row break-overrun-row">
-        <td class="nowrap"><span class="dur-hint" title="{{ e.start_minute|clock }} – {{ e.end_minute|clock }}">{{ e.duration_minutes|hm }}</span></td>
+        <td class="nowrap"><span class="dur-hint" title="Duration: {{ e.duration_minutes|hm }}">{{ e.start_minute|clock }} – {{ e.end_minute|clock }}</span></td>
         <td colspan="3" class="small muted">
           Leftover from a long break — needs admin approval before you can log a task here.
           {% if e.status == 'requested' %}<span class="badge b-pending">⏳ awaiting admin approval</span>
@@ -907,7 +907,7 @@
       {% else %}
       <tr class="{{ 'muted' if not e.id else '' }}{{ ' overtime-row' if e.is_overtime else '' }}" {% if e.is_overtime %}title="Logged after today's target was already reached"{% endif %}>
         <td class="nowrap">
-          <strong class="dur-hint" title="{{ e.start_minute|clock }} – {{ e.end_minute|clock }}">{{ e.duration_minutes|hm }}</strong>
+          <strong class="dur-hint" title="Duration: {{ e.duration_minutes|hm }}">{{ e.start_minute|clock }} – {{ e.end_minute|clock }}</strong>
           {% if flags.get(e.id) %}<div class="gapflag">⚠ {{ flags[e.id]|hm }} gap before</div>{% endif %}
         </td>
         <td>{{ e.project.name }}{% if e.client %}<div class="small muted">Company: {{ e.client }}</div>{% endif %}{% if e.client_individual %}<div class="small muted">Beneficiary: {{ e.client_individual }}</div>{% endif %}</td>
