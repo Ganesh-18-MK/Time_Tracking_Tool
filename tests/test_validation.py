@@ -185,6 +185,19 @@ class TestDepartmentScopedProjects:
         s.commit()
         return s, emp
 
+    def test_per_person_assignment_grants_access_to_other_departments_project(self, db):
+        """2026-10-06: a ProjectAssignment unlocks a restricted project for
+        that one employee only, not their whole department."""
+        from app.validation import project_allowed_for_department as allowed
+        s, emp = db
+        emp.department = "Front Desk"
+        s.commit()
+        assert not allowed(s, 6, "Front Desk", emp.id)
+        s.add(m.ProjectAssignment(employee_id=emp.id, project_id=6, assigned_by="test"))
+        s.commit()
+        assert allowed(s, 6, "Front Desk", emp.id)
+        assert not allowed(s, 6, "Front Desk", emp.id + 999)  # a different Front Desk employee
+
     def test_unrestricted_project_usable_by_any_department(self, db):
         s, emp = db
         v(s, emp, project_id=1, task_type_id=1)  # Project id=1 has no department links

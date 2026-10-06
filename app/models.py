@@ -626,9 +626,12 @@ class TaskType(Base):
 
 class ProjectAssignment(Base):
     """A team lead's 'this employee works on this project' marker (Ganesh,
-    2026-08-01). Deliberately advisory, NOT enforced — app/validation.py
-    does not reject a TaskEntry against an unassigned project. An
-    assignment only changes what's shown first/highlighted on the Today
+    2026-08-01). Deliberately advisory for ordering — nobody is blocked
+    just because assignments aren't set up. EXCEPTION (2026-10-06): for a
+    project restricted to specific departments (ProjectDepartment), a
+    ProjectAssignment row grants THAT ONE employee access even if their
+    department isn't linked — see validation.project_allowed_for_department().
+    Otherwise an assignment only changes what's shown first/highlighted on the Today
     entry form (see app/routes/employee.py), so nobody is ever blocked
     from logging time just because assignments haven't been set up for
     them yet — safe to roll out gradually, department by department."""

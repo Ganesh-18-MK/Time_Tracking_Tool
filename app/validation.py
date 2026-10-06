@@ -45,7 +45,9 @@ def task_allowed_for_project(db: Session, project_id: int, task_type_id: int) ->
     ).first() is not None
 
 
-def project_allowed_for_department(db: Session, project_id: int, department: str) -> bool:
+def project_allowed_for_department(
+    db: Session, project_id: int, department: str, employee_id: Optional[int] = None
+) -> bool:
     """Department-scoped projects (Ganesh, 2026-08-28) — see
     ProjectDepartment's docstring in app/models.py for the full feature.
     A project with NO ProjectDepartment rows at all is unrestricted (True
@@ -77,7 +79,22 @@ def project_allowed_for_department(db: Session, project_id: int, department: str
     if not rows:
         return True
     dept_norm = (department or "—").strip().casefold()
-    return any((d or "").strip().casefold() == dept_norm for d in rows)
+    if any((d or "").strip().casefold() == dept_norm for d in rows):
+        return True
+    # Per-person grant (Ganesh, 2026-10-06): an admin ticking this project
+    # for ONE employee under Assign Work (ProjectAssignment) now unlocks it
+    # for just that person, even when their department isn't linked — so
+    # e.g. a Front Desk employee can be given one Legal project without
+    # opening it to all of Front Desk. Before this, those ticks were
+    # advisory only (dropdown sort order) and could not grant access.
+    if employee_id is not None:
+        return db.execute(
+            select(m.ProjectAssignment.id).where(
+                m.ProjectAssignment.project_id == project_id,
+                m.ProjectAssignment.employee_id == employee_id,
+            )
+        ).first() is not None
+    return False
 
 
 def earliest_allowed_date(
@@ -180,7 +197,7 @@ def validate_entry(
         errors.append("That Project/Employer is still awaiting admin approval.")
     elif project is None or not project.active or project.status != m.LIST_APPROVED:
         errors.append("Choose a Project/Employer from the list.")
-    elif not acting_admin and not closing_existing and not project_allowed_for_department(db, project_id, emp.department):
+    elif not acting_admin and not closing_existing and not project_allowed_for_department(db, project_id, emp.department, emp.id):
         # Department-scoped projects (Ganesh, 2026-08-28) — only checked
         # once the project has independently passed the checks above, same
         # "don't mask the more basic pick-something-real errors" ordering

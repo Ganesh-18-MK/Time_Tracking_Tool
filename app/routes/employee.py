@@ -737,9 +737,18 @@ def _visible_projects_and_tasks(db: Session, user: m.Employee):
     # never do, so a plain exact-string `in` check could silently exclude a
     # real employee in a real linked department).
     emp_dept_norm = (user.department or "—").strip().casefold()
+    # Per-person grants (2026-10-06): a project an admin ticked for this
+    # employee under Assign Work is visible even if its departments don't
+    # include theirs — same rule as validation.project_allowed_for_department().
+    granted_project_ids = set(
+        db.execute(
+            select(m.ProjectAssignment.project_id).where(m.ProjectAssignment.employee_id == user.id)
+        ).scalars()
+    )
     projects = [
         p for p in projects
         if p.id not in project_depts
+        or p.id in granted_project_ids
         or any((d or "").strip().casefold() == emp_dept_norm for d in project_depts[p.id])
     ]
     tasks = list(
@@ -2289,7 +2298,7 @@ def add_plan(
     # validation.project_allowed_for_department() validate_entry() uses,
     # checked here too for immediate feedback (mirrors the
     # task_allowed_for_project check right above).
-    if not project_allowed_for_department(db, project_id, user.department):
+    if not project_allowed_for_department(db, project_id, user.department, user.id):
         flash(request, f"'{project.name}' isn't available to your department.", "err")
         return RedirectResponse(redirect_url, status_code=303)
     client_err = _client_required_error(project, client, client_individual)
