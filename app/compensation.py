@@ -74,13 +74,22 @@ def _logged_minutes_by_day(
     own `task_totals` query — the same live-TaskEntry source that already
     drives DayStatus.actual_minutes everywhere else in the app, so this
     module's "logged" figure and DayStatus's "actual" figure for the same
-    day are the same number by construction, not just similar."""
+    day are the same number by construction, not just similar.
+
+    Tasks flagged TaskType.excludes_from_total (the manually-logged Break,
+    2026-09-17) are excluded here too (2026-10-09 fix, reported by Norine:
+    Day statuses showed +0:45 while this card showed 1:00 overtime for the
+    same day — this query had never picked up the exclusion engine.py's
+    task_totals got). `.isnot(True)` matches both False and NULL, same as
+    engine.recompute_employee()."""
     out: Dict[dt.date, int] = {}
     for d, total in db.execute(
         select(m.TaskEntry.date, func.sum(m.TaskEntry.end_minute - m.TaskEntry.start_minute))
+        .outerjoin(m.TaskType, m.TaskType.id == m.TaskEntry.task_type_id)
         .where(
             m.TaskEntry.employee_id == employee_id,
             m.TaskEntry.date.between(start, end),
+            m.TaskType.excludes_from_total.isnot(True),
         )
         .group_by(m.TaskEntry.date)
     ).all():

@@ -207,3 +207,25 @@ class TestSourceSwitchMatchesDayStatusActual:
         result = monthly_summary(db, emp, YEAR, MONTH, today=TODAY)
         assert result["days"][0]["logged"] == 300
         assert result["shortfall_total"] == 180
+
+
+class TestExcludedTaskTypes:
+    """Norine, 2026-10-09: Day statuses showed +0:45 while this card showed
+    1:00 overtime — a 0:15 Break (TaskType.excludes_from_total) was being
+    counted here but not in DayStatus.actual_minutes."""
+
+    def test_excluded_task_time_is_not_counted_as_logged(self, db, emp):
+        d = dt.date(YEAR, MONTH, 1)
+        brk = m.TaskType(name="Break", excludes_from_total=True)
+        work = m.TaskType(name="Work")
+        db.add_all([brk, work])
+        db.flush()
+        _status(db, emp.id, d, 480)
+        db.add(m.TaskEntry(employee_id=emp.id, date=d, project_id=1, task_type_id=work.id,
+                           start_minute=0, end_minute=525))   # 8:45 of work
+        db.add(m.TaskEntry(employee_id=emp.id, date=d, project_id=1, task_type_id=brk.id,
+                           start_minute=525, end_minute=540))  # 0:15 break
+        db.commit()
+        result = monthly_summary(db, emp, YEAR, MONTH, today=TODAY)
+        assert result["days"][0]["logged"] == 525
+        assert result["overtime_total"] == 45  # not 60
