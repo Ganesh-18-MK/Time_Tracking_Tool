@@ -407,7 +407,7 @@
     {% if sub %}
       <span class="badge {{ 'b-complete' if sub.locked else 'b-partial' }}">
         {{ 'submitted · locked' if sub.locked else 'unlocked for edits' }}</span>
-      <span class="muted small">total {{ sub.total_minutes|hm }}{% if sub.unlock_count %} · unlocked {{ sub.unlock_count }}×{% endif %}</span>
+      <span class="muted small">total {{ items|rejectattr('task_type.excludes_from_total')|sum(attribute='duration_minutes')|hm }}{% if sub.unlock_count %} · unlocked {{ sub.unlock_count }}×{% endif %}</span>
       {% if sub.locked %}
       {% set req = pending_unlocks_by_date.get(day) %}
       {% if req %}

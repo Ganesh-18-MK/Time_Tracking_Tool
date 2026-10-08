@@ -1133,9 +1133,16 @@ def today_attendance(
 
 
 def day_total_minutes(db: Session, employee_id: int, d: dt.date) -> int:
+    """Logged minutes for a day, excluding tasks flagged
+    TaskType.excludes_from_total (Break) — same rule as
+    recompute_employee()'s task_totals (2026-10-09)."""
     total = db.execute(
-        select(func.sum(m.TaskEntry.end_minute - m.TaskEntry.start_minute)).where(
-            m.TaskEntry.employee_id == employee_id, m.TaskEntry.date == d
+        select(func.sum(m.TaskEntry.end_minute - m.TaskEntry.start_minute))
+        .outerjoin(m.TaskType, m.TaskType.id == m.TaskEntry.task_type_id)
+        .where(
+            m.TaskEntry.employee_id == employee_id,
+            m.TaskEntry.date == d,
+            m.TaskType.excludes_from_total.isnot(True),
         )
     ).scalar()
     return int(total or 0)
